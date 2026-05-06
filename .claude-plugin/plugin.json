@@ -1,0 +1,13 @@
+{
+  "name": "imk-tools",
+  "version": "0.1.0",
+  "description": "Helper for AI coding agents working in projects that use immurok / imk for fingerprint-gated secret access and command authorization on macOS. Teaches the agent when to wrap commands with `imk run --agent` and when not to.",
+  "author": "immurok",
+  "homepage": "https://github.com/immurok/imk-skill",
+  "skills": [
+    {
+      "name": "using-imk",
+      "path": "skills/using-imk"
+    }
+  ]
+}
