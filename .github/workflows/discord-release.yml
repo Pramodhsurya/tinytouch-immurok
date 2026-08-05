@@ -1,0 +1,48 @@
+name: Discord Release Embed
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  beautiful-announce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 构建并发送高颜值卡片
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RELEASE_NAME: ${{ github.event.release.name || github.event.release.tag_name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+          AUTHOR_NAME: ${{ github.event.release.author.login }}
+          AUTHOR_AVATAR: ${{ github.event.release.author.avatar_url }}
+          PUB_TIME: ${{ github.event.release.published_at }}
+        run: |
+          # 使用 jq 构建 JSON，可以完美处理 Release Notes 中的多行文本、引号和 Markdown
+          PAYLOAD=$(jq -n \
+            --arg title "New app-win version release: $RELEASE_NAME" \
+            --arg url "$RELEASE_URL" \
+            --arg body "$RELEASE_BODY" \
+            --arg author "$AUTHOR_NAME" \
+            --arg avatar "$AUTHOR_AVATAR" \
+            --arg time "$PUB_TIME" \
+            '{
+              embeds: [{
+                title: $title,
+                url: $url,
+                description: (if ($body | length) > 1500 then ($body[0:1500] + "...\n\n[🔗 Check details](" + $url + ")") else $body end),
+                color: 5814783,
+                author: { 
+                  name: $author, 
+                  icon_url: $avatar 
+                },
+                footer: { 
+                  text: "GitHub Releases", 
+                  icon_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" 
+                },
+                timestamp: $time
+              }]
+            }')
+
+          # 将生成的 JSON payload 发送给 Discord
+          curl -H "Content-Type: application/json" -d "$PAYLOAD" $DISCORD_WEBHOOK
