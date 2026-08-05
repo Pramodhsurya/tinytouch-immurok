@@ -1,0 +1,15 @@
+# 构建产物
+bin/
+obj/
+x64/
+Debug/
+Release/
+*.user
+.vs/
+
+# NuGet
+packages/
+*.nupkg
+
+# 其他
+*.log

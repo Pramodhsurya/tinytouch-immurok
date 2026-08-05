@@ -1,0 +1,90 @@
+<Page x:Class="ImmurokClient.Views.KeysPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+      xmlns:loc="clr-namespace:ImmurokClient.Localization"
+      xmlns:h="clr-namespace:ImmurokClient.Helpers"
+      Title="{loc:Tr nav.keys}">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" h:WheelScroll.Enabled="True">
+        <StackPanel Margin="28,24,28,24" MaxWidth="680" HorizontalAlignment="Left">
+            <TextBlock Text="{loc:Tr keys.title}" FontSize="28" FontWeight="Bold" Margin="0,0,0,2" />
+            <TextBlock Text="{loc:Tr keys.subtitle}" Opacity="0.6" Margin="0,0,0,20" />
+
+            <!-- TOTP -->
+            <ui:Card Margin="0,0,0,14" Padding="18">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Timer24" FontSize="18" Margin="0,0,8,0" />
+                        <TextBlock Text="{loc:Tr keys.totp}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="{loc:Tr keys.totp.desc}" Opacity="0.6" FontSize="12" Margin="0,0,0,10" />
+                    <ItemsControl x:Name="OtpPanel" />
+                    <TextBlock x:Name="OtpEmpty" Text="{loc:Tr common.none}" Opacity="0.5" FontSize="12" Visibility="Collapsed" />
+                    <Border BorderThickness="0,1,0,0" BorderBrush="#22808080" Margin="0,10,0,0" Padding="0,10,0,0">
+                        <StackPanel>
+                            <TextBlock Text="{loc:Tr keys.totp.add}" Opacity="0.7" FontSize="12" Margin="0,0,0,6" />
+                            <StackPanel Orientation="Horizontal">
+                                <ui:TextBox x:Name="OtpName" PlaceholderText="{loc:Tr ph.name}" Width="130" Margin="0,0,6,0" />
+                                <ui:TextBox x:Name="OtpService" PlaceholderText="{loc:Tr ph.service}" Width="130" Margin="0,0,6,0" />
+                                <ui:TextBox x:Name="OtpSecret" PlaceholderText="{loc:Tr ph.secret}" Width="160" Margin="0,0,6,0" />
+                                <ui:Button Content="{loc:Tr common.add}" Icon="{ui:SymbolIcon Add24}" Click="OnAddOtpClick" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ui:Card>
+
+            <!-- SSH -->
+            <ui:Card Margin="0,0,0,14" Padding="18">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Key24" FontSize="18" Margin="0,0,8,0" />
+                        <TextBlock Text="{loc:Tr keys.ssh}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="{loc:Tr keys.ssh.desc}" Opacity="0.6" FontSize="12" Margin="0,0,0,10" />
+                    <ItemsControl x:Name="SshPanel" />
+                    <TextBlock x:Name="SshEmpty" Text="{loc:Tr common.none}" Opacity="0.5" FontSize="12" Visibility="Collapsed" />
+                    <Border BorderThickness="0,1,0,0" BorderBrush="#22808080" Margin="0,10,0,0" Padding="0,10,0,0">
+                        <StackPanel>
+                            <TextBlock Text="{loc:Tr keys.ssh.gen}" Opacity="0.7" FontSize="12" Margin="0,0,0,6" />
+                            <StackPanel Orientation="Horizontal">
+                                <ui:TextBox x:Name="SshName" PlaceholderText="{loc:Tr ph.name}" Width="200" Margin="0,0,6,0" />
+                                <ui:Button Content="{loc:Tr common.generate}" Icon="{ui:SymbolIcon Add24}" Click="OnGenSshClick" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ui:Card>
+
+            <!-- API -->
+            <ui:Card Margin="0,0,0,14" Padding="18">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Password24" FontSize="18" Margin="0,0,8,0" />
+                        <TextBlock Text="{loc:Tr keys.api}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="{loc:Tr keys.api.desc}" Opacity="0.6" FontSize="12" Margin="0,0,0,10" />
+                    <ItemsControl x:Name="ApiPanel" />
+                    <TextBlock x:Name="ApiEmpty" Text="{loc:Tr common.none}" Opacity="0.5" FontSize="12" Visibility="Collapsed" />
+                    <Border BorderThickness="0,1,0,0" BorderBrush="#22808080" Margin="0,10,0,0" Padding="0,10,0,0">
+                        <StackPanel>
+                            <TextBlock Text="{loc:Tr keys.api.add}" Opacity="0.7" FontSize="12" Margin="0,0,0,6" />
+                            <StackPanel Orientation="Horizontal">
+                                <ui:TextBox x:Name="ApiName" PlaceholderText="{loc:Tr ph.name}" Width="130" Margin="0,0,6,0" />
+                                <ui:TextBox x:Name="ApiValue" PlaceholderText="{loc:Tr ph.value}" Width="260" Margin="0,0,6,0" />
+                                <ui:Button Content="{loc:Tr common.add}" Icon="{ui:SymbolIcon Add24}" Click="OnAddApiClick" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ui:Card>
+
+            <StackPanel Orientation="Horizontal">
+                <ui:Button Content="{loc:Tr common.refresh}" Icon="{ui:SymbolIcon ArrowClockwise24}" Appearance="Secondary" Click="OnRefreshClick" />
+                <ui:Button x:Name="DelSelectedBtn" Content="{loc:Tr keys.delete_selected}" Icon="{ui:SymbolIcon Delete24}"
+                           Appearance="Secondary" Click="OnDeleteSelectedClick" Margin="8,0,0,0" IsEnabled="False" />
+            </StackPanel>
+            <TextBlock x:Name="StatusText" Margin="0,12,0,0" Opacity="0.8" TextWrapping="Wrap" />
+        </StackPanel>
+    </ScrollViewer>
+</Page>

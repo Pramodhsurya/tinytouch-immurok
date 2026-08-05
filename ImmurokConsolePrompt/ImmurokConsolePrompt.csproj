@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ImmurokConsolePrompt</RootNamespace>
+    <AssemblyName>ImmurokConsolePrompt</AssemblyName>
+    <!-- 附到别的进程的控制台写提示；无窗口 -->
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

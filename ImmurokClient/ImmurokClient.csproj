@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>ImmurokClient</RootNamespace>
+    <AssemblyName>ImmurokClient</AssemblyName>
+    <UseWPF>true</UseWPF>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\immurok.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Fluent / WinUI 观感控件库 -->
+    <PackageReference Include="WPF-UI" Version="3.0.5" />
+    <!-- 系统托盘 -->
+    <PackageReference Include="H.NotifyIcon.Wpf" Version="2.1.3" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ImmurokCommon\ImmurokCommon.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 图标作为 WPF 资源，供 pack:// URI 引用 -->
+    <Resource Include="Assets\immurok.ico" />
+    <Resource Include="Assets\immurok.png" />
+    <!-- 白色版 logo：暗色主题下标题栏图标使用 -->
+    <Resource Include="Assets\immurok-white.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 多语言字符串内嵌为程序集资源；LogicalName 锁死资源名，供 Loc 按 code 加载 -->
+    <None Remove="Localization\Strings\*.json" />
+    <EmbeddedResource Include="Localization\Strings\*.json">
+      <LogicalName>ImmurokClient.Localization.Strings.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

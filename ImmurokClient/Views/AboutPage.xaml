@@ -1,0 +1,37 @@
+<Page x:Class="ImmurokClient.Views.AboutPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+      xmlns:loc="clr-namespace:ImmurokClient.Localization"
+      xmlns:h="clr-namespace:ImmurokClient.Helpers"
+      Title="{loc:Tr nav.about}">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" h:WheelScroll.Enabled="True">
+        <StackPanel Margin="28,24,28,24" MaxWidth="640" HorizontalAlignment="Left">
+            <TextBlock Text="{loc:Tr about.name}" FontSize="28" FontWeight="Bold" Margin="0,0,0,2" />
+            <TextBlock Text="{loc:Tr about.version}" Opacity="0.6" Margin="0,0,0,20" />
+
+            <ui:Card Margin="0,0,0,14" Padding="18">
+                <StackPanel>
+                    <TextBlock Text="immurok for Windows" FontWeight="SemiBold" Margin="0,0,0,4" />
+                    <TextBlock TextWrapping="Wrap" Opacity="0.7"
+                               Text="{loc:Tr about.desc}" />
+                </StackPanel>
+            </ui:Card>
+
+            <ui:Card Padding="18">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="ArrowUpload24" FontSize="18" Margin="0,0,8,0" />
+                        <TextBlock Text="{loc:Tr about.ota}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="{loc:Tr about.ota.desc}"
+                               Opacity="0.6" FontSize="12" Margin="0,0,0,10" TextWrapping="Wrap" />
+                    <ui:Button x:Name="PickBtn" Content="{loc:Tr about.ota.pick}" Icon="{ui:SymbolIcon ArrowUpload24}" Click="OnOtaClick" />
+                    <ProgressBar x:Name="OtaProgress" Height="6" Minimum="0" Maximum="100" Value="0"
+                                 Visibility="Collapsed" Margin="0,12,0,4" />
+                    <TextBlock x:Name="OtaStatus" Text="" Opacity="0.8" FontSize="12" Margin="0,4,0,0" />
+                </StackPanel>
+            </ui:Card>
+        </StackPanel>
+    </ScrollViewer>
+</Page>
