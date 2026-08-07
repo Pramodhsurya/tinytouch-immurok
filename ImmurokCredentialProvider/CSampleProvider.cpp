@@ -17,6 +17,7 @@
 //
 
 #include <credentialprovider.h>
+#include "CSampleProvider.h"
 #include "CSampleCredential.h"
 #include "CPipeListener.h"
 #include "guid.h"

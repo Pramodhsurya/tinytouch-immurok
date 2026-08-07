@@ -45,7 +45,7 @@ internal static class Program
             "list" => CmdList(args[1..]),
             "get" => CmdGet(args[1..]),
             "run" => CmdRun(args[1..]),
-            "version" or "--version" or "-v" => Print("imk 0.1.0"),
+            "version" or "--version" or "-v" => Print("imk 0.2.0"),
             "help" or "--help" or "-h" => PrintUsage(),
             _ => Unknown(args[0]),
         };

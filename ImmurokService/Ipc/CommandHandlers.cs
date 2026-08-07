@@ -54,6 +54,10 @@ public sealed class CommandHandlers
                 IpcProtocol.SshAgent => await HandleSshAgentAsync(parts),
                 IpcProtocol.Pass   => HandlePass(parts),
                 IpcProtocol.Auth   => await HandleAuthAsync(parts, ct),
+                // 取消进行中的指纹门：不做连接检查，尽力而为（客户端认证弹窗点取消时用）。
+                IpcProtocol.CancelGate => await HandleCancelGateAsync(),
+                // 功能开关：不要求设备在线（纯本地设置）。
+                IpcProtocol.Feature => await HandleFeatureAsync(parts),
                 IpcProtocol.Ota    => IpcProtocol.ErrOtaNotAvailable, // OTA 待阶段5实现
                 _ => IpcProtocol.ErrUnknownCommand,
             };
@@ -63,6 +67,53 @@ public sealed class CommandHandlers
             _log.LogError(ex, "处理请求异常: {Verb}", verb);
             return IpcProtocol.Error;
         }
+    }
+
+    /// <summary>
+    /// 功能开关读写。纯本地设置，不要求设备在线。
+    /// ssh 需要连带启停 agent 进程，其余只落设置、由各功能入口自行判定。
+    /// </summary>
+    private async Task<string> HandleFeatureAsync(string[] parts)
+    {
+        if (parts.Length < 2) return IpcProtocol.ErrInvalidFormat;
+
+        if (parts[1] == IpcProtocol.FeatureGet)
+        {
+            static string B(bool v) => v ? "1" : "0";
+            return $"{IpcProtocol.Ok}:{B(_settings.UnlockEnabled)}:{B(_settings.LockEnabled)}:" +
+                   $"{B(_settings.SshAgentEnabled)}:{B(_settings.ImkAgentEnabled)}:{B(_settings.OtpEnabled)}";
+        }
+
+        if (parts[1] == IpcProtocol.FeatureSet)
+        {
+            // FEATURE:SET:<name>:<0|1>
+            if (parts.Length < 4) return IpcProtocol.ErrInvalidFormat;
+            bool on = parts[3] == "1";
+            switch (parts[2])
+            {
+                case IpcProtocol.FeatureUnlock: _settings.UnlockEnabled = on; break;
+                case IpcProtocol.FeatureLock:   _settings.LockEnabled = on; break;
+                case IpcProtocol.FeatureAgent:  _settings.ImkAgentEnabled = on; break;
+                case IpcProtocol.FeatureOtp:    _settings.OtpEnabled = on; break;
+                case IpcProtocol.FeatureSsh:
+                    _settings.SshAgentEnabled = on;
+                    if (on) { _sshAgent.Start(); await _sshAgent.RefreshIdentitiesAsync(); }
+                    else await _sshAgent.StopAsync();
+                    break;
+                default: return IpcProtocol.ErrInvalidFormat;
+            }
+            _log.LogInformation("功能开关 {Name} -> {On}", parts[2], on ? "ON" : "OFF");
+            return IpcProtocol.Ok;
+        }
+
+        return IpcProtocol.ErrUnknownCommand;
+    }
+
+    /// <summary>取消进行中的指纹门，让设备停止闪灯等待，等待中的操作立即以失败收尾。</summary>
+    private async Task<string> HandleCancelGateAsync()
+    {
+        await _ble.CancelGateAsync();
+        return IpcProtocol.Ok;
     }
 
     private string HandleStatus()
@@ -298,6 +349,7 @@ public sealed class CommandHandlers
             }
             case IpcProtocol.KeyOtp:
             {
+                if (!_settings.OtpEnabled) return IpcProtocol.Deny; // 功能开关：OTP 已关闭
                 if (parts.Length < 3 || !byte.TryParse(parts[2], out byte idx))
                     return IpcProtocol.ErrInvalidFormat;
                 string? code = await _ble.GetOtpCodeAsync(idx);
@@ -444,16 +496,20 @@ public sealed class CommandHandlers
         }
     }
 
-    /// <summary>双主机槽位管理。</summary>
+    /// <summary>
+    /// 双主机槽位管理。
+    /// 注意：连接检查按子命令分别做——CLEAROWN 在设备不在线时也必须可用（只清本地绑定），
+    /// 否则本机会被旧绑定卡死、无法改配新设备。
+    /// </summary>
     private async Task<string> HandleSlotAsync(string[] parts)
     {
         if (parts.Length < 2) return IpcProtocol.ErrInvalidFormat;
-        if (!_ble.IsConnected) return IpcProtocol.ErrNotConnected;
 
         switch (parts[1])
         {
             case IpcProtocol.SlotStatus:
             {
+                if (!_ble.IsConnected) return IpcProtocol.ErrNotConnected;
                 var s = await _ble.GetHostSlotStatusAsync();
                 if (s is null) return IpcProtocol.Error;
                 var (supported, bitmap, active) = s.Value;
@@ -461,11 +517,19 @@ public sealed class CommandHandlers
             }
             case IpcProtocol.SlotClearOwn:
             {
-                bool ok = await _ble.ClearOwnSlotAsync();
-                return ok ? IpcProtocol.Ok : IpcProtocol.Reject;
+                // 不要求已连接：设备在线则通知设备清槽，不在线则只清本地绑定。
+                var res = await _ble.ClearOwnSlotAsync();
+                return res switch
+                {
+                    BleManager.ClearOwnResult.ClearedOnDevice => $"{IpcProtocol.Ok}:DEVICE",
+                    BleManager.ClearOwnResult.ClearedLocalOnly => $"{IpcProtocol.Ok}:LOCAL",
+                    _ => IpcProtocol.Reject,
+                };
             }
             case IpcProtocol.SlotClear:
             {
+                // 解绑「另一台」需要设备在线并过指纹门。
+                if (!_ble.IsConnected) return IpcProtocol.ErrNotConnected;
                 if (parts.Length < 3 || !byte.TryParse(parts[2], out byte slot))
                     return IpcProtocol.ErrInvalidFormat;
                 bool ok = await _ble.ClearOtherSlotAsync(slot);

@@ -16,6 +16,15 @@ using Serilog;
 //   可在 appsettings.json 的 "Immurok:LogDirectory" 覆盖路径，"Serilog:MinimumLevel" 调级别。
 //   控制台（F5 调试）模式下同时输出到控制台。
 
+// 卸载清理入口（MSI 在移除文件前以 SYSTEM 身份调用）。
+// 登录密码以 CRED_PERSIST_LOCAL_MACHINE 存在服务账户名下，卸载后不能留在系统里，
+// 而只有与写入方相同的身份才删得掉——所以这一步放在服务自身入口，不放外部脚本。
+// 不启动主机，删完即退。
+if (args.Contains("--clear-credential", StringComparer.OrdinalIgnoreCase))
+{
+    return CredentialStore.DeleteStored() ? 0 : 1;
+}
+
 var builder = Host.CreateApplicationBuilder(args);
 
 // 作为 Windows 服务运行（同时兼容控制台调试：直接 F5 运行即以控制台模式启动）。
@@ -68,6 +77,7 @@ builder.Services.AddSingleton<CredentialStore>();
 builder.Services.AddSingleton<BleManager>();
 builder.Services.AddSingleton<SessionMonitor>();
 builder.Services.AddSingleton<ScreenUnlocker>();
+builder.Services.AddSingleton<ScreenLocker>();
 builder.Services.AddSingleton<AppSettings>();
 builder.Services.AddSingleton<ImmurokService.Ssh.SshAgentServer>();
 builder.Services.AddSingleton<CommandHandlers>();
@@ -92,3 +102,7 @@ finally
 {
     Log.CloseAndFlush();
 }
+
+// 上面的 --clear-credential 分支用了 return，顶级语句的入口点因此返回 int，
+// 末尾必须显式返回，否则 CS0161（并非所有代码路径都返回值）。
+return 0;

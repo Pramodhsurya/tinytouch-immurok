@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using ImmurokClient.Views;
 using Microsoft.Win32;
 using Wpf.Ui.Appearance;
@@ -29,10 +32,40 @@ public partial class MainWindow : FluentWindow
         ApplicationThemeManager.Changed += OnThemeChanged;
 
         UpdateAppIcon();
+
+        // 切换 tab 时右侧面板回到顶部（NavigationView 的内容宿主 ScrollViewer 会保留上一页偏移）。
+        RootNavigation.Navigated += (_, _) =>
+            // 延到布局完成后再复位，确保新页面与其 ScrollViewer 已就位。
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(ResetContentScroll));
+
         RootNavigation.Navigate(typeof(DevicePage));
     }
 
     private void OnThemeChanged(ApplicationTheme currentTheme, Color accent) => UpdateAppIcon();
+
+    /// <summary>
+    /// 把 NavigationView 内所有 ScrollViewer 复位到顶部。左侧导航面板项少不滚动，
+    /// 复位无副作用；真正生效的是承载右侧页面内容的那个宿主 ScrollViewer。
+    /// </summary>
+    private void ResetContentScroll()
+    {
+        foreach (var sv in FindScrollViewers(RootNavigation))
+        {
+            sv.ScrollToVerticalOffset(0);
+            sv.ScrollToHorizontalOffset(0);
+        }
+    }
+
+    private static IEnumerable<ScrollViewer> FindScrollViewers(DependencyObject root)
+    {
+        int n = VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < n; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is ScrollViewer sv) yield return sv;
+            foreach (var nested in FindScrollViewers(child)) yield return nested;
+        }
+    }
 
     /// <summary>logo 跟随主题：暗色用白色版，亮色用黑色版。同时更新标题栏与任务栏图标。</summary>
     private void UpdateAppIcon()

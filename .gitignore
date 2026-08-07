@@ -11,5 +11,9 @@ Release/
 packages/
 *.nupkg
 
+# 打包：逐架构暂存目录与产物
+packaging/stage*/
+packaging/out/
+
 # 其他
 *.log

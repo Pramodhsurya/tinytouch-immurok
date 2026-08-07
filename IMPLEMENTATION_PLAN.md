@@ -11,16 +11,16 @@
 
 | 决策项 | 结论 | 一句话理由 |
 |--------|------|-----------|
-| 托管组件运行时 | **.NET 8（LTS）** | immurok 的 IPC 是文本协议、不依赖 BinaryFormatter，因此没有把托管侧钉在 .NET Framework 4.8 的理由；.NET 8 是 LTS，更适合长期维护的安全产品 |
-| 屏幕解锁 | **C++ Credential Provider + 命名管道**（基于微软官方 CP 示例原理） | Windows 锁屏在 Secure Desktop，拒绝 HID 注入；只有 CP 能在 LogonUI 里提交凭据 |
-| BLE 协议 | **完整复刻 immurok 自有协议**（GATT UUID/命令枚举/HKDF-HMAC 与固件一致） | 设备是 immurok 自有硬件——解锁走标准 Credential Provider 原理，BLE 栈完整复刻固件协议 |
+| 托管组件运行时 | **.NET 8（LTS）** | immurok 的 IPC 是文本协议、不依赖 BinaryFormatter，因此 Sparkin 留在 .NET Framework 4.8 的主要理由不成立；.NET 8 是 LTS，更适合长期维护的安全产品 |
+| 屏幕解锁 | **C++ Credential Provider + 命名管道**（照搬 Sparkin 原理） | Windows 锁屏在 Secure Desktop，拒绝 HID 注入；只有 CP 能在 LogonUI 里提交凭据 |
+| BLE 协议 | **完整复刻 immurok 自有协议**（GATT UUID/命令枚举/HKDF-HMAC 与固件一致） | 设备是 immurok，不是 Sparkin 的设备——只借鉴 Sparkin 的"解锁原理"，不借鉴它的 BLE 栈 |
 | 客户端 UI | **WPF + Fluent（WPF-UI / lepoco.wpfui）** | 用户选定 Windows 原生 Fluent 风格；WPF-UI 提供 WinUI 观感且原生支持 .NET 8 |
-| IPC | 命名管道，两条：Client↔Service（文本协议，复用 macOS）+ Service↔CP（原始 UTF-16 用户名/密码） | 前者复用成熟文本协议、跨语言友好；后者与 CP 的 C++ 读取逻辑严格对齐 |
+| IPC | 命名管道，两条：Client↔Service（文本协议，复用 macOS）+ Service↔CP（原始 UTF-16 用户名/密码，照搬 Sparkin） | 前者复用成熟文本协议、跨语言友好；后者与 CP 的 C++ 读取逻辑严格对齐 |
 | 密钥存储 | DPAPI（LocalMachine）+ Windows Credential Manager | Windows 平台标准安全存储，替代 macOS Keychain |
 
-**为什么不选 .NET Framework 4.8**：解锁的核心是 **C++ 的 Credential Provider DLL + 命名管道握手**，这部分与托管侧 .NET 版本完全无关。托管侧唯一可能把人钉在 4.8 的理由是 `BinaryFormatter` 序列化 IPC——但 immurok 的 IPC 本就是纯文本协议（`AUTH:user:service` → `OK`/`DENY`），直接复用 macOS 文本协议即可，根本用不到 `BinaryFormatter`。去掉这个约束后，.NET 8 在 WinRT BLE、Fluent UI（WPF-UI）、Windows Service 托管、长期支持上全面更优。
+**为什么不选 .NET Framework 4.8（尽管 Sparkin 用它）**：我们从 Sparkin 借鉴的是"解锁原理"，其核心是 **C++ 的 Credential Provider DLL + 命名管道握手**，这部分与托管侧 .NET 版本完全无关（C++ 代码原样移植）。而 Sparkin 托管侧唯一强绑定 4.8 的地方是 `BinaryFormatter` 序列化 IPC——immurok 的 IPC 本就是纯文本协议（`AUTH:user:service` → `OK`/`DENY`），我们直接复用 macOS 文本协议即可，根本用不到 `BinaryFormatter`。去掉这个约束后，.NET 8 在 WinRT BLE、Fluent UI（WPF-UI）、Windows Service 托管、长期支持上全面更优。
 
-> 注：Credential Provider 必须是 C++/COM，**无论托管侧选哪个 .NET 版本都一样**。所以"标准 CP 解锁原理"这一硬要求，在 .NET 8 方案下 100% 满足。
+> 注：Credential Provider 必须是 C++/COM，**无论托管侧选哪个 .NET 版本都一样**。所以"跟随 Sparkin 的解锁原理"这一硬要求，在 .NET 8 方案下 100% 满足。
 
 ---
 
@@ -62,7 +62,7 @@ immurok 是一套蓝牙指纹认证系统（CH592F + R559S 指纹传感器），
 │  ImmurokService (Windows Service, .NET 8)  │  核心：WinRT BLE、安全协议、密钥、锁屏检测
 │    Ble / Security / Ipc / System           │  运行于 Session 0，随开机自启
 └───────┬───────────────────────────────────┘
-        │  命名管道  \\.\pipe\ImmurokCredentialProvider （原始 UTF-16 user+password）
+        │  命名管道  \\.\pipe\ImmurokCredentialProvider （原始 UTF-16 user+password，照搬 Sparkin）
 ┌───────▼───────────────────────────────────┐
 │  ImmurokCredentialProvider (C++/COM DLL)   │  运行于 LogonUI 进程，负责锁屏界面 & 提交凭据
 └────────────────────────────────────────────┘
@@ -92,7 +92,7 @@ ImmurokService  ◄────────────────────�
 12. 返回 CPGSR_RETURN_CREDENTIAL_FINISHED → 系统校验凭据 → 解锁成功
 ```
 
-> 该链路遵循微软官方 SampleHardwareEventCredentialProvider（MIT）的模式：CP 端命名管道监听（immurok 独立实现）+ Service 端写管道（`ScreenUnlocker.Unlock`）+ `CSampleCredential::GetSerialization`（微软示例的标准 KERB 序列化）三块。
+> 该链路与 SparkinWin 完全同构：Sparkin 的 `CPipeListener`（CP 端管道服务端）+ `ScreenUnlocker.Unlock`（Service 端写管道）+ `CSampleCredential::GetSerialization`（构造 KERB 凭据）是我们直接移植的三块。
 
 ---
 
@@ -191,7 +191,7 @@ AGENT_APPROVE:...         → OK | REJECT | DENY（本期可暂不实现）
 ```
 错误族：`ERROR:INVALID_FORMAT` / `ERROR:UNKNOWN_COMMAND` / `ERROR:NOT_CONNECTED` / `ERROR:OTA_NOT_AVAILABLE` / `ERROR:INVALID_SLOT` / `ERROR:HMAC_MISMATCH` 等。
 
-**CP 专用扩展**（Service↔CP 走独立管道，见 §5，不走本文本协议）：Service 直接写 `UTF-16 username\0 + password\0`。若后续需要 CP 主动查询状态，可加 `GETPASSWORD:username` / `WAITFP:timeout`，但**首版保持简单：Service 主动推送，CP 只读**。
+**CP 专用扩展**（Service↔CP 走独立管道，见 §5，不走本文本协议）：Service 直接写 `UTF-16 username\0 + password\0`。若后续需要 CP 主动查询状态，可加 `GETPASSWORD:username` / `WAITFP:timeout`，但**首版按 Sparkin 原样：Service 主动推送，CP 只读**。
 
 ### 3.8 OTA 子协议（复用 macOS，`PAMSocketServer.swift:879+`）
 ```
@@ -206,27 +206,27 @@ OTA:END     → 收尾/跳转
 
 ---
 
-## 4. 解锁机制详解（基于微软官方 CP 示例，逐块说明）
+## 4. 解锁机制详解（照搬 SparkinWin 原理，逐块对应）
 
-### 4.1 三块实现对照
+### 4.1 三块移植对照
 
-| 机制 | 作用 | immurok 实现 | 来源 |
-|------|------|-------------|------|
-| CP 端命名管道监听 | 起命名管道服务端，读 user/password | `ImmurokCredentialProvider/CPipeListener.cpp` | immurok 独立实现（Apache 2.0） |
-| `CSampleCredential::GetSerialization` | 用 user/password 构造 `KERB_INTERACTIVE_UNLOCK_LOGON` 提交 | `ImmurokCredentialProvider/CSampleCredential.cpp` | 微软 CP 示例（MIT），改 CLSID |
-| `CSampleProvider::OnUnlockingStatusChanged` | 收到凭据后调 `CredentialsChanged` 触发 LogonUI 重枚举 | `ImmurokCredentialProvider/CSampleProvider.cpp` | 微软 CP 示例（MIT） |
-| Service 端写管道 | `WriteFile` 写 UTF-16 user+password | `ImmurokService/System/ScreenUnlocker.cs` | 标准 Win32 P/Invoke |
+| Sparkin 源 | 作用 | Windows/immurok 对应 |
+|-----------|------|----------------------|
+| `SparkinCredentialProvider/CPipeListener.cpp` | CP 端起命名管道服务端，阻塞读 user/password | `ImmurokCredentialProvider/PipeListener.cpp` |
+| `SparkinCredentialProvider/CSampleCredential.cpp::GetSerialization` | 用 user/password 构造 `KERB_INTERACTIVE_UNLOCK_LOGON` 提交 | 原样移植，改 CLSID |
+| `SparkinCredentialProvider/CSampleProvider.cpp::OnUnlockingStatusChanged` | 收到凭据后调 `CredentialsChanged` 触发 LogonUI 重枚举 | 原样移植 |
+| `SparkinLib/ScreenUnlocker.cs::Unlock` | Service 端连管道、`WriteFile` 写 UTF-16 user+password | `ImmurokService/System/ScreenUnlocker.cs` |
 
 ### 4.2 CP 端要点（C++/ATL）
 - 管道名：`\\.\pipe\ImmurokCredentialProvider`，`CreateNamedPipe(PIPE_ACCESS_INBOUND, PIPE_TYPE_MESSAGE|PIPE_READMODE_MESSAGE|PIPE_WAIT, PIPE_UNLIMITED_INSTANCES, ...)`。
-- **ACL**：当前给 Everyone（NULL DACL）。⚠️ 安全收紧建议见 §11——生产版应把管道 ACL 限到 `SYSTEM`（Service 以 LocalSystem 运行）以防本地提权面。
-- 读到 user/password（UTF-16，含 `\0`）后置 `_fReady=TRUE`，调 `OnUnlockingStatusChanged`。
-- `SetUsageScenario` 只在 `CPUS_LOGON` / `CPUS_UNLOCK_WORKSTATION` 创建 credential + 启动 PipeListener（沿用微软示例的生命周期）。
+- **ACL**：给 Everyone `GENERIC_ALL`（Sparkin 做法）。⚠️ 安全收紧建议见 §11——首版可照搬，但生产版应把管道 ACL 限到 `SYSTEM`（Service 以 LocalSystem 运行）以防本地提权面。
+- 读到 user/password（UTF-16，含 `\0`）后置 `_fUnlocked=TRUE`，调 `OnUnlockingStatusChanged`。
+- `SetUsageScenario` 只在 `CPUS_LOGON` / `CPUS_UNLOCK_WORKSTATION` 创建 credential + 启动 PipeListener（Sparkin 逻辑）。
 - `GetSerialization`：`KerbInteractiveUnlockLogonInit` → `Pack` → `RetrieveNegotiateAuthPackage` → 设 `clsidCredentialProvider = CLSID_ImmurokProvider` → `CPGSR_RETURN_CREDENTIAL_FINISHED`。
 - 失败时 `ReportResult` 清空密码字段。
 
 ### 4.3 CP 注册（注册表）
-新生成一个**唯一 CLSID**（用 `uuidgen` 独立生成，记为 `CLSID_ImmurokProvider`）：
+新生成一个**唯一 CLSID**（勿复用 Sparkin 的 `{101A04BB-...}`；用 `uuidgen` 生成，记为 `CLSID_ImmurokProvider`）：
 ```
 [HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{CLSID_ImmurokProvider}]
 @="ImmurokCredentialProvider"
@@ -239,7 +239,7 @@ OTA:END     → 收尾/跳转
 提供 `Register.reg` / `Unregister.reg`（放 `ImmurokCredentialProvider/`），安装器写入、卸载器删除。
 
 ### 4.4 Service 端触发要点
-- 锁屏检测：`WTSGetActiveConsoleSessionId` + 会话锁状态；或监听 `SessionSwitchReason.SessionLock/SessionUnlock`。⚠️ Service 在 Session 0 收不到交互会话的 `SystemEvents.SessionSwitch`，需用 `WTSRegisterSessionNotification`（配合隐藏消息窗）或轮询锁屏状态（本项目用 `WTSQuerySessionInformation` 查 `WTSSessionInfoEx`，见 `SessionMonitor.cs`）。
+- 锁屏检测：`WTSGetActiveConsoleSessionId` + 会话锁状态；或监听 `SessionSwitchReason.SessionLock/SessionUnlock`。⚠️ Service 在 Session 0 收不到交互会话的 `SystemEvents.SessionSwitch`，需用 `WTSRegisterSessionNotification`（配合隐藏消息窗）或轮询 `IsSystemLocked`（Sparkin 用 `Utils.IsSystemLocked()` 轮询，可照搬）。
 - 收到 0x21 且验签通过且判定锁屏 → 取用户名（当前控制台会话用户）+ DPAPI 密码 → `ScreenUnlocker.Unlock(user, password)`。
 - **主动触发/预授权**：与 macOS 的 pre-auth 一致——若指纹先到、CP 还没准备好，可置 pre-auth 标志，CP 侧一连上就推送。
 
@@ -286,7 +286,7 @@ app-win/
 │   │   └── CommandHandlers.cs       # STATUS/AUTH/FP:*/OTA:* 分发
 │   ├── System/
 │   │   ├── SessionMonitor.cs        # 锁屏检测（WTS/轮询，§4.4）
-│   │   ├── ScreenUnlocker.cs        # 写 CP 管道（P/Invoke WaitNamedPipe/CreateFile/WriteFile）
+│   │   ├── ScreenUnlocker.cs        # ← Sparkin ScreenUnlocker.cs：写 CP 管道
 │   │   ├── HostId.cs                # Machine GUID → 16B（§7）
 │   │   └── PowerManager.cs          # 休眠/唤醒重连
 │   ├── Ota/
@@ -296,12 +296,12 @@ app-win/
 │
 ├── ImmurokCredentialProvider/       # Credential Provider (C++/ATL, x64)
 │   ├── ImmurokCredentialProvider.vcxproj
-│   ├── dllmain.cpp / Dll.cpp / *.def # ← 微软 CP 示例 Dll.cpp / .def
+│   ├── dllmain.cpp / Dll.cpp / *.def # ← Sparkin Dll.cpp / .def
 │   ├── guid.h / guid.cpp            # 新 CLSID_ImmurokProvider（uuidgen 生成）
-│   ├── CSampleProvider.{h,cpp}      # ← 微软 CP 示例：ICredentialProvider(2)
-│   ├── CSampleCredential.{h,cpp}    # ← 微软 CP 示例：GetSerialization/KERB
-│   ├── CPipeListener.{h,cpp}        # CP 端管道服务端（immurok 独立实现）
-│   ├── helpers.{h,cpp} / common.h / guid… # ← 微软 CP 示例辅助
+│   ├── ImmurokProvider.{h,cpp}      # ← CSampleProvider：ICredentialProvider(2)
+│   ├── ImmurokCredential.{h,cpp}    # ← CSampleCredential：GetSerialization/KERB
+│   ├── PipeListener.{h,cpp}         # ← CPipeListener：CP 端管道服务端
+│   ├── helpers.{h,cpp} / common.h / guid… # ← Sparkin 辅助
 │   ├── resources.rc / tileimage.bmp # 磁贴图（换 immurok 图标）
 │   ├── Register.reg / Unregister.reg
 │   └── readme.txt
@@ -334,10 +334,10 @@ app-win/
 | `Ble/BleManager.cs` | `BLEManager.swift`（109KB，最核心） | 用 `Windows.Devices.Bluetooth.*` WinRT。扫描→匹配 Service UUID→`GetGattServicesAsync`→拿 CMD(写)/RSP(通知)→`WriteValueAsync`/`ValueChanged`。连接参数协商注意 §11。 |
 | `Security/ImmurokSecurity.cs` | `ImmurokSecurity.swift` | §3.6 参数逐字节对齐；compressed 公钥解压需 BouncyCastle。 |
 | `Ipc/PipeServer.cs` | `PAMSocketServer.swift` | 文本协议原样；`NamedPipeServerStream`（`PipeSecurity` 限当前用户）。 |
-| `System/ScreenUnlocker.cs` | —（Windows 特有） | P/Invoke `WaitNamedPipe/CreateFile/WriteFile`，写 UTF-16 user+password。 |
+| `System/ScreenUnlocker.cs` | Sparkin `ScreenUnlocker.cs` | P/Invoke `WaitNamedPipe/CreateFile/WriteFile`，写 UTF-16 user+password。 |
 | `Worker.cs` | `AppDelegate.swift` | 编排：启动 BLE、起管道服务端、注册会话监听、处理 0x21→解锁/AUTH。 |
-| `CSampleCredential.cpp` | 微软 CP 示例 `CSampleCredential.cpp`（MIT） | `GetSerialization` 构造 KERB。 |
-| `CPipeListener.cpp` | —（immurok 独立实现） | CP 端命名管道服务端。 |
+| `ImmurokCredential.cpp` | Sparkin `CSampleCredential.cpp` | `GetSerialization` 构造 KERB。 |
+| `PipeListener.cpp` | Sparkin `CPipeListener.cpp` | CP 端管道服务端。 |
 
 ---
 
@@ -375,16 +375,25 @@ app-win/
 
 ## 8. IPC 序列化说明（为什么不用 BinaryFormatter）
 
-一些 CP 解锁实现的 Client↔Service 管道用 `BinaryFormatter` 序列化对象。immurok 的 IPC 本是**文本行协议**（§3.7），我们直接复用：
-- 帧格式建议：`4字节小端长度 + UTF-8 文本`（长度前缀 + 文本 payload，非二进制对象），避免 `BinaryFormatter`（.NET 8 已移除且不安全）。
+Sparkin 的 Client↔Service 管道用 `BinaryFormatter` 序列化 `PipeMessage`。immurok 的 IPC 本是**文本行协议**（§3.7），我们直接复用：
+- 帧格式建议：`4字节小端长度 + UTF-8 文本`（与 Sparkin 的长度前缀思路一致，但 payload 是文本而非二进制对象），避免 `BinaryFormatter`（.NET 8 已移除且不安全）。
 - OTA 的二进制块用 base64 内嵌进文本命令（macOS 已如此，§3.8）。
-- Service↔CP 管道**不用**这套：直接写裸 UTF-16 user/password。
+- Service↔CP 管道**不用**这套：按 Sparkin 原样写裸 UTF-16 user/password。
 
 ---
 
 ## 9. 打包与安装
 
-- **安装器**：推荐 **Inno Setup**（免费、脚本简单）或 WiX（MSI，企业友好）。首版 Inno Setup。
+- **安装器**：**Inno Setup**（已落地，见 `packaging/`）。选型过程中排除了另两条路：
+  - **MSIX 不可行**：它禁止「由包外进程在进程内加载的扩展」，而 Credential Provider
+    正是被 `LogonUI.exe` 进程内加载的 COM DLL；且禁止写 HKLM，而 CP 必须注册在那里。
+  - **WiX 有许可成本**：v6 起适用 Open Source Maintenance Fee，v7 更是不接受条款就无法
+    执行任何命令。Inno 免费且无此机制。
+- **架构**：x64 与 arm64 **各出一个独立安装包**，不能合并 —— Windows 不允许跨架构在同一
+  进程内加载 DLL，ARM64 机器上的原生 `LogonUI` 必须配原生 ARM64 的 CP。x64 包在 ARM64
+  上会拒装并提示改用 arm64 包（否则其余功能靠模拟正常运行，唯独解锁静默失效）。
+- **CRT**：CP 用 `/MT` 静态链接。默认的 `/MD` 会依赖 VC++ 运行库，而安装包不分发它，
+  目标机缺库时 LogonUI 加载失败、同样表现为解锁静默失效。
 - 安装步骤：
   1. 拷贝 `ImmurokService.exe`、`ImmurokClient.exe`、`ImmurokCredentialProvider.dll`、依赖到 `C:\Program Files\immurok\`。
   2. 注册 Service：`sc create ImmurokService binPath= "...\ImmurokService.exe" start= auto obj= LocalSystem`（或安装器原生服务支持）。
@@ -419,8 +428,8 @@ app-win/
 5. **验证**：完成配对；触摸设备 → 0x21 HMAC 验证通过；录入/删除指纹可用。
 
 ### 阶段 3：Credential Provider 解锁（2–3 周，VM 中）
-1. 基于微软官方 CP 示例搭 C++ CP，换 CLSID 与磁贴图。
-2. 实现 `CPipeListener`（独立）+ `GetSerialization` + `OnUnlockingStatusChanged`（微软示例）。
+1. 基于 Sparkin/微软官方示例搭 C++ CP，换 CLSID 与磁贴图。
+2. 移植 `PipeListener` + `GetSerialization` + `OnUnlockingStatusChanged`。
 3. Service 侧 `SessionMonitor` + `ScreenUnlocker` 打通触发。
 4. **验证**：锁屏 → 选 immurok 磁贴 → 触摸指纹 → 解锁。始终保留密码登录后备。
 
@@ -445,7 +454,7 @@ app-win/
 1. **Session 0 里 WinRT BLE 可用性（最高风险）**：Windows Service 运行在 Session 0，WinRT `Windows.Devices.Bluetooth` 在无交互会话/无包身份（unpackaged）下可能受限或需要额外 COM 初始化。**必须在阶段1最早验证**。缓解：`WinRT.Runtime` + 正确的 `[STAThread]`/COM apartment；若不可行，退路是把 BLE 逻辑放进一个随登录运行的用户态 broker 进程、Service 仅做锁屏时的中转（但会牺牲"未登录也连"能力，需与产品确认）。
 2. **CP 调试致命性**：CP 崩溃/异常会让 LogonUI 无法登录。全程在快照可回滚的 VM 中开发；保留内置密码 CP 作后备；先跑通微软官方 `V2 sample` 再改。
 3. **BLE HID 独占**：设备是 HID 键盘（连接锚点）+ 自定义 GATT。Windows HID 驱动可能独占，需验证 WinRT 能否同时访问自定义 GATT 特征。缓解：测试是否需要以非独占方式打开、或设备是否对 Windows 暴露 GATT。
-4. **管道 ACL 提权面**：CP 管道当前 Everyone 可写（NULL DACL）——任意本地进程都能往里写 user/password 触发解锁尝试。**生产版应收紧**：CP 管道 ACL 限 `SYSTEM`（Service 以 LocalSystem 连接），Client↔Service 管道限当前登录用户 SID。硬化列入阶段5。
+4. **管道 ACL 提权面**：Sparkin 给 CP 管道 Everyone 可写——任意本地进程都能往里写 user/password 触发解锁尝试。**生产版应收紧**：CP 管道 ACL 限 `SYSTEM`（Service 以 LocalSystem 连接），Client↔Service 管道限当前登录用户 SID。首版可先照搬跑通，硬化列入阶段5。
 5. **UAC 提权 vs 锁屏解锁**：第三方 CP 能接管**登录/解锁**，但**无法接管 UAC 同意框**（`consent.exe` 只认内置凭据 UI）。所以 macOS 的"指纹替代 sudo/权限框"在 Windows 上只能覆盖到登录/解锁场景。需向产品明确 Windows 版权限授权的边界。
 6. **单设备配对**：固件只允许一台主机配对，macOS/Windows 不能同时用同一设备。测试时注意先在设备上复位（enroll 存在时 pairInit 返回 `0xF1 errNeedsReset`）。
 7. **compressed 公钥解压**：.NET BCL 不直接吃 compressed 点，引入 BouncyCastle 仅做解压；写单测确保与 macOS CryptoKit 产出的 shared_key 一致。
@@ -474,7 +483,7 @@ app-win/
 
 1. **BLE 承载进程**：确认接受 Service(Session 0) 直连 BLE 的方案（换取"未登录也维持连接"），还是允许退化为用户态 broker？（取决于阶段1 §11-1 验证结果）
 2. **权限授权边界**：Windows 版是否只承诺"锁屏/登录解锁"，明确不覆盖 UAC 提权？（§11-5）
-3. **安装器**：Inno Setup（首选）还是 WiX/MSI（企业）？
+3. ~~**安装器**：Inno Setup（首选）还是 WiX/MSI（企业）？~~ → 已定：Inno Setup（见 §9）。
 4. **本期范围**：是否同意把 SSH/TOTP/API vault/AI-agent 授权全部后置（§12）？
 5. **代码签名**：是否已有可用的 Authenticode 证书用于 CP/Service 签名？
 
@@ -487,5 +496,5 @@ app-win/
 - `app-macos/Sources/PAMSocketServer.swift` — IPC 文本协议定义（§3.7/§3.8 已提取）
 - `app-macos/Sources/AppDelegate.swift` — 指纹匹配后的业务分派（PAM vs 解锁 vs pre-auth），`Worker.cs` 参照
 - `app-macos/Sources/FirmwareUpdateService.swift` + `FirmwareUpdateKit/` — OTA 引擎参照
-- 微软官方 Credential Provider 示例（MIT，github.com/microsoft/Windows-classic-samples）— CP 骨架与 `GetSerialization` 的参照；命名管道监听（`CPipeListener.cpp`）为 immurok 独立实现。
+- SparkinWin（github.com/Tomosawa/MYNOVA-Sparkin，`SparkinWin/`）— 解锁原理三块移植源：`CPipeListener.cpp` / `CSampleCredential.cpp` / `ScreenUnlocker.cs`
 - 历史 `windows/ARCHITECTURE.md` — 早期规划，方向正确，但 GATT UUID / HKDF 参数为占位值，**以本文档 §3 为准**。

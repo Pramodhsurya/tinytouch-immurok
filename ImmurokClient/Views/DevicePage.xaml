@@ -44,7 +44,7 @@
                         <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Desktop24" FontSize="18" Margin="0,0,8,0" />
                         <TextBlock Text="{loc:Tr device.dual}" FontWeight="SemiBold" VerticalAlignment="Center" />
                     </StackPanel>
-                    <TextBlock Text="{loc:Tr device.dual.desc}"
+                    <TextBlock x:Name="DualDesc" Text="{loc:Tr device.dual.desc}"
                                Opacity="0.6" FontSize="12" Margin="0,0,0,10" TextWrapping="Wrap" />
 
                     <Border x:Name="Slot1Row" CornerRadius="6" Padding="12,8" Margin="0,0,0,6"

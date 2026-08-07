@@ -129,8 +129,21 @@ public sealed class PipeClient
         }
     }
 
+    /// <summary>删除指纹（设备端要过 30s 指纹门，故本地超时留出余量）。</summary>
     public Task<string?> FpDeleteAsync(byte slot, CancellationToken ct = default)
-        => SendAsync($"{IpcProtocol.Fp}:{IpcProtocol.FpDelete}:{slot}", timeoutMs: 30000, ct: ct);
+        => SendAsync($"{IpcProtocol.Fp}:{IpcProtocol.FpDelete}:{slot}", timeoutMs: 40000, ct: ct);
+
+    /// <summary>读功能开关 -> OK:&lt;unlock&gt;:&lt;lock&gt;:&lt;ssh&gt;:&lt;agent&gt;:&lt;otp&gt;（各 0/1）。</summary>
+    public Task<string?> FeatureGetAsync(CancellationToken ct = default)
+        => SendAsync($"{IpcProtocol.Feature}:{IpcProtocol.FeatureGet}", ct: ct);
+
+    /// <summary>写功能开关。ssh 会连带启停 agent，故留长一点超时。</summary>
+    public Task<string?> FeatureSetAsync(string name, bool on, CancellationToken ct = default)
+        => SendAsync($"{IpcProtocol.Feature}:{IpcProtocol.FeatureSet}:{name}:{(on ? 1 : 0)}", timeoutMs: 20000, ct: ct);
+
+    /// <summary>取消进行中的指纹门（认证弹窗点「取消」）。</summary>
+    public Task<string?> CancelGateAsync(CancellationToken ct = default)
+        => SendAsync(IpcProtocol.CancelGate, timeoutMs: 5000, ct: ct);
 
     public Task<string?> PassStatusAsync(CancellationToken ct = default)
         => SendAsync($"{IpcProtocol.Pass}:{IpcProtocol.PassStatus}", ct: ct);

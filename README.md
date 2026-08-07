@@ -9,10 +9,6 @@ Windows client for the immurok Bluetooth fingerprint authentication system. Pair
 
 For the macOS client see [`app-macos`](https://github.com/immurok/app-macos); both share the same BLE GATT protocol and firmware.
 
-## Screenshot
-
-![immurok Windows client — Device page](docs/screenshot-device.png)
-
 ## Components
 
 | Project | Language | Description |
@@ -51,7 +47,7 @@ Requires administrator privileges. **A crashing Credential Provider can lock you
 
 ## Status
 
-**Current version: 0.1.0-alpha.** An early preview — interfaces and protocols may change, and it is not yet recommended for production use. The BLE stack, security layer, and IPC are functional at their core; the Credential Provider and client UI are still being refined. See IMPLEMENTATION_PLAN.md for details.
+**Current version: 0.2.0.** An early preview — interfaces and protocols may change, and it is not yet recommended for production use. The BLE stack, security layer, and IPC are functional at their core; the Credential Provider and client UI are still being refined. See IMPLEMENTATION_PLAN.md for details.
 
 ## Acknowledgments
 
@@ -70,4 +66,4 @@ Key third-party libraries:
 
 Licensed under the [Apache License 2.0](./LICENSE).
 
-Most of the C++ Credential Provider (`CSampleProvider`, `CSampleCredential`, `Dll`, `helpers`, `common.h`) is derived from Microsoft's official Credential Provider sample (MIT-licensed) and retains its original copyright headers; `CPipeListener.{cpp,h}` is original immurok code under Apache 2.0. Full third-party attributions, including the MIT license text and NuGet dependency licenses, are in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+The C++ code under `ImmurokCredentialProvider/` is derived from Microsoft's official Credential Provider sample (MIT-licensed); those files retain their original copyright headers.

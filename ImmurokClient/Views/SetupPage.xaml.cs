@@ -48,10 +48,12 @@ public partial class SetupPage : Page
     }
 
     private bool _loading;
+    private bool _configured;
 
     private async System.Threading.Tasks.Task RefreshAsync()
     {
         string? r = await AppServices.Pipe.PassStatusAsync();
+        _configured = r?.Contains("CONFIGURED") == true;
         PassStateText.Text = r switch
         {
             var s when s?.Contains("CONFIGURED") == true => T("msg.setup.pass_configured"),
@@ -60,10 +62,29 @@ public partial class SetupPage : Page
             _ => T("msg.setup.pass_status", r),
         };
 
+        // 已配置：显示隐藏的清除按钮（悬停才可见）；未配置：始终显示设置按钮。
+        ClearBtn.Visibility = _configured ? Visibility.Visible : Visibility.Collapsed;
+        SetBtn.Visibility = _configured ? Visibility.Collapsed : Visibility.Visible;
+        UpdateClearButtonReveal(PassStatusRow.IsMouseOver);
+
         _loading = true;
         string? sa = await AppServices.Pipe.SshAgentStatusAsync();
         SshAgentToggle.IsChecked = sa?.Contains("ON") == true;
         _loading = false;
+    }
+
+    /// <summary>
+    /// 已配置时，清除按钮随「状态整行」的悬停淡入淡出（并同步命中测试，避免误点隐藏按钮）。
+    /// 悬停区是包住整行的透明 Border，按钮本身也在其中，所以从文字移到按钮上不会中断。
+    /// </summary>
+    private void OnPassRowHover(object sender, System.Windows.Input.MouseEventArgs e)
+        => UpdateClearButtonReveal(PassStatusRow.IsMouseOver);
+
+    private void UpdateClearButtonReveal(bool hovering)
+    {
+        if (!_configured) { ClearBtn.Opacity = 0; ClearBtn.IsHitTestVisible = false; return; }
+        ClearBtn.Opacity = hovering ? 1 : 0;
+        ClearBtn.IsHitTestVisible = hovering;
     }
 
     private async void OnSshAgentToggle(object sender, RoutedEventArgs e)
@@ -75,16 +96,12 @@ public partial class SetupPage : Page
         if (r != "OK") SshAgentHint.Text = T("common.op_fail", r ?? "");
     }
 
-    private async void OnSaveClick(object sender, RoutedEventArgs e)
+    private async void OnSetClick(object sender, RoutedEventArgs e)
     {
-        string pwd = PwdBox.Password;
-        if (string.IsNullOrEmpty(pwd))
-        {
-            PassHint.Text = T("msg.setup.need_pass");
-            return;
-        }
+        var (ok, pwd) = PasswordDialog.Show(Window.GetWindow(this), T("setup.pass.set"));
+        if (!ok || string.IsNullOrEmpty(pwd)) return;
+
         string? r = await AppServices.Pipe.PassSetAsync(Environment.UserName, pwd);
-        PwdBox.Clear();
         PassHint.Text = r == "OK" ? T("msg.setup.saved") : T("msg.setup.save_fail", r ?? "");
         await RefreshAsync();
     }

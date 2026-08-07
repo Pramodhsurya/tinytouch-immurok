@@ -25,22 +25,36 @@
             </ui:Card>
 
             <ui:Card Margin="0,0,0,14" Padding="18">
-                <StackPanel>
+                <StackPanel x:Name="PassCardPanel">
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                         <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Key24" FontSize="18" Margin="0,0,8,0" />
                         <TextBlock Text="{loc:Tr setup.pass.label}" FontWeight="SemiBold" VerticalAlignment="Center" />
                     </StackPanel>
                     <TextBlock Text="{loc:Tr setup.pass.desc}"
                                Opacity="0.6" FontSize="12" Margin="0,0,0,10" TextWrapping="Wrap" />
-                    <TextBlock x:Name="PassStateText" Text="{loc:Tr status.querying}" Margin="0,0,0,8" Opacity="0.85" />
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+
+                    <!-- 状态 + 操作：已配置时悬停显示清除；未配置时始终显示设置。
+                         整行套一层 Background="Transparent" 的 Border 当悬停区：
+                         StackPanel 默认 Background=null 不参与命中测试，鼠标走到
+                         文字与按钮之间的空隙时会「悬空」，IsMouseOver 变 false，
+                         按钮还没够到就先隐藏了。透明背景才会被命中测试。 -->
+                    <Border x:Name="PassStatusRow" Background="Transparent"
+                            Padding="0,3" Margin="0,0,0,8"
+                            MouseEnter="OnPassRowHover" MouseLeave="OnPassRowHover">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="PassStateText" Text="{loc:Tr status.querying}" VerticalAlignment="Center" Opacity="0.85" />
+                            <ui:Button x:Name="ClearBtn" Content="{loc:Tr common.clear}" Icon="{ui:SymbolIcon Delete24}"
+                                       Appearance="Secondary" Click="OnClearClick" Margin="12,0,0,0"
+                                       VerticalAlignment="Center" Visibility="Collapsed" Opacity="0" IsHitTestVisible="False" />
+                            <ui:Button x:Name="SetBtn" Content="{loc:Tr setup.pass.set}" Icon="{ui:SymbolIcon Key24}"
+                                       Appearance="Primary" Click="OnSetClick" Margin="12,0,0,0"
+                                       VerticalAlignment="Center" Visibility="Collapsed" />
+                        </StackPanel>
+                    </Border>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                         <TextBlock Text="{loc:Tr setup.pass.account}" VerticalAlignment="Center" Opacity="0.7" />
                         <TextBlock x:Name="UserText" Text="" VerticalAlignment="Center" FontWeight="SemiBold" />
-                    </StackPanel>
-                    <PasswordBox x:Name="PwdBox" Width="300" HorizontalAlignment="Left" Margin="0,0,0,10" />
-                    <StackPanel Orientation="Horizontal">
-                        <ui:Button Content="{loc:Tr setup.pass.save}" Icon="{ui:SymbolIcon Save24}" Click="OnSaveClick" Margin="0,0,8,0" />
-                        <ui:Button Content="{loc:Tr common.clear}" Icon="{ui:SymbolIcon Delete24}" Appearance="Secondary" Click="OnClearClick" />
                     </StackPanel>
                     <TextBlock x:Name="PassHint" Text="" Margin="0,8,0,0" Opacity="0.7" FontSize="12" />
                 </StackPanel>

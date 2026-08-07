@@ -6,4 +6,6 @@ namespace ImmurokClient.Services;
 public static class AppServices
 {
     public static PipeClient Pipe { get; } = new();
+
+    public static FirmwareUpdateService Firmware { get; } = new();
 }

@@ -21,15 +21,42 @@
             <ui:Card Padding="18">
                 <StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="ArrowUpload24" FontSize="18" Margin="0,0,8,0" />
+                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="ArrowSync24" FontSize="18" Margin="0,0,8,0" />
                         <TextBlock Text="{loc:Tr about.ota}" FontWeight="SemiBold" VerticalAlignment="Center" />
                     </StackPanel>
                     <TextBlock Text="{loc:Tr about.ota.desc}"
                                Opacity="0.6" FontSize="12" Margin="0,0,0,10" TextWrapping="Wrap" />
-                    <ui:Button x:Name="PickBtn" Content="{loc:Tr about.ota.pick}" Icon="{ui:SymbolIcon ArrowUpload24}" Click="OnOtaClick" />
+
+                    <!-- 当前 / 最新版本 -->
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="{loc:Tr about.ota.current}" Opacity="0.6" FontSize="12" />
+                            <TextBlock x:Name="CurrentVerText" Text="—" FontWeight="SemiBold" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="24,0,0,0">
+                            <TextBlock Text="{loc:Tr about.ota.latest}" Opacity="0.6" FontSize="12" />
+                            <TextBlock x:Name="LatestVerText" Text="—" FontWeight="SemiBold" Margin="0,2,0,0" />
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- 发布说明 -->
+                    <ui:InfoBar x:Name="NotesBar" Severity="Informational" IsOpen="False" IsClosable="False"
+                                Margin="0,4,0,8" Title="{loc:Tr about.ota.notes}" />
+
+                    <StackPanel Orientation="Horizontal">
+                        <ui:Button x:Name="CheckBtn" Content="{loc:Tr about.ota.check}" Icon="{ui:SymbolIcon ArrowSync24}"
+                                   Click="OnCheckClick" Margin="0,0,8,0" />
+                        <ui:Button x:Name="UpdateBtn" Content="{loc:Tr about.ota.update}" Icon="{ui:SymbolIcon ArrowDownload24}"
+                                   Appearance="Primary" Click="OnUpdateClick" Visibility="Collapsed" />
+                    </StackPanel>
+
                     <ProgressBar x:Name="OtaProgress" Height="6" Minimum="0" Maximum="100" Value="0"
                                  Visibility="Collapsed" Margin="0,12,0,4" />
-                    <TextBlock x:Name="OtaStatus" Text="" Opacity="0.8" FontSize="12" Margin="0,4,0,0" />
+                    <TextBlock x:Name="OtaStatus" Text="" Opacity="0.8" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap" />
                 </StackPanel>
             </ui:Card>
         </StackPanel>

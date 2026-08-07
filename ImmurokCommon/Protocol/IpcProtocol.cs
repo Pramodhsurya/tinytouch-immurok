@@ -18,6 +18,19 @@ public static class IpcProtocol
     public const string Key         = "KEY";           // KEY:LIST:<cat> | KEY:OTP:<idx> | KEY:DELETE:<cat>:<idx> | KEY:SSHPUB:<idx>
     public const string SshAgent    = "SSHAGENT";      // SSHAGENT:STATUS -> OK:ON|OFF ; SSHAGENT:ON|OFF -> OK
     public const string AgentApprove = "AGENT_APPROVE"; // 本期暂不实现
+    /// <summary>取消进行中的指纹门（认证弹窗点「取消」时用），让设备立刻停止闪灯等待。-&gt; OK</summary>
+    public const string CancelGate  = "CANCELGATE";
+    /// <summary>功能开关。FEATURE:GET -&gt; OK:&lt;unlock&gt;:&lt;lock&gt;:&lt;ssh&gt;:&lt;agent&gt;:&lt;otp&gt;（各 0/1）；FEATURE:SET:&lt;name&gt;:&lt;0|1&gt; -&gt; OK</summary>
+    public const string Feature     = "FEATURE";
+
+    // FEATURE 子命令与功能名
+    public const string FeatureGet    = "GET";
+    public const string FeatureSet    = "SET";
+    public const string FeatureUnlock = "unlock";
+    public const string FeatureLock   = "lock";
+    public const string FeatureSsh    = "ssh";
+    public const string FeatureAgent  = "agent";
+    public const string FeatureOtp    = "otp";
 
     // KEY 子命令（密钥库：cat 0=SSH 1=OTP 2=API）
     public const string KeyList   = "LIST";    // -> OK:<idx,b64name,b64extra>;...（extra=OTP服务/空）

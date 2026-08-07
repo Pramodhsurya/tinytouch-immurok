@@ -12,6 +12,13 @@ public sealed class OtaEngine
 {
     private const int ChunkSize = 240;         // ≤243 且 16B 对齐
     private const int ImageBBlocks = 54;       // 216KB / 4KB
+    /// <summary>
+    /// 每写多少个数据块插一次有响应写（顺序屏障 / 背压）。
+    /// 16 块 ≈ 3.9KB，把系统缓冲的排队深度钳在这个量级——即进度最多超前真实传输约 1.8%。
+    /// 216KB 全量约 900 块 → 约 56 次屏障，每次多一个连接间隔的往返，
+    /// 相对 70~80s 的传输开销可忽略。若实测偏慢可调大，进度粒度随之变粗。
+    /// </summary>
+    private const int SyncEvery = 16;
     private const uint Magic = 0x494D4657;     // "IMFW"
     private const int HeaderV1 = 96;
     private const int HeaderV2 = 128;
@@ -67,9 +74,13 @@ public sealed class OtaEngine
         if (hdrResp is null) return new(false, "HEADER 无响应");
         if (hdrResp.Length < 1 || hdrResp[0] != 0x00) return new(false, $"HEADER 被拒 0x{(hdrResp.Length > 0 ? hdrResp[0] : 0xFF):X2}（可能是硬件不符或版本反降级）");
 
-        // ---- 4. PROM 分块写（无响应）----
+        // ---- 4. PROM 分块写 ----
+        // 每 SyncEvery 块插一次有响应写作为顺序屏障（见 BleManager.OtaWriteChunkAsync）。
+        // 没有屏障时 WinRT 会把全部数据块瞬间吞进系统蓝牙缓冲、进度立刻冲到 100%，
+        // 而真实射频传输还要 70~80s；有了屏障，进度才跟得上实际传输。
         int total = encFw.Length;
         int offset = 0;
+        int sinceSync = 0;
         while (offset < total)
         {
             ct.ThrowIfCancellationRequested();
@@ -82,7 +93,12 @@ public sealed class OtaEngine
             cmd[2] = (byte)(addr & 0xFF);
             cmd[3] = (byte)((addr >> 8) & 0xFF);
             Array.Copy(encFw, offset, cmd, 4, len);
-            if (!await _ble.OtaWriteNoResponseAsync(cmd))
+
+            // 末块也同步，确保 END 之前队列已排空。
+            bool sync = ++sinceSync >= SyncEvery || end >= total;
+            if (sync) sinceSync = 0;
+
+            if (!await _ble.OtaWriteChunkAsync(cmd, sync))
                 return new(false, $"数据块写失败 @offset {offset}");
             offset = end;
             progress((double)offset / total);

@@ -113,10 +113,12 @@ public partial class KeysPage : Page
         {
             var codeText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0), FontFamily = new System.Windows.Media.FontFamily("Consolas") };
             var codeBtn = new Wpf.Ui.Controls.Button { Content = T("msg.keys.getcode"), MinWidth = 72, Margin = new Thickness(0, 0, 6, 0) };
-            codeBtn.Click += async (_, _) =>
+            // 认证窗内部同步阻塞（ShowDialog），这里不再需要 async。
+            codeBtn.Click += (_, _) =>
             {
-                StatusText.Text = T("msg.keys.getcode_prog");
-                string? cr = await AppServices.Pipe.KeyOtpAsync(e.Index);
+                string? cr = FpAuthDialog.Run(Window.GetWindow(this),
+                    T("msg.fpauth.otp_code", e.Name),
+                    () => AppServices.Pipe.KeyOtpAsync(e.Index));
                 if (cr is not null && cr.StartsWith(IpcProtocol.Ok))
                 {
                     string code = cr[(cr.IndexOf(IpcProtocol.Sep) + 1)..];
@@ -194,8 +196,11 @@ public partial class KeysPage : Page
         UpdateDelSelectedBtn();
         try
         {
-            StatusText.Text = T("keys.rename_prog");
-            string? r = await AppServices.Pipe.KeyUpdateAsync(cat, e.Index, name, isOtp ? svc.Trim() : "");
+            string svc2 = isOtp ? svc.Trim() : "";
+            string nm = name;
+            string? r = FpAuthDialog.Run(Window.GetWindow(this),
+                T("msg.fpauth.rename", e.Name),
+                () => AppServices.Pipe.KeyUpdateAsync(cat, e.Index, nm, svc2));
             StatusText.Text = r == IpcProtocol.Ok ? T("keys.rename_ok", name) : T("keys.rename_fail");
             await RefreshAsync();
         }
@@ -215,8 +220,9 @@ public partial class KeysPage : Page
         UpdateDelSelectedBtn();
         try
         {
-            StatusText.Text = T("msg.keys.del_prog", e.Name);
-            string? r = await AppServices.Pipe.KeyDeleteAsync(cat, e.Index);
+            string? r = FpAuthDialog.Run(Window.GetWindow(this),
+                T("msg.fpauth.key_delete", e.Name),
+                () => AppServices.Pipe.KeyDeleteAsync(cat, e.Index));
             StatusText.Text = r == IpcProtocol.Ok ? T("msg.keys.del_ok", e.Name) : T("msg.keys.del_fail");
             await RefreshAsync();
         }
@@ -236,17 +242,26 @@ public partial class KeysPage : Page
         UpdateDelSelectedBtn();
         try
         {
-            int done = 0, total = sel.Count;
-            // 同类内按索引降序删（固件 swap-delete：删高索引不影响低索引）。
-            foreach (var grp in sel.GroupBy(s => s.cat))
-            {
-                foreach (var (cat, idx) in grp.OrderByDescending(s => s.idx))
+            int total = sel.Count;
+            // 每删一项设备都要单独过一次指纹门，因此用一个认证窗贯穿全程，
+            // 每项开始时重置倒计时（step 回调），而不是弹 N 个窗。
+            int done = FpAuthDialog.RunSteps(Window.GetWindow(this),
+                T("msg.fpauth.key_delete_batch", 1, total),
+                async step =>
                 {
-                    StatusText.Text = T("keys.del_sel_prog", done + 1, total);
-                    string? r = await AppServices.Pipe.KeyDeleteAsync(cat, idx);
-                    if (r == IpcProtocol.Ok) done++;
-                }
-            }
+                    int n = 0, i = 0;
+                    // 同类内按索引降序删（固件 swap-delete：删高索引不影响低索引）。
+                    foreach (var grp in sel.GroupBy(s => s.cat))
+                    {
+                        foreach (var (cat, idx) in grp.OrderByDescending(s => s.idx))
+                        {
+                            step(T("msg.fpauth.key_delete_batch", ++i, total));
+                            string? r = await AppServices.Pipe.KeyDeleteAsync(cat, idx);
+                            if (r == IpcProtocol.Ok) n++;
+                        }
+                    }
+                    return n;
+                });
             _selected.Clear();
             StatusText.Text = T("keys.del_sel_done", done);
             await RefreshAsync();
@@ -272,8 +287,11 @@ public partial class KeysPage : Page
         UpdateDelSelectedBtn();
         try
         {
-            StatusText.Text = T("msg.keys.add_totp_prog");
-            string? r = await AppServices.Pipe.KeyAddOtpAsync(name, OtpService.Text.Trim(), secret);
+            string svcName = OtpService.Text.Trim();
+            string sec = secret;
+            string? r = FpAuthDialog.Run(Window.GetWindow(this),
+                T("msg.fpauth.key_add", name),
+                () => AppServices.Pipe.KeyAddOtpAsync(name, svcName, sec));
             if (r == IpcProtocol.Ok)
             {
                 StatusText.Text = T("msg.keys.add_totp_ok", name);
@@ -295,8 +313,10 @@ public partial class KeysPage : Page
         UpdateDelSelectedBtn();
         try
         {
-            StatusText.Text = T("msg.keys.add_api_prog");
-            string? r = await AppServices.Pipe.KeyAddApiAsync(name, value);
+            string val = value;
+            string? r = FpAuthDialog.Run(Window.GetWindow(this),
+                T("msg.fpauth.key_add", name),
+                () => AppServices.Pipe.KeyAddApiAsync(name, val));
             if (r == IpcProtocol.Ok)
             {
                 StatusText.Text = T("msg.keys.add_api_ok", name);
@@ -317,8 +337,10 @@ public partial class KeysPage : Page
         UpdateDelSelectedBtn();
         try
         {
-            StatusText.Text = T("msg.keys.gen_prog");
-            string? r = await AppServices.Pipe.KeySshGenAsync(name);
+            string kn = name;
+            string? r = FpAuthDialog.Run(Window.GetWindow(this),
+                T("msg.fpauth.ssh_gen", name),
+                () => AppServices.Pipe.KeySshGenAsync(kn));
             if (r is not null && r.StartsWith(IpcProtocol.Ok))
             {
                 string[] pp = r.Split(IpcProtocol.Sep);

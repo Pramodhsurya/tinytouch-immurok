@@ -16,6 +16,7 @@ public partial class FingerprintPage : Page
     private const byte SwitchSlot = 5;   // 切换指纹槽
     private bool _busy;
     private bool _switchEnrolled;
+    private int _enrolledCount; // 已登记的认证指纹数（>0 时录入前需先用旧指纹验证）
 
     public FingerprintPage()
     {
@@ -61,6 +62,7 @@ public partial class FingerprintPage : Page
             if (enrolled) count++;
             rows.Add(BuildRow((byte)i, enrolled));
         }
+        _enrolledCount = count;
         CountText.Text = T("msg.fp.count", count, AuthSlotCount);
         SlotPanel.ItemsSource = rows;
 
@@ -110,17 +112,28 @@ public partial class FingerprintPage : Page
     private async Task EnrollAsync(byte slot)
     {
         if (_busy) return;
+
+        // 设备上已有指纹时，固件会先要求用「已登记的手指」验证一次，通过后才开始采集新指纹。
+        // 不先说明的话，用户会在该换手指的时候继续按旧手指（对齐 macOS enroll.confirm.newfinger）。
+        if (_enrolledCount > 0)
+        {
+            var go = MessageBox.Show(
+                T("msg.enroll.newfinger_message"),
+                T("msg.enroll.newfinger_title"), MessageBoxButton.OKCancel, MessageBoxImage.Information);
+            if (go != MessageBoxResult.OK) return;
+        }
+
         _busy = true;
         try
         {
-            StatusText.Text = T("msg.fp.enroll_prep", slot);
-            string terminal = await AppServices.Pipe.EnrollStreamAsync(slot, frame =>
-                Dispatcher.Invoke(() => StatusText.Text = MapProgress(frame)));
+            string title = slot == SwitchSlot ? T("fp.switch") : T("msg.fp.slot", slot);
+            string terminal = EnrollDialog.Show(Window.GetWindow(this), slot, T("enroll.title") + " · " + title);
             StatusText.Text = terminal switch
             {
                 var s when s.Contains("COMPLETE") => T("msg.fp.enroll_ok", slot),
                 var s when s.Contains("TIMEOUT") => T("msg.fp.enroll_timeout"),
                 var s when s.Contains("NOT_CONNECTED") => T("common.dev_disconnected"),
+                "CANCELLED" => T("msg.enroll.cancelled"),
                 _ => T("msg.fp.enroll_fail", terminal),
             };
             await RefreshAsync();
@@ -134,8 +147,10 @@ public partial class FingerprintPage : Page
         _busy = true;
         try
         {
-            StatusText.Text = T("msg.fp.delete_prog", slot);
-            string? r = await AppServices.Pipe.FpDeleteAsync(slot);
+            // 删除指纹要在设备上过指纹门，弹认证窗（含 30s 倒计时）。
+            string? r = FpAuthDialog.Run(Window.GetWindow(this),
+                T("msg.fpauth.fp_delete", slot),
+                () => AppServices.Pipe.FpDeleteAsync(slot));
             StatusText.Text = r?.Contains("DELETED") == true ? T("msg.fp.delete_ok", slot) : T("common.delete_fail", r ?? "");
             await RefreshAsync();
         }
@@ -152,8 +167,9 @@ public partial class FingerprintPage : Page
             _busy = true;
             try
             {
-                StatusText.Text = T("msg.fp.switch_del_prog");
-                string? r = await AppServices.Pipe.FpDeleteAsync(SwitchSlot);
+                string? r = FpAuthDialog.Run(Window.GetWindow(this),
+                    T("msg.fpauth.fp_delete_switch"),
+                    () => AppServices.Pipe.FpDeleteAsync(SwitchSlot));
                 StatusText.Text = r?.Contains("DELETED") == true ? T("msg.fp.switch_del_ok") : T("common.delete_fail", r ?? "");
                 await RefreshAsync();
             }
@@ -163,22 +179,6 @@ public partial class FingerprintPage : Page
         {
             await EnrollAsync(SwitchSlot);
         }
-    }
-
-    private static string MapProgress(string frame)
-    {
-        string[] p = frame.Split(':');
-        string ev = p.Length > 1 ? p[1] : "";
-        string step = (p.Length > 3 && p[3] != "0") ? T("msg.fp.enr.step", p[2], p[3]) : "";
-        return ev switch
-        {
-            "Waiting"    => T("msg.fp.enr.waiting", step),
-            "Captured"   => T("msg.fp.enr.captured", step),
-            "LiftFinger" => T("msg.fp.enr.lift", step),
-            "Processing" => T("msg.fp.enr.processing", step),
-            "Overlap"    => T("msg.fp.enr.overlap", step),
-            _             => $"{ev} {step}",
-        };
     }
 
     private async void OnRefreshClick(object sender, RoutedEventArgs e) => await RefreshAsync();

@@ -13,6 +13,7 @@ public partial class DevicePage : Page
 
     private byte _activeSlot;
     private byte _otherOccupiedSlot; // 0 = 无
+    private bool _connected;
 
     public DevicePage()
     {
@@ -75,7 +76,26 @@ public partial class DevicePage : Page
     {
         DualHostCard.Visibility = Visibility.Collapsed;
         _otherOccupiedSlot = 0;
-        if (!connected) return;
+        _connected = connected;
+
+        // 设备不在身边、但本机仍有绑定：仍要给出「解绑本机」入口（只清本地绑定数据），
+        // 否则用户无法改配新设备。槽位状态要查设备，此时未知，隐藏槽位行。
+        if (!connected)
+        {
+            if (!paired) return;
+            DualDesc.Text = T("device.dual.desc_offline");
+            Slot1Row.Visibility = Visibility.Collapsed;
+            Slot2Row.Visibility = Visibility.Collapsed;
+            UnbindOtherBtn.Visibility = Visibility.Collapsed;
+            UnbindSelfBtn.IsEnabled = true;
+            DualHint.Text = T("msg.unbind.local_only_hint");
+            DualHostCard.Visibility = Visibility.Visible;
+            return;
+        }
+
+        DualDesc.Text = T("device.dual.desc");
+        Slot1Row.Visibility = Visibility.Visible;
+        Slot2Row.Visibility = Visibility.Visible;
 
         string? s = await AppServices.Pipe.SlotStatusAsync();
         // OK:<supported>:<bitmap>:<active>
@@ -130,22 +150,53 @@ public partial class DevicePage : Page
 
     private async void OnUnbindSelfClick(object sender, RoutedEventArgs e)
     {
+        // 两种情况的后果不同，确认文案要分开：
+        // 已连接 → 通知设备清槽（设备会重启）；未连接 → 只清本地绑定，设备侧槽位仍占用。
         var confirm = MessageBox.Show(
-            T("msg.unbind.self_confirm"),
+            _connected ? T("msg.unbind.self_confirm") : T("msg.unbind.local_only_confirm"),
             T("device.unbind.self"), MessageBoxButton.OKCancel, MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.OK) return;
 
-        DualHint.Text = T("msg.unbind.self_progress");
+        DualHint.Text = _connected ? T("msg.unbind.self_progress") : T("msg.unbind.local_only_progress");
         string? r = await AppServices.Pipe.SlotClearOwnAsync();
-        DualHint.Text = r == IpcProtocol.Ok ? T("msg.unbind.self_ok") : T("msg.unbind.fail", r ?? "");
+
+        if (r?.StartsWith($"{IpcProtocol.Ok}:LOCAL") == true)
+            DualHint.Text = T("msg.unbind.local_only_ok");
+        else if (r?.StartsWith(IpcProtocol.Ok) == true)
+            DualHint.Text = T("msg.unbind.self_ok");
+        else if (r == IpcProtocol.Reject)
+            // 设备拒绝（本机不是活跃槽）——多半是本机绑的还是旧设备、现在连上的却是新设备。
+            // 此时本地那把 shared_key 对当前设备无效，但只有用户能确认要不要丢弃它，故显式询问。
+            await OfferLocalUnbindAsync();
+        else
+            DualHint.Text = T("msg.unbind.fail", r ?? "");
+
         await RefreshAsync();
+    }
+
+    /// <summary>设备拒绝解绑后，询问是否仅清除本地绑定数据（以便改配新设备）。</summary>
+    private async Task OfferLocalUnbindAsync()
+    {
+        DualHint.Text = T("msg.unbind.rejected");
+        var choice = MessageBox.Show(
+            T("msg.unbind.rejected_offer"),
+            T("device.unbind.self"), MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        if (choice != MessageBoxResult.OK) return;
+
+        string? r = await AppServices.Pipe.PairResetAsync();
+        DualHint.Text = r?.StartsWith(IpcProtocol.Ok) == true
+            ? T("msg.unbind.local_only_ok")
+            : T("msg.unbind.fail", r ?? "");
     }
 
     private async void OnUnbindOtherClick(object sender, RoutedEventArgs e)
     {
         if (_otherOccupiedSlot == 0) return;
-        DualHint.Text = T("msg.unbind.other_progress", _otherOccupiedSlot);
-        string? r = await AppServices.Pipe.SlotClearAsync(_otherOccupiedSlot);
+        // 解绑另一台要在设备上过指纹门，弹认证窗（含 30s 倒计时）。
+        byte slot = _otherOccupiedSlot;
+        string? r = FpAuthDialog.Run(Window.GetWindow(this),
+            T("msg.fpauth.unbind_other", slot),
+            () => AppServices.Pipe.SlotClearAsync(slot));
         DualHint.Text = r == IpcProtocol.Ok ? T("msg.unbind.other_ok") : T("msg.unbind.other_fail", r ?? "");
         await RefreshAsync();
     }

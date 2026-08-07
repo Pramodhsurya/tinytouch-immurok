@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1140" height="560" viewBox="0 0 1140 560" font-family="Segoe UI, Noto Sans CJK SC, sans-serif">
+<rect width="1140" height="560" fill="#1c1c1c"/>
+<text x="570" y="26" fill="#e8e8e8" font-size="17" font-weight="600" text-anchor="middle">指纹录入引导窗</text>
+<text x="570" y="47" fill="#8a8a8a" font-size="12" text-anchor="middle">采集次序：正中 → 左 → 右 → 上 → 下 → 回到正中</text>
+
+<g transform="translate(24,68)">
+  <rect width="340" height="470" rx="10" fill="#252525" stroke="#3a3a3a"/>
+  <text x="14" y="26" fill="#9a9a9a" font-size="11">录入指纹 · 指纹 1</text>
+  <line x1="0" y1="38" x2="340" y2="38" stroke="#3a3a3a"/>
+  <text x="170" y="62" fill="#9a9a9a" font-size="11" text-anchor="middle">采集正中区域</text>
+  <g transform="translate(170,178)">
+    <circle r="92" fill="#80808014" stroke="#80808055" stroke-width="1.5"/>
+    <g stroke="#e8e8e8" stroke-width="3.5" fill="none" stroke-linecap="round" opacity="0.92">
+      <path d="M -30 22 A 30 38 0 0 1 30 22"/><path d="M -19 24 A 19 26 0 0 1 19 24"/>
+      <path d="M -42 20 A 42 50 0 0 1 42 20"/><path d="M -8 26 A 8 13 0 0 1 8 26"/>
+      <path d="M -30 22 L -30 42"/><path d="M 30 22 L 30 42"/><path d="M -42 20 L -42 44"/><path d="M 42 20 L 42 44"/>
+    </g>
+    <circle r="38" fill="#0078D4" opacity="0.40"/>
+  </g>
+  <text x="170" y="306" fill="#f0f0f0" font-size="15" font-weight="600" text-anchor="middle">用指腹正中按压传感器</text>
+  <text x="170" y="332" fill="#9a9a9a" font-size="11" text-anchor="middle">按图中高亮的位置，把手指放到</text>
+  <text x="170" y="348" fill="#9a9a9a" font-size="11" text-anchor="middle">传感器上。</text>
+  <g transform="translate(170,376)">
+    <circle cx="-45" r="4.5" fill="none" stroke="#80808088"/><circle cx="-27" r="4.5" fill="none" stroke="#80808088"/>
+    <circle cx="-9" r="4.5" fill="none" stroke="#80808088"/><circle cx="9" r="4.5" fill="none" stroke="#80808088"/>
+    <circle cx="27" r="4.5" fill="none" stroke="#80808088"/><circle cx="45" r="4.5" fill="none" stroke="#80808088"/>
+  </g>
+  <rect x="20" y="392" width="300" height="6" rx="3" fill="#3a3a3a"/>
+  <text x="170" y="418" fill="#9a9a9a" font-size="11" text-anchor="middle">已采集 0 / 6</text>
+  <rect x="228" y="432" width="96" height="30" rx="5" fill="#333" stroke="#4a4a4a"/>
+  <text x="276" y="452" fill="#e0e0e0" font-size="12" text-anchor="middle">取消</text>
+  <text x="170" y="-6" fill="#0078D4" font-size="11" text-anchor="middle" font-weight="600">① 正中</text>
+</g>
+
+<g transform="translate(400,68)">
+  <rect width="340" height="470" rx="10" fill="#252525" stroke="#3a3a3a"/>
+  <text x="14" y="26" fill="#9a9a9a" font-size="11">录入指纹 · 指纹 1</text>
+  <line x1="0" y1="38" x2="340" y2="38" stroke="#3a3a3a"/>
+  <text x="170" y="62" fill="#9a9a9a" font-size="11" text-anchor="middle">采集正中区域</text>
+  <g transform="translate(170,178)">
+    <circle r="92" fill="#80808014" stroke="#80808055" stroke-width="1.5"/>
+    <g stroke="#e8e8e8" stroke-width="3.5" fill="none" stroke-linecap="round" opacity="0.30">
+      <path d="M -30 22 A 30 38 0 0 1 30 22"/><path d="M -19 24 A 19 26 0 0 1 19 24"/>
+      <path d="M -42 20 A 42 50 0 0 1 42 20"/><path d="M -8 26 A 8 13 0 0 1 8 26"/>
+      <path d="M -30 22 L -30 42"/><path d="M 30 22 L 30 42"/><path d="M -42 20 L -42 44"/><path d="M 42 20 L 42 44"/>
+    </g>
+  </g>
+  <text x="170" y="306" fill="#f0f0f0" font-size="15" font-weight="600" text-anchor="middle">请抬起手指</text>
+  <text x="170" y="332" fill="#9a9a9a" font-size="11" text-anchor="middle">完全离开传感器后，再按下进行</text>
+  <text x="170" y="348" fill="#9a9a9a" font-size="11" text-anchor="middle">下一次采集。</text>
+  <g transform="translate(170,376)">
+    <circle cx="-45" r="4.5" fill="#0078D4"/><circle cx="-27" r="4.5" fill="none" stroke="#80808088"/>
+    <circle cx="-9" r="4.5" fill="none" stroke="#80808088"/><circle cx="9" r="4.5" fill="none" stroke="#80808088"/>
+    <circle cx="27" r="4.5" fill="none" stroke="#80808088"/><circle cx="45" r="4.5" fill="none" stroke="#80808088"/>
+  </g>
+  <rect x="20" y="392" width="300" height="6" rx="3" fill="#3a3a3a"/><rect x="20" y="392" width="50" height="6" rx="3" fill="#0078D4"/>
+  <text x="170" y="418" fill="#9a9a9a" font-size="11" text-anchor="middle">已采集 1 / 6</text>
+  <rect x="228" y="432" width="96" height="30" rx="5" fill="#333" stroke="#4a4a4a"/>
+  <text x="276" y="452" fill="#e0e0e0" font-size="12" text-anchor="middle">取消</text>
+  <text x="170" y="-6" fill="#8a8a8a" font-size="11" text-anchor="middle" font-weight="600">每次采集之间：抬起手指</text>
+</g>
+
+<g transform="translate(776,68)">
+  <rect width="340" height="470" rx="10" fill="#252525" stroke="#3a3a3a"/>
+  <text x="14" y="26" fill="#9a9a9a" font-size="11">录入指纹 · 指纹 1</text>
+  <line x1="0" y1="38" x2="340" y2="38" stroke="#3a3a3a"/>
+  <text x="170" y="62" fill="#9a9a9a" font-size="11" text-anchor="middle">采集边缘区域</text>
+  <g transform="translate(170,178)">
+    <circle r="92" fill="#80808014" stroke="#80808055" stroke-width="1.5"/>
+    <g stroke="#e8e8e8" stroke-width="3.5" fill="none" stroke-linecap="round" opacity="0.92">
+      <path d="M -30 22 A 30 38 0 0 1 30 22"/><path d="M -19 24 A 19 26 0 0 1 19 24"/>
+      <path d="M -42 20 A 42 50 0 0 1 42 20"/><path d="M -8 26 A 8 13 0 0 1 8 26"/>
+      <path d="M -30 22 L -30 42"/><path d="M 30 22 L 30 42"/><path d="M -42 20 L -42 44"/><path d="M 42 20 L 42 44"/>
+    </g>
+    <circle cx="-38" r="38" fill="#0078D4" opacity="0.40"/>
+    <polygon points="-92,0 -73,-11 -73,11" fill="#0078D4"/>
+  </g>
+  <text x="170" y="306" fill="#f0f0f0" font-size="15" font-weight="600" text-anchor="middle">手指略向左倾斜 5–10°</text>
+  <text x="170" y="332" fill="#9a9a9a" font-size="11" text-anchor="middle">已采集 1/6，抬起手指后再按。</text>
+  <g transform="translate(170,376)">
+    <circle cx="-45" r="4.5" fill="#0078D4"/><circle cx="-27" r="4.5" fill="none" stroke="#80808088"/>
+    <circle cx="-9" r="4.5" fill="none" stroke="#80808088"/><circle cx="9" r="4.5" fill="none" stroke="#80808088"/>
+    <circle cx="27" r="4.5" fill="none" stroke="#80808088"/><circle cx="45" r="4.5" fill="none" stroke="#80808088"/>
+  </g>
+  <rect x="20" y="392" width="300" height="6" rx="3" fill="#3a3a3a"/><rect x="20" y="392" width="50" height="6" rx="3" fill="#0078D4"/>
+  <text x="170" y="418" fill="#9a9a9a" font-size="11" text-anchor="middle">已采集 1 / 6</text>
+  <rect x="228" y="432" width="96" height="30" rx="5" fill="#333" stroke="#4a4a4a"/>
+  <text x="276" y="452" fill="#e0e0e0" font-size="12" text-anchor="middle">取消</text>
+  <text x="170" y="-6" fill="#0078D4" font-size="11" text-anchor="middle" font-weight="600">② 左（③右 ④上 ⑤下 同理）</text>
+</g>
+</svg>

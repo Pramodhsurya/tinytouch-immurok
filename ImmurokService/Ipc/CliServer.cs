@@ -3,6 +3,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using ImmurokService.Ble;
+using ImmurokService.Platform;
 using Microsoft.Extensions.Logging;
 
 namespace ImmurokService.Ipc;
@@ -25,15 +26,17 @@ public sealed class CliServer : IAsyncDisposable
 
     private readonly ILogger<CliServer> _log;
     private readonly BleManager _ble;
+    private readonly AppSettings _settings;
     private CancellationTokenSource? _cts;
     private Task? _loop;
 
     public bool IsRunning => _loop is not null;
 
-    public CliServer(ILogger<CliServer> log, BleManager ble)
+    public CliServer(ILogger<CliServer> log, BleManager ble, AppSettings settings)
     {
         _log = log;
         _ble = ble;
+        _settings = settings;
     }
 
     public void Start()
@@ -123,6 +126,11 @@ public sealed class CliServer : IAsyncDisposable
         {
             // imk agent 运行前授权：命令串仅供日志（Windows 无浮层，展示在 imk 终端）。
             string commandStr = cmd[8..];
+            if (!_settings.ImkAgentEnabled)
+            {
+                _log.LogInformation("imk agent 授权请求被拒：功能未开启");
+                return "DENY";
+            }
             _log.LogInformation("imk agent 授权请求：{Cmd}", commandStr);
             bool ok = await _ble.AuthenticateAsync().ConfigureAwait(false);
             return ok ? "OK" : "DENY";
@@ -176,6 +184,7 @@ public sealed class CliServer : IAsyncDisposable
 
         if (cat == BleManager.CatOtp)
         {
+            if (!_settings.OtpEnabled) return "ERROR:DISABLED"; // 功能开关：OTP 已关闭
             string? code = await _ble.GetOtpCodeAsync((byte)idx).ConfigureAwait(false);
             return code is null ? "ERROR:DENY" : "OK:" + code;
         }

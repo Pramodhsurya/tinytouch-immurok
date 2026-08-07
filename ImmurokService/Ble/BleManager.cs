@@ -77,6 +77,12 @@ public sealed class BleManager : IAsyncDisposable
     /// <summary>收到并通过 HMAC 验签的签名指纹匹配（0x21）。参数：pageId。</summary>
     public event Action<ushort>? SignedFingerprintMatched;
 
+    /// <summary>
+    /// 设备的长按锁屏请求（0x23，手指在传感器上按住 ≥1.6s）。与 0x21 指纹匹配相互独立，
+    /// 无论指纹是否匹配都会触发，由消费方决定忽略还是执行（见 Worker.OnLockRequested）。
+    /// </summary>
+    public event Action? LockRequested;
+
     /// <summary>指纹录入进度事件（0x11）。参数：事件、当前次数 current、总次数 total。</summary>
     public event Action<FpEnrollEvent, int, int>? EnrollProgress;
 
@@ -424,8 +430,14 @@ public sealed class BleManager : IAsyncDisposable
                 _log.LogDebug("连接参数更新通知 0xF0");
                 return;
 
-            case NotifyOpcode.FpMatchEvent when data.Length == 1:
-                _log.LogDebug("指纹匹配事件 0x23");
+            case NotifyOpcode.FpMatchEvent:
+                // 0x23 是设备的「长按锁屏请求」（手指按住 ≥1.6s 触发），不是普通的指纹匹配事件。
+                // ⚠️ 固件在每次触摸的上升沿之后固定 1.6s 就发这一帧，与指纹是否匹配无关，
+                //    因此消费方必须做抑制（见 Worker.OnLockRequested）。
+                // 不限定长度：早先要求 len==1，一旦固件带了 payload 就匹配不上，
+                // 会一路掉到「在途命令响应」被静默吞掉，表现为长按毫无反应。
+                _log.LogInformation("收到长按锁屏请求 0x23 [{Hex}]", Convert.ToHexString(data));
+                LockRequested?.Invoke();
                 return;
 
             case (byte)ImmurokCommand.PairButton when data.Length == 2: // 0x34
@@ -480,7 +492,14 @@ public sealed class BleManager : IAsyncDisposable
         {
             var tcs = _pendingResponse;
             _pendingResponse = null;
-            tcs?.TrySetResult(data);
+            if (tcs is null)
+            {
+                // 没有在途命令却收到帧 —— 这是一条我们尚未识别的设备事件。
+                // 抬到 Information：不出声的话，固件发了什么永远查不出来。
+                _log.LogInformation("收到未识别的设备通知（无在途命令）: [{Hex}]", Convert.ToHexString(data));
+                return;
+            }
+            tcs.TrySetResult(data);
         }
     }
 
@@ -582,18 +601,40 @@ public sealed class BleManager : IAsyncDisposable
         return (true, r[2], r[3]);
     }
 
+    /// <summary>解绑本机的结果。</summary>
+    public enum ClearOwnResult
+    {
+        /// <summary>设备在线：已通知设备清槽，本地也已清。</summary>
+        ClearedOnDevice,
+        /// <summary>设备不在线：只清了本地绑定数据，设备侧的槽仍占用。</summary>
+        ClearedLocalOnly,
+        /// <summary>设备明确拒绝（活跃槽不是本机）。</summary>
+        Rejected,
+    }
+
     /// <summary>
     /// 解绑本机所在的槽（SLOT_CLEAR 无 payload，无指纹门）。设备清槽后**重启**，
     /// 因此「断开/无响应/超时」= 成功；仅明确收到 0xF2（NOT_PAIRED，活跃槽不是本机）才是拒绝。
     /// 成功后清本地 shared_key。
+    ///
+    /// <para>待解绑的设备不在身边（未连接）时不能直接失败：否则本机会被旧绑定永久卡住、
+    /// 无法改配新设备。此时退化为「只清本地绑定数据」——本机随后即可与新设备配对，
+    /// 旧设备上的槽位等它下次连上再由用户清理。</para>
     /// </summary>
-    public async Task<bool> ClearOwnSlotAsync()
+    public async Task<ClearOwnResult> ClearOwnSlotAsync()
     {
+        if (!IsConnected)
+        {
+            _security.ClearPairing();
+            _log.LogInformation("解绑本机：设备未连接，仅清除本地绑定数据");
+            return ClearOwnResult.ClearedLocalOnly;
+        }
+
         byte[]? r = await SendCommandAsync(ImmurokCommand.SlotClear, timeoutMs: 10000);
         if (r is { Length: >= 2 } && r[1] == 0xF2)
-            return false; // 明确拒绝
+            return ClearOwnResult.Rejected; // 明确拒绝
         _security.ClearPairing(); // 断开/超时/OK 都视为设备已清（重启），本地照清
-        return true;
+        return ClearOwnResult.ClearedOnDevice;
     }
 
     /// <summary>
@@ -678,12 +719,22 @@ public sealed class BleManager : IAsyncDisposable
         return r is { Length: >= 1 } && r[0] == (byte)ImmurokStatus.Ok;
     }
 
+    /// <summary>
+    /// 删除指纹（含指纹门）。设备回 0x11 时**必须**等门结果再返回：
+    /// 早先直接把 WAIT_FP 当成功返回，客户端会在用户还没触摸传感器时就刷新列表，
+    /// 于是显示「已删除」但槽位仍在——删除看起来没生效。
+    /// </summary>
     public async Task<bool> DeleteFingerprintAsync(byte slotId)
     {
         byte[]? r = await SendCommandAsync(ImmurokCommand.DeleteFp, new[] { slotId });
         if (r is not { Length: >= 1 }) return false;
-        byte s = r[0];
-        return s == (byte)ImmurokStatus.Ok || s == (byte)ImmurokStatus.WaitFingerprint;
+        if (r[0] == (byte)ImmurokStatus.Ok) return true;
+        if (r[0] == (byte)ImmurokStatus.WaitFingerprint)
+        {
+            byte[]? res = await RunFpGateAsync(30000).ConfigureAwait(false);
+            return res is { Length: >= 1 } && res[0] == (byte)ImmurokStatus.Ok;
+        }
+        return false;
     }
 
     /// <summary>
@@ -831,17 +882,35 @@ public sealed class BleManager : IAsyncDisposable
         finally { _otaGate.Release(); }
     }
 
-    /// <summary>写 OTA 特征（无响应，用于 PROM 数据块）。</summary>
-    public async Task<bool> OtaWriteNoResponseAsync(byte[] data)
+    /// <summary>
+    /// 写 OTA 特征的 PROM 数据块。
+    ///
+    /// <para><paramref name="sync"/>=false 用 Write Command（无响应），最快但**无背压**：
+    /// WinRT 把包交给系统蓝牙栈缓冲后立即返回，并不代表已经上天线。macOS 侧靠
+    /// CoreBluetooth 的 <c>canSendWriteWithoutResponse</c> 天然限流，Windows 无对等 API，
+    /// 于是全部数据块会在几秒内排队完毕、进度瞬间冲到 100%，而实际射频传输还要 70~80s。</para>
+    ///
+    /// <para><paramref name="sync"/>=true 改用 Write Request（有响应）作为**顺序屏障**：
+    /// ATT 保证同一连接上的操作按序处理，因此该响应返回时，此前排队的所有 Write Command
+    /// 都已被对端消费掉。每隔若干块插一次即可把队列深度钳住，让进度反映真实传输进度。
+    /// 应用层命令字节完全相同（仍是 0x80 数据块），固件侧处理逻辑不变；该特征本就支持
+    /// 有响应写（INFO/ERASE/HEADER/END 走的就是这条路径）。</para>
+    /// </summary>
+    public async Task<bool> OtaWriteChunkAsync(byte[] data, bool sync = false)
     {
         if (_otaChar is null) return false;
         try
         {
-            GattWriteResult w = await _otaChar.WriteValueWithResultAsync(data.AsBuffer(), GattWriteOption.WriteWithoutResponse);
+            GattWriteResult w = await _otaChar.WriteValueWithResultAsync(
+                data.AsBuffer(),
+                sync ? GattWriteOption.WriteWithResponse : GattWriteOption.WriteWithoutResponse);
             return w.Status == GattCommunicationStatus.Success;
         }
-        catch (Exception ex) { _log.LogError(ex, "OTA 无响应写失败"); return false; }
+        catch (Exception ex) { _log.LogError(ex, "OTA 数据块写失败 (sync={Sync})", sync); return false; }
     }
+
+    /// <summary>写 OTA 特征（无响应，用于 PROM 数据块）。</summary>
+    public Task<bool> OtaWriteNoResponseAsync(byte[] data) => OtaWriteChunkAsync(data, sync: false);
 
     // ============ 密钥库（SSH=0 / OTP=1 / API=2）============
 

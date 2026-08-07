@@ -78,6 +78,16 @@ public sealed class CredentialStore
         }
     }
 
+    /// <summary>
+    /// 不依赖 DI 的删除入口，供卸载清理使用（<c>ImmurokService.exe --clear-credential</c>）。
+    /// 凭据以 CRED_PERSIST_LOCAL_MACHINE 写在服务账户（LocalSystem）名下，只有同一身份能删；
+    /// MSI 里 deferred + Impersonate="no" 的自定义动作正好以 SYSTEM 运行。
+    /// 本就不存在也视为成功。
+    /// </summary>
+    public static bool DeleteStored()
+        => CredDelete(TargetName, CRED_TYPE_GENERIC, 0)
+           || Marshal.GetLastWin32Error() == ERROR_NOT_FOUND;
+
     // ---- P/Invoke ----
     private const uint CRED_TYPE_GENERIC = 1;
     private const uint CRED_PERSIST_LOCAL_MACHINE = 2;

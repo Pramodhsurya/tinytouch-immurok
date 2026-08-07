@@ -45,6 +45,11 @@
                         <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Key24" />
                     </ui:NavigationViewItem.Icon>
                 </ui:NavigationViewItem>
+                <ui:NavigationViewItem Content="{loc:Tr nav.features}" TargetPageType="{x:Type pages:FeaturesPage}">
+                    <ui:NavigationViewItem.Icon>
+                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Options24" />
+                    </ui:NavigationViewItem.Icon>
+                </ui:NavigationViewItem>
                 <ui:NavigationViewItem Content="{loc:Tr nav.setup}" TargetPageType="{x:Type pages:SetupPage}">
                     <ui:NavigationViewItem.Icon>
                         <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Settings24" />
