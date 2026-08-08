@@ -6,7 +6,7 @@
 ;   · Windows 服务 ImmurokService（LocalSystem、自启）
 ;   · Credential Provider 的 COM 注册（路径用 {app}，随实际安装目录展开）
 ;   · 安装目录加入系统 PATH（终端可直接调 imk）
-;   · 开始菜单快捷方式（客户端不开机自启）
+;   · 开始菜单快捷方式 + 装完默认启动客户端（客户端自己登记 HKCU\Run 开机自启）
 ;   · 卸载时停服务、摘 PATH、清掉凭据管理器里的登录密码
 ;
 ; 界面语言用 Inno 自带的英文（官方发行版不含简体中文 .isl，引用会编译失败）。
@@ -17,7 +17,7 @@
 ;    并始终保留密码登录作为后备。
 
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.3.0"
 #endif
 #ifndef StageDir
   #define StageDir "stage"
@@ -89,6 +89,12 @@ Root: HKCR; Subkey: "CLSID\{#CpClsid}\InprocServer32"; \
 Root: HKCR; Subkey: "CLSID\{#CpClsid}\InprocServer32"; \
     ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"
 
+; ---- 卸载时摘掉客户端的开机自启 ----
+; 这个值是客户端首次启动时自己写的（装的时候还没有），所以这里不设值、只登记「卸载时删」。
+; 注意：卸载程序以管理员身份运行，若与当前登录用户不是同一账户，删的是管理员的 HKCU。
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
+    ValueType: none; ValueName: "immurok"; Flags: uninsdeletevalue
+
 ; ---- 系统 PATH（imk 命令）----
 ; 摘除放在 [Code] 的 CurUninstallStepChanged 里：{olddata} 这种写法只能追加不能删除
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
@@ -106,8 +112,10 @@ Filename: "{sys}\sc.exe"; \
 Filename: "{sys}\sc.exe"; Parameters: "start {#ServiceName}"; \
     Flags: runhidden; StatusMsg: "Starting service..."
 
+; 默认勾选：客户端不常驻，密码注入（在用户会话里做 UI Automation）就完全不工作。
+; 客户端首次启动会把自己登记进 HKCU\...\Run，之后每次登录自动拉起。
 Filename: "{app}\ImmurokClient.exe"; Description: "Launch immurok"; \
-    Flags: postinstall nowait skipifsilent unchecked
+    Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
 ; 顺序要紧：先停服务 → 再清凭据（此时 exe 还在）→ 最后删服务

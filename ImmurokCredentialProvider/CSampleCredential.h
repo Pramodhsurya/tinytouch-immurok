@@ -105,6 +105,12 @@ class CSampleCredential : public ICredentialProviderCredential
                        const FIELD_STATE_PAIR* rgfsp,
                        const PWSTR username,
                        const PWSTR password);
+
+    // The provider hands us a weak pointer to its pipe listener so we can
+    // consume (single-use) the unlock authorization once LogonUI has taken the
+    // serialized credential, and query whether we are currently armed.
+    void SetPipeListener(CPipeListener* pPipeListener) { _pPipeListener = pPipeListener; }
+
     CSampleCredential();
 
     virtual ~CSampleCredential();
@@ -129,4 +135,5 @@ class CSampleCredential : public ICredentialProviderCredential
     ICredentialProviderCredentialEvents* _pCredProvCredentialEvents;
     PWSTR                                _pwzUsername;
     PWSTR                                _pwzPassword;
+    CPipeListener*                       _pPipeListener;  // weak ref, owned by the provider
 };

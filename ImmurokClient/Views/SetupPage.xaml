@@ -24,6 +24,22 @@
                 </StackPanel>
             </ui:Card>
 
+            <!-- 开机自启 -->
+            <ui:Card Margin="0,0,0,14" Padding="18">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Power24" FontSize="18" Margin="0,0,8,0" />
+                        <TextBlock Text="{loc:Tr setup.autostart}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="{loc:Tr setup.autostart.desc}"
+                               Opacity="0.6" FontSize="12" Margin="0,0,0,10" TextWrapping="Wrap" />
+                    <ui:ToggleSwitch x:Name="AutoStartToggle" Content="{loc:Tr setup.autostart.enable}" Click="OnAutoStartToggle" />
+                    <TextBlock x:Name="AutoStartFail" Text="{loc:Tr setup.autostart.fail}"
+                               Foreground="#FFE0A030" FontSize="12" Margin="0,6,0,0"
+                               TextWrapping="Wrap" Visibility="Collapsed" />
+                </StackPanel>
+            </ui:Card>
+
             <ui:Card Margin="0,0,0,14" Padding="18">
                 <StackPanel x:Name="PassCardPanel">
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">

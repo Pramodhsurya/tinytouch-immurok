@@ -74,6 +74,7 @@ builder.Services.AddSerilog(Log.Logger, dispose: true);
 builder.Services.AddSingleton<ImmurokSecurity>();
 builder.Services.AddSingleton<PairingStore>();
 builder.Services.AddSingleton<CredentialStore>();
+builder.Services.AddSingleton<FpInjectionSignal>();
 builder.Services.AddSingleton<BleManager>();
 builder.Services.AddSingleton<SessionMonitor>();
 builder.Services.AddSingleton<ScreenUnlocker>();

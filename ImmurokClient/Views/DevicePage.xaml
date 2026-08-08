@@ -47,28 +47,57 @@
                     <TextBlock x:Name="DualDesc" Text="{loc:Tr device.dual.desc}"
                                Opacity="0.6" FontSize="12" Margin="0,0,0,10" TextWrapping="Wrap" />
 
-                    <Border x:Name="Slot1Row" CornerRadius="6" Padding="12,8" Margin="0,0,0,6"
-                            Background="#14808080">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="{loc:Tr device.slot1}" Width="60" FontWeight="SemiBold" VerticalAlignment="Center" />
-                            <TextBlock x:Name="Slot1State" Text="" VerticalAlignment="Center" />
-                        </StackPanel>
+                    <!-- 槽位行：解绑按钮平时不可见，鼠标移到本行才淡入（Opacity 与 IsHitTestVisible
+                         同步切换，避免点到看不见的按钮）。按钮是「解绑本机」还是「解绑另一台」，
+                         由该槽是不是活跃槽决定，在 RefreshDualHostAsync 里设置。 -->
+                    <!-- MinHeight 固定行高：空槽没有按钮、被占用的槽有按钮，不定高两行会一高一矮。
+                         按钮 Height=24，连同 Padding 一起收在 32 之内，两行始终等高。 -->
+                    <Border x:Name="Slot1Row" CornerRadius="6" Padding="12,4" Margin="0,0,0,6" MinHeight="32"
+                            Background="#14808080"
+                            MouseEnter="OnSlotRowHover" MouseLeave="OnSlotRowHover">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                <TextBlock Text="{loc:Tr device.slot1}" Width="60" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                <TextBlock x:Name="Slot1State" Text="" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <ui:Button x:Name="Slot1UnbindBtn" Grid.Column="1" Tag="1"
+                                       Appearance="Secondary" Padding="10,0" FontSize="12" Height="24"
+                                       Opacity="0" IsHitTestVisible="False"
+                                       Click="OnSlotUnbindClick" />
+                        </Grid>
                     </Border>
-                    <Border x:Name="Slot2Row" CornerRadius="6" Padding="12,8" Margin="0,0,0,10"
-                            Background="#14808080">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="{loc:Tr device.slot2}" Width="60" FontWeight="SemiBold" VerticalAlignment="Center" />
-                            <TextBlock x:Name="Slot2State" Text="" VerticalAlignment="Center" />
-                        </StackPanel>
+                    <Border x:Name="Slot2Row" CornerRadius="6" Padding="12,4" Margin="0" MinHeight="32"
+                            Background="#14808080"
+                            MouseEnter="OnSlotRowHover" MouseLeave="OnSlotRowHover">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                <TextBlock Text="{loc:Tr device.slot2}" Width="60" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                <TextBlock x:Name="Slot2State" Text="" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <ui:Button x:Name="Slot2UnbindBtn" Grid.Column="1" Tag="2"
+                                       Appearance="Secondary" Padding="10,0" FontSize="12" Height="24"
+                                       Opacity="0" IsHitTestVisible="False"
+                                       Click="OnSlotUnbindClick" />
+                        </Grid>
                     </Border>
 
-                    <StackPanel Orientation="Horizontal">
-                        <ui:Button x:Name="UnbindSelfBtn" Content="{loc:Tr device.unbind.self}" Icon="{ui:SymbolIcon PlugDisconnected24}"
-                                   Appearance="Secondary" Click="OnUnbindSelfClick" Margin="0,0,8,0" />
-                        <ui:Button x:Name="UnbindOtherBtn" Content="{loc:Tr device.unbind.other}" Icon="{ui:SymbolIcon Delete24}"
-                                   Appearance="Secondary" Click="OnUnbindOtherClick" Visibility="Collapsed" />
-                    </StackPanel>
-                    <TextBlock x:Name="DualHint" Text="" Margin="0,8,0,0" Opacity="0.7" FontSize="12" TextWrapping="Wrap" />
+                    <!-- 设备不在身边时槽位行不可见（槽位状态要查设备），此时仍需给出「解绑本机」
+                         入口，否则无法改配新设备——所以这个按钮只在离线场景出现。 -->
+                    <ui:Button x:Name="UnbindSelfBtn" Content="{loc:Tr device.unbind.self}" Icon="{ui:SymbolIcon PlugDisconnected24}"
+                               Appearance="Secondary" Click="OnUnbindSelfClick"
+                               HorizontalAlignment="Left" Margin="0,10,0,0" Visibility="Collapsed" />
+                    <!-- 无提示文字时整体收起（SetDualHint）：空 TextBlock 也会占一整行，
+                         否则卡片底部凭空多出一段空白。 -->
+                    <TextBlock x:Name="DualHint" Text="" Margin="0,10,0,0" Opacity="0.7" FontSize="12"
+                               TextWrapping="Wrap" Visibility="Collapsed" />
                 </StackPanel>
             </ui:Card>
 

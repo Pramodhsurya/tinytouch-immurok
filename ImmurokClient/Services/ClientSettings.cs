@@ -13,6 +13,7 @@ public static class ClientSettings
     private sealed class Data
     {
         public string? Language { get; set; }
+        public bool AutoStartInitialized { get; set; }
     }
 
     private static string Dir =>
@@ -48,5 +49,12 @@ public static class ClientSettings
     {
         get => _data.Language;
         set { _data.Language = value; Save(); }
+    }
+
+    /// <summary>是否已做过「首次运行默认开启自启」。置位后不再自动改写用户的选择。</summary>
+    public static bool AutoStartInitialized
+    {
+        get => _data.AutoStartInitialized;
+        set { _data.AutoStartInitialized = value; Save(); }
     }
 }

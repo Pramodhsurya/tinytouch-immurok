@@ -50,6 +50,11 @@
                         <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Options24" />
                     </ui:NavigationViewItem.Icon>
                 </ui:NavigationViewItem>
+                <ui:NavigationViewItem Content="{loc:Tr nav.inject}" TargetPageType="{x:Type pages:PasswordInjectionPage}">
+                    <ui:NavigationViewItem.Icon>
+                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Password24" />
+                    </ui:NavigationViewItem.Icon>
+                </ui:NavigationViewItem>
                 <ui:NavigationViewItem Content="{loc:Tr nav.setup}" TargetPageType="{x:Type pages:SetupPage}">
                     <ui:NavigationViewItem.Icon>
                         <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Settings24" />

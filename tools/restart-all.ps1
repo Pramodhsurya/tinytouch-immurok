@@ -37,6 +37,11 @@
   .\tools\restart-all.ps1 -t client      # 只重编重启 client
   .\tools\restart-all.ps1 -t imk         # 只编译 imk，并加入用户 PATH（不涉及停/启进程）
   .\tools\restart-all.ps1 -t server -Service   # 以管理员运行，重启已安装服务
+  .\tools\restart-all.ps1 -t all -Configuration Release -Service
+                                         # 覆盖安装（含 Credential Provider）并重启服务。
+                                         # 注意 -Configuration 默认是 Debug，而发行安装的是
+                                         # Release；部署到安装目录时务必显式指定，别把 Debug
+                                         # 产物盖上去。
 #>
 param(
     [Alias('t')]
@@ -74,9 +79,35 @@ function Test-Admin {
 
 function Stop-Proc($name) {
     $ps = Get-Process -Name $name -ErrorAction SilentlyContinue
-    if ($ps) {
-        Info "    停止进程 $name (PID: $($ps.Id -join ', '))"
-        $ps | Stop-Process -Force -ErrorAction SilentlyContinue
+    if (-not $ps) { return }
+
+    Info "    停止进程 $name (PID: $($ps.Id -join ', '))"
+    $failed = @()
+    foreach ($p in $ps) {
+        try { Stop-Process -Id $p.Id -Force -ErrorAction Stop }
+        catch { $failed += $p.Id }
+    }
+    # 这里过去是 -ErrorAction SilentlyContinue：杀不掉也当成功。
+    # 结果是旧实例还活着、脚本又起了一个新的，两个 Service 抢同一个管道和同一台 BLE 设备。
+    if ($failed.Count -gt 0) {
+        throw "无法结束 $name（PID: $($failed -join ', ')）：权限不足或进程受保护。请以管理员运行，或先手动停掉该进程。"
+    }
+}
+
+# 开发进程模式的前置检查：已安装服务在跑就不许再起一个。
+# 两个 Service 并存时，指纹信号可能置在 A 进程、客户端的长轮询却挂在 B 进程上，
+# 注入与解锁静默失效；而且两者 shared:true 写同一个日志文件，从日志上根本看不出是两个实例。
+function Assert-NoInstalledServiceRunning {
+    $svc = Get-CimInstance Win32_Service -Filter "Name='ImmurokService'" -ErrorAction SilentlyContinue
+    if ($svc -and $svc.State -eq 'Running') {
+        throw @"
+已安装的 Windows 服务 ImmurokService 正在运行（PID $($svc.ProcessId)），开发进程模式会再起一个实例。
+两个 Service 会抢同一个命名管道和同一台 BLE 设备，表现为指纹信号丢失、注入与解锁静默失效。
+
+请二选一：
+  · 已安装服务模式（管理员）: .\tools\restart-all.ps1 -t $Target -Configuration $Configuration -Service
+  · 或先停掉服务（管理员）:   sc.exe stop ImmurokService
+"@
     }
 }
 
@@ -98,6 +129,16 @@ function Ensure-ImkPath {
     if ($env:Path -notlike "*$imkBin*") { $env:Path = "$env:Path;$imkBin" }
 }
 
+# SCM 报告 STOPPED 时进程可能还在退出，文件句柄尚未释放；不等它退干净就复制会撞上
+# 「正由另一进程使用」。今天就踩过这个。
+function Wait-ProcExit($name, $timeoutSec = 30) {
+    for ($i = 0; $i -lt $timeoutSec; $i++) {
+        if (-not (Get-Process -Name $name -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Seconds 1
+    }
+    throw "$name 进程在 $timeoutSec 秒内没有退出，无法安全部署。"
+}
+
 function Deploy-InstallDir([bool]$server, [bool]$client) {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     if ($server) {
@@ -114,7 +155,6 @@ function Deploy-InstallDir([bool]$server, [bool]$client) {
 
 function Start-Server {
     if ($Service) {
-        Deploy-InstallDir -server $true -client $false
         Info "    sc start ImmurokService"
         sc.exe start ImmurokService | Out-Null
         Ok  "    服务已启动（日志见 C:\ProgramData\immurok\logs\）。"
@@ -133,14 +173,23 @@ function Start-Server {
 
 function Start-Client {
     if ($Service) {
-        Deploy-InstallDir -server $false -client $true
         $cli = Join-Path $InstallDir 'ImmurokClient.exe'
     }
     else {
         $cli = $cliExeBin
     }
     if (-not (Test-Path $cli)) { throw "未找到 client：$cli" }
-    Start-Process -FilePath $cli -WorkingDirectory (Split-Path $cli -Parent) | Out-Null
+
+    if (Test-Admin) {
+        # 经 explorer.exe 中转，让 client 落回普通完整性级别。
+        # 直接 Start-Process 会继承当前的管理员令牌，client 便以管理员身份常驻——
+        # 既没必要，也和它平时由 HKCU\Run 自启时的身份不一致（注入要的就是普通用户会话身份）。
+        Info "    经 explorer 以普通权限启动 client ..."
+        Start-Process -FilePath "$env:WINDIR\explorer.exe" -ArgumentList "`"$cli`"" | Out-Null
+    }
+    else {
+        Start-Process -FilePath $cli -WorkingDirectory (Split-Path $cli -Parent) | Out-Null
+    }
     Ok  "    client 已启动。"
 }
 
@@ -162,16 +211,20 @@ Info "==> 目标: $Target  配置: $Configuration  模式: $(if($Service){'已�
 
 # ============ 1) 先关闭目标（释放文件占用，才能重编译） ============
 Info "==> [1/3] 关闭目标进程 ..."
-if ($doServer) {
-    if ($Service) {
-        Info "    sc stop ImmurokService"
-        sc.exe stop ImmurokService | Out-Null
-        for ($i = 0; $i -lt 20; $i++) {
-            $st = (sc.exe query ImmurokService) -join "`n"
-            if ($st -match 'STOPPED' -or $st -notmatch 'ImmurokService') { break }
-            Start-Sleep -Milliseconds 300
-        }
+if ($doServer -and -not $Service) { Assert-NoInstalledServiceRunning }
+if ($Service) {
+    # 服务模式下无论目标是 server 还是 client 都要停服务：两者共用 ImmurokCommon.dll，
+    # 服务在跑时部署 client 必然撞上「文件正由另一进程使用」。
+    Info "    sc stop ImmurokService"
+    sc.exe stop ImmurokService | Out-Null
+    for ($i = 0; $i -lt 20; $i++) {
+        $st = (sc.exe query ImmurokService) -join "`n"
+        if ($st -match 'STOPPED' -or $st -notmatch 'ImmurokService') { break }
+        Start-Sleep -Milliseconds 300
     }
+    Wait-ProcExit 'ImmurokService'
+}
+elseif ($doServer) {
     Stop-Proc 'ImmurokService'
 }
 if ($doClient) { Stop-Proc 'ImmurokClient' }
@@ -195,11 +248,18 @@ else {
 }
 Ok "    编译完成。"
 
-# ============ 3) 启动目标 ============
-Info "==> [3/3] 启动目标 ..."
-if ($doServer) { Start-Server }
+# ============ 3) 部署并启动 ============
+Info "==> [3/3] 部署并启动 ..."
+# 服务模式：所有文件必须在服务仍停着的时候一次性部署完，再启动。
+# 原来是「部署 server → 启动服务 → 部署 client」，服务一起来就把共用的
+# ImmurokCommon.dll 加载了，紧接着部署 client 必定失败。
+if ($Service) { Deploy-InstallDir -server $doServer -client $doClient }
+
+# 服务模式下上面为了部署把服务停了，即便本次目标只是 client 也要把它拉回来。
+if ($doServer -or $Service) { Start-Server }
+
 if ($doClient) {
-    if ($doServer) {
+    if ($doServer -or $Service) {
         Info "    等待 $ClientDelaySeconds 秒后启动 client ..."
         Start-Sleep -Seconds $ClientDelaySeconds
     }

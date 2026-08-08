@@ -108,18 +108,21 @@ void CPipeListener::_RunLoop()
     // The service connects only briefly to push a credential, so we recreate a
     // fresh pipe instance for each connection.
     //
-    // The DACL is left NULL (any caller may connect and write). This mirrors
-    // the alpha's behavior and is intentionally permissive; tightening it to
-    // grant only SYSTEM is a tracked hardening item. Because a NULL DACL means
-    // "no protection", never widen what the pipe trusts on the back of it.
+    // Restrict the pipe so only SYSTEM and Administrators may connect and write.
+    // Without this, any local process could write a "<user>\0<password>\0"
+    // payload and drive an auto-logon on the lock screen. The service runs as
+    // LocalSystem (SY), so it still fits. If the SD cannot be built we fail
+    // CLOSED: psa stays NULL, and a pipe created by a SYSTEM process with a NULL
+    // psa gets the token's default DACL (SYSTEM + Administrators) -- we never fall
+    // back to a world-writable NULL DACL.
     SECURITY_ATTRIBUTES sa = {};
-    SECURITY_DESCRIPTOR sd = {};
+    PSECURITY_DESCRIPTOR pSD = NULL;
     LPSECURITY_ATTRIBUTES psa = NULL;
-    if (InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION) &&
-        SetSecurityDescriptorDacl(&sd, TRUE /*present*/, NULL /*NULL DACL*/, FALSE))
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:(A;;GA;;;SY)(A;;GA;;;BA)", SDDL_REVISION_1, &pSD, NULL))
     {
         sa.nLength = sizeof(sa);
-        sa.lpSecurityDescriptor = &sd;
+        sa.lpSecurityDescriptor = pSD;
         sa.bInheritHandle = FALSE;
         psa = &sa;
     }
@@ -241,6 +244,23 @@ void CPipeListener::_RunLoop()
         DisconnectNamedPipe(hPipe);
         CloseHandle(hPipe);
     }
+
+    if (pSD != NULL)
+    {
+        LocalFree(pSD);
+    }
+}
+
+// Consumes the current authorization: one unlock payload authorizes exactly one
+// submission. Flip the "ready" flag off first so any re-enumeration LogonUI does
+// after this -- including the one triggered by clicking Cancel/back on a failed
+// attempt -- sees "not ready", drops the tile, and does NOT auto-submit again.
+void CPipeListener::ConsumeCredential()
+{
+    InterlockedExchange(&_fReady, 0);
+    EnterCriticalSection(&_lock);
+    _ClearCredentialLocked();
+    LeaveCriticalSection(&_lock);
 }
 
 // Parse a UTF-16LE "<username>\0<password>\0" payload and cache copies. Works on

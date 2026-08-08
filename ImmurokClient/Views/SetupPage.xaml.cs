@@ -70,6 +70,9 @@ public partial class SetupPage : Page
         _loading = true;
         string? sa = await AppServices.Pipe.SshAgentStatusAsync();
         SshAgentToggle.IsChecked = sa?.Contains("ON") == true;
+        // 自启是纯本地设置（HKCU\Run），不经服务，服务离线时也照常可读可改。
+        AutoStartToggle.IsChecked = AutoStart.IsEnabled;
+        AutoStartFail.Visibility = Visibility.Collapsed;
         _loading = false;
     }
 
@@ -85,6 +88,24 @@ public partial class SetupPage : Page
         if (!_configured) { ClearBtn.Opacity = 0; ClearBtn.IsHitTestVisible = false; return; }
         ClearBtn.Opacity = hovering ? 1 : 0;
         ClearBtn.IsHitTestVisible = hovering;
+    }
+
+    /// <summary>开机自启开关：写不进注册表时把开关拨回去并提示，不让界面显示未生效的状态。</summary>
+    private void OnAutoStartToggle(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        bool on = AutoStartToggle.IsChecked == true;
+        if (AutoStart.SetEnabled(on))
+        {
+            AutoStartFail.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            AutoStartFail.Visibility = Visibility.Visible;
+            _loading = true;
+            AutoStartToggle.IsChecked = !on;
+            _loading = false;
+        }
     }
 
     private async void OnSshAgentToggle(object sender, RoutedEventArgs e)

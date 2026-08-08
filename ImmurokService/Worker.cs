@@ -26,6 +26,7 @@ public sealed class Worker : BackgroundService
     private readonly SshAgentServer _sshAgent;
     private readonly CliServer _cli;
     private readonly AppSettings _settings;
+    private readonly FpInjectionSignal _injectionSignal;
 
     // 预授权：指纹先到、CP 还没就绪时置位，短时间内 CP 一上线即可解锁。
     private DateTime _preAuthUntil = DateTime.MinValue;
@@ -47,7 +48,8 @@ public sealed class Worker : BackgroundService
         CredentialStore creds,
         SshAgentServer sshAgent,
         CliServer cli,
-        AppSettings settings)
+        AppSettings settings,
+        FpInjectionSignal injectionSignal)
     {
         _log = log;
         _ble = ble;
@@ -59,6 +61,7 @@ public sealed class Worker : BackgroundService
         _sshAgent = sshAgent;
         _cli = cli;
         _settings = settings;
+        _injectionSignal = injectionSignal;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -127,7 +130,10 @@ public sealed class Worker : BackgroundService
             {
                 // 未锁屏：置预授权窗口，供未来的 AUTH/权限场景或刚进入锁屏时使用。
                 _preAuthUntil = DateTime.UtcNow + PreAuthWindow;
-                _log.LogDebug("非锁屏态收到指纹匹配，置预授权窗口");
+                // 同时置注入信号：客户端（用户会话）轮询 INJECT:POLL 拿到后，
+                // 对当前前台应用做密码注入。是否真的注入由客户端按前台应用是否命中注入项决定。
+                _injectionSignal.Signal(pageId);
+                _log.LogDebug("非锁屏态收到指纹匹配，置预授权窗口 + 注入信号");
             }
         }
         catch (Exception ex)

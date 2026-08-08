@@ -15,8 +15,9 @@
 //   - On receipt the listener caches the credentials, flips its "ready" flag,
 //     and asks the provider to re-enumerate its tiles so LogonUI submits them.
 //
-// NOTE: the pipe ACL is intentionally permissive in this alpha (see the .cpp);
-// tightening it to SYSTEM-only is tracked as a hardening item.
+// The pipe's DACL grants only SYSTEM and Administrators (see the .cpp), so an
+// unprivileged process cannot push a credential payload and drive an auto-logon.
+// The immurok service runs as LocalSystem, so it still connects normally.
 
 #pragma once
 
@@ -39,6 +40,14 @@ public:
     // Hands back weak references to the cached username/password. The listener
     // keeps ownership; callers must copy what they need and must not free them.
     void GetCredential(PWSTR* ppwzUsername, PWSTR* ppwzPassword);
+
+    // Consumes the current authorization: clears the "ready" flag and wipes the
+    // cached credential, so one fingerprint unlock authorizes exactly one
+    // submission. The credential calls this once LogonUI has taken the
+    // serialized credential (and again, defensively, on a failed logon). After
+    // it, GetUnlockingStatus() is FALSE until the next payload arrives -- which
+    // requires a fresh touch on the device, not a click on the Cancel button.
+    void ConsumeCredential();
 
 private:
     static DWORD WINAPI _ThreadProc(LPVOID lpParameter);

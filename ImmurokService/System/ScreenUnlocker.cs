@@ -7,8 +7,8 @@ namespace ImmurokService.Platform;
 
 /// <summary>
 /// 向 Credential Provider 管道写入用户名/密码以触发解锁。
-/// 连接 <c>\\.\pipe\ImmurokCredentialProvider</c>，依次 WriteFile 写 UTF-16
-/// <c>username\0</c>、<c>password\0</c>；CP 端 ReadFile 读到后提交凭据。
+/// 连接 <c>\\.\pipe\ImmurokCredentialProvider</c>，一次 WriteFile 写 UTF-16 的
+/// <c>username\0password\0</c>；CP 端一次 ReadFile 读走整块后提交凭据。
 /// </summary>
 public sealed class ScreenUnlocker
 {
@@ -33,17 +33,17 @@ public sealed class ScreenUnlocker
                 return false;
             }
 
-            byte[] u = Encoding.Unicode.GetBytes(username + '\0');
-            byte[] p = Encoding.Unicode.GetBytes(password + '\0');
+            // 必须一次写完。CP 端是字节流管道（PIPE_TYPE_BYTE），只做一次 ReadFile 就
+            // DisconnectNamedPipe；而它的 _StoreCredential 是按「username\0password\0」
+            // 一整块来解析的。分两次写会撞上竞态：CP 那次读常常只拿到用户名，密码字段
+            // 落在缓冲区已清零的部分 → 变成空密码，认证失败（而服务这边两次写都成功，
+            // 日志照报推送成功，于是表现为「服务说成了、屏幕没解开」）；写第二帧时若 CP
+            // 已经断开，还会得到 233 ERROR_PIPE_NOT_CONNECTED。
+            byte[] payload = Encoding.Unicode.GetBytes(username + '\0' + password + '\0');
 
-            if (!WriteFile(pipe, u, (uint)u.Length, out _, IntPtr.Zero))
+            if (!WriteFile(pipe, payload, (uint)payload.Length, out _, IntPtr.Zero))
             {
-                _log.LogError("写用户名失败: {Err}", Marshal.GetLastWin32Error());
-                return false;
-            }
-            if (!WriteFile(pipe, p, (uint)p.Length, out _, IntPtr.Zero))
-            {
-                _log.LogError("写密码失败: {Err}", Marshal.GetLastWin32Error());
+                _log.LogError("写解锁凭据失败: {Err}", Marshal.GetLastWin32Error());
                 return false;
             }
             _log.LogInformation("已向 CP 推送解锁凭据");

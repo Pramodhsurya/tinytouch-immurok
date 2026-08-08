@@ -74,9 +74,26 @@ HRESULT CSampleProvider::SetUsageScenario(
     // that we're not designed for that scenario.
     switch (cpus)
     {
+    case CPUS_CREDUI:
+        // Deliberately no tile and, crucially, NO pipe listener here.
+        //
+        // Credential providers are loaded into every process that shows a Windows
+        // credential dialog -- notably CredentialUIBroker.exe, which stays resident
+        // long after its dialog is gone. CPipeListener's pipe is created with
+        // max instances = 1, so whichever process gets there first owns the name for
+        // its whole lifetime; the lock screen's own instance then loses the race
+        // forever (CreateNamedPipeW keeps failing with ERROR_PIPE_BUSY). The service
+        // still connects and writes successfully -- to the wrong, resident instance --
+        // so unlock silently does nothing and no tile ever appears.
+        //
+        // Fingerprint unlock is only meaningful for the lock screen / logon, so the
+        // CredUI scenario has no reason to listen at all.
+        _cpus = cpus;
+        hr = S_OK;
+        break;
+
     case CPUS_LOGON:
     case CPUS_UNLOCK_WORKSTATION:
-    case CPUS_CREDUI:
         _cpus = cpus;
 
         // Create the CSampleCredential (for connected scenarios), the CMessageCredential
@@ -253,10 +270,11 @@ HRESULT CSampleProvider::GetCredentialCount(
     BOOL* pbAutoLogonWithDefault
     )
 {
- //   *pdwCount = _pPipeListener->GetUnlockingStatus() ? 1 : 0;
 	*pdwCount = 0;
     *pdwDefault = 0;
-	if (_pPipeListener->GetUnlockingStatus())
+	// _pPipeListener is NULL in the CredUI scenario (see SetUsageScenario) -- must be
+	// checked first, or this dereferences NULL inside whatever process hosts that dialog.
+	if (_pPipeListener != NULL && _pPipeListener->GetUnlockingStatus())
 	{
         *pbAutoLogonWithDefault = TRUE;
         *pdwCount = 1;
@@ -278,12 +296,18 @@ HRESULT CSampleProvider::GetCredentialAt(
     )
 {
     HRESULT hr;
-    // Make sure the parameters are valid.
-    if ((dwIndex == 0) && ppcpc)
+    // Make sure the parameters are valid. GetCredentialCount reports 0 when there is no
+    // listener (CredUI scenario), so this should not be reached then -- but never trust
+    // the caller with a NULL dereference inside a credential provider.
+    if ((dwIndex == 0) && ppcpc && _pPipeListener != NULL && _pCredential != NULL)
     {
         PWSTR username;
         PWSTR password;
         _pPipeListener->GetCredential(&username, &password);
+        // Give the credential a weak ref to the listener so it can consume the
+        // single-use unlock authorization (in GetSerialization) and read whether
+        // it is currently armed (in SetSelected).
+        _pCredential->SetPipeListener(_pPipeListener);
         hr = _pCredential->Initialize(_cpus, s_rgCredProvFieldDescriptors, s_rgFieldStatePairs, username, password);
         hr = _pCredential->QueryInterface(IID_ICredentialProviderCredential, reinterpret_cast<void**>(ppcpc));
     }

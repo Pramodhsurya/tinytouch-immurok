@@ -23,7 +23,8 @@ CSampleCredential::CSampleCredential():
     _cRef(1),
     _pCredProvCredentialEvents(NULL),
     _pwzUsername(NULL),
-    _pwzPassword(NULL)
+    _pwzPassword(NULL),
+    _pPipeListener(NULL)
 {
     DllAddRef();
 
@@ -169,9 +170,15 @@ HRESULT CSampleCredential::UnAdvise()
 // field definitions.  But if you want to do something
 // more complicated, like change the contents of a field when the tile is
 // selected, you would do it here.
-HRESULT CSampleCredential::SetSelected(BOOL* pbAutoLogon)  
+HRESULT CSampleCredential::SetSelected(BOOL* pbAutoLogon)
 {
-    *pbAutoLogon = FALSE;  
+    // Auto-submit exactly when we are armed by a fresh fingerprint unlock. This
+    // agrees with GetCredentialCount's pbAutoLogonWithDefault instead of
+    // contradicting it (the old hard-coded FALSE gave LogonUI two opposing
+    // signals, which could make the first auto-submit go out in an inconsistent
+    // state and fail). Because the authorization is single-use -- GetSerialization
+    // consumes it -- this fires once per touch and never loops.
+    *pbAutoLogon = (_pPipeListener != NULL && _pPipeListener->GetUnlockingStatus()) ? TRUE : FALSE;
     return S_OK;
 }
 
@@ -449,9 +456,20 @@ HRESULT CSampleCredential::GetSerialization(
  
                         // At this point the credential has created the serialized credential used for logon
                         // By setting this to CPGSR_RETURN_CREDENTIAL_FINISHED we are letting logonUI know
-                        // that we have all the information we need and it should attempt to submit the 
+                        // that we have all the information we need and it should attempt to submit the
                         // serialized credential.
                         *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
+
+                        // Single-use: the serialization above already copied the
+                        // credential out of the listener, so consume the unlock
+                        // authorization now. Whatever the logon result, LogonUI's
+                        // next re-enumeration (including a Cancel/back click) sees
+                        // "not armed" and will not auto-submit again. A second
+                        // unlock requires a fresh touch on the device.
+                        if (_pPipeListener != NULL)
+                        {
+                            _pPipeListener->ConsumeCredential();
+                        }
                     }
                 }
             }
@@ -521,6 +539,15 @@ HRESULT CSampleCredential::ReportResult(
         if (_pCredProvCredentialEvents)
         {
             _pCredProvCredentialEvents->SetFieldString(this, SFI_PASSWORD, L"");
+        }
+
+        // Defensive: GetSerialization already consumed the authorization, but if
+        // a logon failed make doubly sure we are disarmed so the error tile does
+        // not re-submit the stored password when the user clicks Cancel/back. A
+        // failed unlock must require a fresh fingerprint, never a Cancel click.
+        if (_pPipeListener != NULL)
+        {
+            _pPipeListener->ConsumeCredential();
         }
     }
 

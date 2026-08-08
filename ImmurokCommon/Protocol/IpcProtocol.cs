@@ -22,6 +22,9 @@ public static class IpcProtocol
     public const string CancelGate  = "CANCELGATE";
     /// <summary>功能开关。FEATURE:GET -&gt; OK:&lt;unlock&gt;:&lt;lock&gt;:&lt;ssh&gt;:&lt;agent&gt;:&lt;otp&gt;（各 0/1）；FEATURE:SET:&lt;name&gt;:&lt;0|1&gt; -&gt; OK</summary>
     public const string Feature     = "FEATURE";
+    /// <summary>指纹注入信号轮询。INJECT:POLL -&gt; OK:&lt;pageId&gt;（有一次非锁屏态指纹匹配可用于注入，取用并消费）| OK（无）。</summary>
+    public const string Inject      = "INJECT";
+    public const string InjectPoll  = "POLL";
 
     // FEATURE 子命令与功能名
     public const string FeatureGet    = "GET";

@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -30,9 +31,21 @@ public partial class AboutPage : Page
 
     private async void OnLocLanguageChanged() => await LoadCurrentVersionAsync();
 
+    /// <summary>
+    /// 应用版本号取自程序集（源头是 Directory.Build.props 的 &lt;Version&gt;）。
+    /// 原来这串是写死在多语言文案里的，升版本时必然漏掉——关于页一直显示 0.1.0。
+    /// </summary>
+    private static string AppVersion =>
+        Assembly.GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion.Split('+')[0]          // 去掉 SourceLink 追加的 +<commit>
+        ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)
+        ?? "";
+
     /// <summary>读取当前设备固件版本填入卡片（未连接则置未知）。</summary>
     private async Task LoadCurrentVersionAsync()
     {
+        AppVersionText.Text = T("about.version", AppVersion);
         _deviceVersion = null;
         string? info = await AppServices.Pipe.InfoAsync();
         if (info is not null && info.StartsWith(IpcProtocol.Ok))

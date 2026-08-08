@@ -45,11 +45,22 @@ internal static class Program
             "list" => CmdList(args[1..]),
             "get" => CmdGet(args[1..]),
             "run" => CmdRun(args[1..]),
-            "version" or "--version" or "-v" => Print("imk 0.2.0"),
+            "version" or "--version" or "-v" => Print($"imk {AppVersion}"),
             "help" or "--help" or "-h" => PrintUsage(),
             _ => Unknown(args[0]),
         };
     }
+
+    /// <summary>
+    /// 版本号取自程序集（源头是 Directory.Build.props 的 &lt;Version&gt;），不要在这里再写死一份——
+    /// 之前硬编码的 "0.2.0" 在 props 升到新版本后就对不上了。
+    /// </summary>
+    private static string AppVersion =>
+        Assembly.GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion.Split('+')[0]          // 去掉 SourceLink 追加的 +<commit>
+        ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)
+        ?? "unknown";
 
     private static int Unknown(string c) { Err($"imk: unknown command '{c}'"); PrintUsage(); return 1; }
     private static int Print(string s) { Console.WriteLine(s); return 0; }

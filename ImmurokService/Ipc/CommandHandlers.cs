@@ -23,9 +23,10 @@ public sealed class CommandHandlers
     private readonly CredentialStore _creds;
     private readonly SshAgentServer _sshAgent;
     private readonly AppSettings _settings;
+    private readonly FpInjectionSignal _injectionSignal;
 
     public CommandHandlers(ILogger<CommandHandlers> log, BleManager ble, ImmurokSecurity security,
-        CredentialStore creds, SshAgentServer sshAgent, AppSettings settings)
+        CredentialStore creds, SshAgentServer sshAgent, AppSettings settings, FpInjectionSignal injectionSignal)
     {
         _log = log;
         _ble = ble;
@@ -33,6 +34,7 @@ public sealed class CommandHandlers
         _creds = creds;
         _sshAgent = sshAgent;
         _settings = settings;
+        _injectionSignal = injectionSignal;
     }
 
     public async Task<string> HandleAsync(string request, CancellationToken ct)
@@ -58,6 +60,8 @@ public sealed class CommandHandlers
                 IpcProtocol.CancelGate => await HandleCancelGateAsync(),
                 // 功能开关：不要求设备在线（纯本地设置）。
                 IpcProtocol.Feature => await HandleFeatureAsync(parts),
+                // 指纹注入信号长轮询：挂起等信号或超时，客户端零空转。
+                IpcProtocol.Inject => await HandleInjectAsync(parts, ct),
                 IpcProtocol.Ota    => IpcProtocol.ErrOtaNotAvailable, // OTA 待阶段5实现
                 _ => IpcProtocol.ErrUnknownCommand,
             };
@@ -114,6 +118,23 @@ public sealed class CommandHandlers
     {
         await _ble.CancelGateAsync();
         return IpcProtocol.Ok;
+    }
+
+    /// <summary>
+    /// 指纹注入信号长轮询。INJECT:POLL -&gt; 挂起最多 25 秒，期间来了指纹信号立即以
+    /// OK:&lt;pageId&gt;（并消费掉）返回，否则超时回 OK。客户端拿到响应后立刻发起下一发，
+    /// 从而零空转、近乎推送级延迟。管道为多实例并发，挂起不影响其它 IPC。
+    /// </summary>
+    private async Task<string> HandleInjectAsync(string[] parts, CancellationToken ct)
+    {
+        if (parts.Length >= 2 && parts[1] == IpcProtocol.InjectPoll)
+        {
+            await _injectionSignal.WaitForSignalAsync(TimeSpan.FromSeconds(25), ct).ConfigureAwait(false);
+            return _injectionSignal.Consume(out ushort pageId)
+                ? $"{IpcProtocol.Ok}{IpcProtocol.Sep}{pageId}"
+                : IpcProtocol.Ok;
+        }
+        return IpcProtocol.ErrInvalidFormat;
     }
 
     private string HandleStatus()

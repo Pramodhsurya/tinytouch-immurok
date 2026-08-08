@@ -8,7 +8,8 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto" h:WheelScroll.Enabled="True">
         <StackPanel Margin="28,24,28,24" MaxWidth="640" HorizontalAlignment="Left">
             <TextBlock Text="{loc:Tr about.name}" FontSize="28" FontWeight="Bold" Margin="0,0,0,2" />
-            <TextBlock Text="{loc:Tr about.version}" Opacity="0.6" Margin="0,0,0,20" />
+            <!-- 版本号在代码里填入（取自程序集），文案只留 {0} 占位 -->
+            <TextBlock x:Name="AppVersionText" Opacity="0.6" Margin="0,0,0,20" />
 
             <ui:Card Margin="0,0,0,14" Padding="18">
                 <StackPanel>
