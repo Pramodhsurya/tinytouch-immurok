@@ -20,25 +20,36 @@ public static class InjectionEngine
         IntPtr hwnd = GetForegroundWindow();
         if (hwnd == IntPtr.Zero) return "no-foreground";
 
-        GetWindowThreadProcessId(hwnd, out int pid);
+        // 传统 UWP 的窗口挂在 ApplicationFrameHost 名下，要下钻到 CoreWindow 才是应用本身。
+        int pid = AppIdentity.ResolveHostPid(hwnd);
         if (pid <= 0) return "no-pid";
         if (pid == Environment.ProcessId) return "self"; // 不注入到自己
 
-        string exe = TryGetProcessPath(pid);
-        if (string.IsNullOrEmpty(exe)) return "no-exe";
+        AppIdentity id = AppIdentity.FromProcess(pid);
+        if (id.ExePath.Length == 0) return "no-exe";
 
-        // 按 exe 路径匹配注入项
-        var item = PasswordInjectionStore.Items.FirstOrDefault(
-            x => !string.IsNullOrEmpty(x.AppId) &&
-                 string.Equals(x.AppId, exe, StringComparison.OrdinalIgnoreCase));
+        // 按身份强度择优：包族名 → 签名主体+文件名 → exe 路径。
+        // 外层遍历强度、内层遍历条目，保证「有强身份能命中就绝不退到路径」。
+        PasswordInjectionItem? item = null;
+        AppMatchKind kind = AppMatchKind.None;
+        foreach (AppMatchKind k in new[] { AppMatchKind.Package, AppMatchKind.Signature, AppMatchKind.Path })
+        {
+            item = PasswordInjectionStore.Items.FirstOrDefault(x => AppIdentity.Matches(x, id, k));
+            if (item is not null) { kind = k; break; }
+        }
         if (item is null) return "no-match";
 
-        // 安全闸：注入项存了签名指纹时，前台 exe 的指纹必须一致，防止仿冒进程冒领密码。
-        if (!string.IsNullOrEmpty(item.Signature))
+        // 安全闸。三种命中方式的信任来源不同：
+        //   Package   —— 包族名由系统背书，仿冒进程拿不到别人的包身份，无需再校验。
+        //   Signature —— 命中条件本身就包含「签名主体 CN 相同」，已经是防线；
+        //                指纹只作参考：证书续期（1–3 年一次）必然变，拿它做硬闸会让注入
+        //                在某天毫无征兆地失效，用户完全无从诊断。
+        //   Path      —— 路径不构成任何身份主张，而 per-user 安装目录当前用户可写。
+        //                所以条目当初若记到过签名，这里必须复核 CN；对不上就是仿冒，拒绝。
+        if (kind == AppMatchKind.Path && item.Publisher.Length > 0
+            && !string.Equals(item.Publisher, id.Publisher, StringComparison.OrdinalIgnoreCase))
         {
-            string thumb = TryGetThumbprint(exe);
-            if (!string.Equals(thumb, item.Signature, StringComparison.OrdinalIgnoreCase))
-                return "sig-mismatch";
+            return "sig-mismatch";
         }
 
         string? pw = PasswordInjectionStore.GetPassword(item);
@@ -298,39 +309,4 @@ public static class InjectionEngine
     [DllImport("user32.dll", SetLastError = true)]
     private static extern int GetWindowThreadProcessId(IntPtr hWnd, out int pid);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool QueryFullProcessImageNameW(IntPtr h, uint flags, StringBuilder buf, ref uint size);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CloseHandle(IntPtr h);
-
-    private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
-
-    private static string TryGetProcessPath(int pid)
-    {
-        IntPtr h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-        if (h == IntPtr.Zero) return "";
-        try
-        {
-            var sb = new StringBuilder(1024);
-            uint sz = (uint)sb.Capacity;
-            return QueryFullProcessImageNameW(h, 0, sb, ref sz) ? sb.ToString() : "";
-        }
-        finally { CloseHandle(h); }
-    }
-
-    private static string TryGetThumbprint(string exePath)
-    {
-        try
-        {
-            using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(exePath));
-            return cert.Thumbprint ?? "";
-        }
-        catch { return ""; }
-    }
 }

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace ImmurokClient.Services;
 
@@ -20,12 +21,25 @@ public sealed class PasswordInjectionItem
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "";
 
-    // 应用 ID = 目标可执行文件完整路径（Windows 上最稳定的应用身份锚点）
+    // ---- 应用身份 ----
+    // 匹配按强度择优：包族名 → 签名主体+文件名 → exe 路径（见 AppIdentity.Matches）。
+    // 老配置只有 AppId/Publisher/Signature，反序列化后新字段为空，自动退回路径匹配；
+    // 用户下次重新定位即升级到强身份。
+
+    // exe 完整路径。最弱的一档：应用升级换目录（Electron/Squirrel、MSIX）就失配。
     public string AppId { get; set; } = "";
-    // 发行人 = Authenticode 签名证书主体 CN（未签名为空）
+    // 发行人 = Authenticode 签名证书主体 CN（未签名为空）。签名匹配的主键。
     public string Publisher { get; set; } = "";
-    // 数字签名 = 签名证书指纹 thumbprint（未签名为空）
+    // 数字签名 = 签名证书指纹 thumbprint（未签名为空）。仅作参考：证书续期会变，不当硬闸。
     public string Signature { get; set; } = "";
+    // MSIX/Store 包族名，不含版本号。最稳的一档。
+    public string PackageFamilyName { get; set; } = "";
+    // Application User Model ID。目前只作展示/诊断，不参与匹配。
+    public string Aumid { get; set; } = "";
+    // PE VERSIONINFO 里的原始文件名，配合 Publisher 做签名匹配。
+    public string OriginalFilename { get; set; } = "";
+    // 磁盘上的 exe 文件名，OriginalFilename 缺失时的替补。
+    public string ExeName { get; set; } = "";
 
     // 密码框模板：AutomationId 为主键，其余属性用于再定位时的兜底匹配
     public string FieldAutomationId { get; set; } = "";
@@ -38,8 +52,24 @@ public sealed class PasswordInjectionItem
     // 专属密码：DPAPI(CurrentUser) 加密后的 base64；磁盘上永不出现明文
     public string PasswordProtected { get; set; } = "";
 
+    // 以下三个是算出来的，[JsonIgnore] 免得写进 injections.json ——
+    // 它们没有 setter，反序列化本来就会忽略，留在文件里纯属噪音。
+    [JsonIgnore]
     public bool HasPassword => !string.IsNullOrEmpty(PasswordProtected);
-    public bool HasTarget => !string.IsNullOrEmpty(AppId);
+
+    [JsonIgnore]
+    public bool HasTarget =>
+        !string.IsNullOrEmpty(PackageFamilyName)
+        || (!string.IsNullOrEmpty(Publisher) && !string.IsNullOrEmpty(ExeName))
+        || !string.IsNullOrEmpty(AppId);
+
+    /// <summary>这条项目实际能用上的最强身份——决定 UI 上怎么描述它的稳定性。</summary>
+    [JsonIgnore]
+    public AppMatchKind BestIdentity =>
+        !string.IsNullOrEmpty(PackageFamilyName) ? AppMatchKind.Package
+        : !string.IsNullOrEmpty(Publisher) ? AppMatchKind.Signature
+        : !string.IsNullOrEmpty(AppId) ? AppMatchKind.Path
+        : AppMatchKind.None;
 }
 
 /// <summary>

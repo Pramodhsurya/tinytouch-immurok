@@ -31,20 +31,7 @@
                     </StackPanel>
                     <TextBlock x:Name="PairText" Text="{loc:Tr common.querying}" Opacity="0.85" Margin="0,0,0,10" />
                     <ui:Button x:Name="PairBtn" Content="{loc:Tr device.pair.start}" Icon="{ui:SymbolIcon Link24}" Click="OnPairClick" />
-                    <!-- 实时配对步骤。帧来自 Service 的 PAIR:START 流（源头是设备的 0x34 通知），
-                         所以勾是真的走到了那一步，不是按时间猜的。首次配对只有「按键」一步，
-                         登记第二台主机才会显示指纹那一行。 -->
-                    <StackPanel x:Name="PairSteps" Margin="0,10,0,0" Visibility="Collapsed">
-                        <StackPanel x:Name="PairStep1Row" Orientation="Horizontal" Margin="0,0,0,3">
-                            <TextBlock x:Name="PairStep1Mark" Width="20" FontSize="12" VerticalAlignment="Top" />
-                            <TextBlock x:Name="PairStep1Text" FontSize="12" TextWrapping="Wrap" MaxWidth="500" />
-                        </StackPanel>
-                        <StackPanel x:Name="PairStep2Row" Orientation="Horizontal">
-                            <TextBlock x:Name="PairStep2Mark" Width="20" FontSize="12" VerticalAlignment="Top" />
-                            <TextBlock x:Name="PairStep2Text" FontSize="12" TextWrapping="Wrap" MaxWidth="500" />
-                        </StackPanel>
-                    </StackPanel>
-
+                    <!-- 配对过程走 PairDialog 分步引导窗；这里只留结果。 -->
                     <!-- 配对操作的结果单独一行：PairText 是「当前状态」，刷新时会被重写，
                          把失败原因写在那里等于刷新一次就丢。 -->
                     <TextBlock x:Name="PairResult" Text="" Margin="0,8,0,0" Opacity="0.85"

@@ -17,7 +17,7 @@
 ;    并始终保留密码登录作为后备。
 
 #ifndef AppVersion
-  #define AppVersion "0.4.0"
+  #define AppVersion "0.4.1"
 #endif
 #ifndef StageDir
   #define StageDir "stage"

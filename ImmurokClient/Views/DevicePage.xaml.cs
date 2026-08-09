@@ -61,10 +61,8 @@ public partial class DevicePage : Page
 
     private async Task RefreshAsync()
     {
-        // 上一次操作的结果与步骤不跨刷新保留（PairAsync 会在刷新之后重新写上自己的结果）。
+        // 上一次操作的结果不跨刷新保留（PairAsync 会在刷新之后重新写上自己的结果）。
         SetPairResult("");
-        PairSteps.Visibility = Visibility.Collapsed;
-        _pairStage = PairUiStage.None;
 
         // 连接状态
         string? status = await AppServices.Pipe.StatusAsync();
@@ -319,31 +317,28 @@ public partial class DevicePage : Page
             return;
         }
 
-        // 槽位状态在 RefreshDualHostAsync 里已经读过，这里只用来决定要不要画指纹那一步。
-        // （Service 会自己再查一次来决定起始阶段，两边判据一致。）
+        // 槽位状态在 RefreshDualHostAsync 里已经读过，这里只用来决定引导窗画几步。
+        // （Service 会自己再查一次来决定起始阶段，两边判据一致；不一致时以服务端为准，
+        //   引导窗收到 WaitFingerprint 会把指纹那一步补出来。）
         bool twoStep = _slotsKnown && _deviceBound;
         PairBtn.IsEnabled = false;
         Slot1ActionBtn.IsEnabled = Slot2ActionBtn.IsEnabled = false;
-        BeginPairSteps(twoStep);
-        SetPairResult(T("msg.pair.running"));
+        SetPairResult("");
 
-        // 进度回调来自管道读取线程，必须切回 UI 线程再动控件。
-        // 用 BeginInvoke 而非 Invoke：进度只是提示，不该让读取循环等 UI 排队；
-        // 同优先级投递本身保序，步骤不会乱跳。
-        string r = await AppServices.Pipe.PairStartStreamAsync(
-            frame => Dispatcher.BeginInvoke(new Action(() => OnPairProgress(frame))));
+        // 整个配对过程在引导窗里走完（内部消费 PAIR:START 流），返回终态。
+        PairOutcome outcome = PairDialog.Run(Window.GetWindow(this), twoStep);
 
-        string result = r switch
+        string result = outcome.Terminal switch
         {
             var x when x.Contains("PAIRED") => T("msg.pair.ok"),
+            PairDialog.Cancelled => T("msg.pair.cancelled"),
             var x when x.Contains("NOSERVICE") => T("msg.pair.noservice"),
             var x when x.Contains("NOT_CONNECTED") => T("msg.pair.notconnected"),
             var x when x.Contains("NEEDSRESET") => T("msg.pair.needsreset"),
             var x when x.Contains("LINKPARAMS") => T("msg.pair.linkparams"),
             // 超时到底卡在哪一步，看设备最后推到的阶段，不靠猜。
             var x when x.Contains("WAITBUTTON")
-                => T(_pairStage == PairUiStage.WaitFingerprint
-                    ? "msg.pair.waitbutton_fp" : "msg.pair.waitbutton"),
+                => T(outcome.FingerprintDone ? "msg.pair.waitbutton" : "msg.pair.waitbutton_fp"),
             _ => T("msg.pair.fail"),
         };
 
@@ -351,101 +346,6 @@ public partial class DevicePage : Page
         // 但它也会重写 PairText / 清 PairResult，所以结果文案放在刷新之后。
         await RefreshAsync();
         SetPairResult(result);
-    }
-
-    // ---- 实时配对步骤 ----
-
-    private enum PairUiStage { None, WaitFingerprint, WaitButton, Computing }
-    private enum StepState { Pending, Active, Done }
-
-    private PairUiStage _pairStage = PairUiStage.None;
-
-    /// <summary>✓ 用绿色，和「已完成」这件事对上；其余两态靠字重与透明度区分。</summary>
-    private static readonly System.Windows.Media.Brush DoneBrush =
-        new System.Windows.Media.SolidColorBrush(
-            System.Windows.Media.Color.FromRgb(0x4C, 0xAF, 0x50));
-
-    private void BeginPairSteps(bool twoStep)
-    {
-        PairStep1Text.Text = T("pair.step.fp");
-        PairStep2Text.Text = T("pair.step.button");
-        // 首次配对没有指纹这一步，整行不画——留一行灰字反而让人以为漏了操作。
-        PairStep1Row.Visibility = twoStep ? Visibility.Visible : Visibility.Collapsed;
-
-        _pairStage = twoStep ? PairUiStage.WaitFingerprint : PairUiStage.WaitButton;
-        ApplyPairStage();
-        PairSteps.Visibility = Visibility.Visible;
-    }
-
-    /// <summary>PROGRESS:&lt;stage&gt;[:&lt;remaining&gt;] —— 由 Service 转发的设备 0x34 通知。</summary>
-    private void OnPairProgress(string frame)
-    {
-        string[] p = frame.Split(IpcProtocol.Sep);
-        if (p.Length < 2) return;
-
-        switch (p[1])
-        {
-            case nameof(PairUiStage.WaitFingerprint):
-                // 服务端是在配对前刚查的槽位，判据比本页缓存新：它说要指纹，就把这一行补出来。
-                PairStep1Row.Visibility = Visibility.Visible;
-                _pairStage = PairUiStage.WaitFingerprint;
-                SetPairResult(T("msg.pair.running"));
-                break;
-            case nameof(PairUiStage.WaitButton):
-                _pairStage = PairUiStage.WaitButton;
-                SetPairResult(T("msg.pair.running"));
-                break;
-            case nameof(PairUiStage.Computing):
-                _pairStage = PairUiStage.Computing;
-                SetPairResult(T("msg.pair.computing"));
-                break;
-            case "FingerprintRejected":
-                // 阶段不变，设备还在等；只报还能试几次。
-                int.TryParse(p.Length >= 3 ? p[2] : "", out int left);
-                SetPairResult(T("msg.pair.fp_rejected", left));
-                return;
-            default:
-                return; // 未知阶段（固件比客户端新）：忽略，别把界面搞乱
-        }
-        ApplyPairStage();
-    }
-
-    private void ApplyPairStage()
-    {
-        // 指纹这一步：走到 WaitButton 及以后就算过了。
-        SetStep(PairStep1Mark, PairStep1Text,
-            _pairStage == PairUiStage.WaitFingerprint ? StepState.Active : StepState.Done);
-        SetStep(PairStep2Mark, PairStep2Text, _pairStage switch
-        {
-            PairUiStage.WaitFingerprint => StepState.Pending,
-            PairUiStage.WaitButton => StepState.Active,
-            _ => StepState.Done,
-        });
-    }
-
-    private static void SetStep(TextBlock mark, TextBlock label, StepState state)
-    {
-        switch (state)
-        {
-            case StepState.Done:
-                mark.Text = "✓";
-                mark.Foreground = DoneBrush;
-                mark.Opacity = label.Opacity = 0.75;
-                label.FontWeight = FontWeights.Normal;
-                break;
-            case StepState.Active:
-                mark.Text = "▶";
-                mark.ClearValue(TextBlock.ForegroundProperty);
-                mark.Opacity = label.Opacity = 1.0;
-                label.FontWeight = FontWeights.SemiBold;
-                break;
-            default:
-                mark.Text = "○";
-                mark.ClearValue(TextBlock.ForegroundProperty);
-                mark.Opacity = label.Opacity = 0.45;
-                label.FontWeight = FontWeights.Normal;
-                break;
-        }
     }
 
     /// <summary>配对操作结果行；无内容时收起，免得卡片底部凭空多一段空白。</summary>

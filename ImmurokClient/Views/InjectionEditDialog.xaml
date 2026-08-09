@@ -38,19 +38,25 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="{loc:Tr inject.f.app}" Opacity="0.55" FontSize="11" Margin="0,0,10,3" />
-                        <TextBlock Grid.Row="0" Grid.Column="1" x:Name="AppText" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
+                        <!-- 匹配方式：这条注入项实际拿哪种身份认应用（包族名/签名/路径）。
+                             放在最前面，因为它决定了下面「应用」那一行显示的是什么。 -->
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="{loc:Tr inject.f.match}" Opacity="0.55" FontSize="11" Margin="0,0,10,3" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" x:Name="MatchKindText" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="{loc:Tr inject.f.publisher}" Opacity="0.55" FontSize="11" Margin="0,0,10,3" />
-                        <TextBlock Grid.Row="1" Grid.Column="1" x:Name="PublisherText" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="{loc:Tr inject.f.app}" Opacity="0.55" FontSize="11" Margin="0,0,10,3" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" x:Name="AppText" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="{loc:Tr inject.f.signature}" Opacity="0.55" FontSize="11" Margin="0,0,10,3" />
-                        <TextBlock Grid.Row="2" Grid.Column="1" x:Name="SignatureText" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="{loc:Tr inject.f.publisher}" Opacity="0.55" FontSize="11" Margin="0,0,10,3" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" x:Name="PublisherText" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
 
-                        <TextBlock Grid.Row="3" Grid.Column="0" Text="{loc:Tr inject.f.fieldid}" Opacity="0.55" FontSize="11" Margin="0,0,10,0" />
-                        <TextBlock Grid.Row="3" Grid.Column="1" x:Name="FieldIdText" FontSize="11" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="{loc:Tr inject.f.signature}" Opacity="0.55" FontSize="11" Margin="0,0,10,3" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" x:Name="SignatureText" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="{loc:Tr inject.f.fieldid}" Opacity="0.55" FontSize="11" Margin="0,0,10,0" />
+                        <TextBlock Grid.Row="4" Grid.Column="1" x:Name="FieldIdText" FontSize="11" TextTrimming="CharacterEllipsis" />
                     </Grid>
 
                     <TextBlock x:Name="WarnText" Foreground="#FFE0A030" FontSize="11" TextWrapping="Wrap"

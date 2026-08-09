@@ -1,6 +1,5 @@
 using System;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Windows.Automation;
 
@@ -10,9 +9,7 @@ namespace ImmurokClient.Services;
 /// 一次捕获的目标：目标密码框的模板 + 其宿主应用身份（exe / 发行人 / 签名指纹）。
 /// </summary>
 public sealed record CapturedTarget(
-    string AppId,            // exe 完整路径
-    string Publisher,        // 签名证书主体 CN（未签名为空）
-    string Signature,        // 签名证书指纹（未签名为空）
+    AppIdentity App,         // 应用身份（包族名 / 签名 / 路径，见 AppIdentity）
     string FieldAutomationId,
     string FieldName,
     string FieldControlType,
@@ -55,10 +52,11 @@ public static class WindowFieldCapture
         if (pid == Environment.ProcessId) return null;
 
         string windowTitle = TryGetWindowTitle(el);
-        string exe = TryGetProcessPath(pid);
-        var (publisher, thumb) = TryGetAuthenticode(exe);
+        // UIA 给的 pid 已经是元素真正的宿主进程（传统 UWP 也不会是 ApplicationFrameHost），
+        // 所以这里直接用它取身份，不必再做窗口下钻。
+        AppIdentity app = AppIdentity.FromProcess(pid);
 
-        return new CapturedTarget(exe, publisher, thumb, autoId, name, ctrl, cls, windowTitle, isPass);
+        return new CapturedTarget(app, autoId, name, ctrl, cls, windowTitle, isPass);
     }
 
     /// <summary>轻量采样光标下的元素（不算签名），供定位时的高亮框 + 信息卡实时显示。rect 为元素物理边界矩形。</summary>
@@ -129,16 +127,4 @@ public static class WindowFieldCapture
         finally { CloseHandle(h); }
     }
 
-    // ---- Authenticode：取签名者证书主体 CN + 指纹（仅抽取信息，不验证信任链） ----
-    private static (string publisher, string thumbprint) TryGetAuthenticode(string exePath)
-    {
-        if (string.IsNullOrEmpty(exePath)) return ("", "");
-        try
-        {
-            using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(exePath));
-            string cn = cert.GetNameInfo(X509NameType.SimpleName, false) ?? "";
-            return (cn, cert.Thumbprint ?? "");
-        }
-        catch { return ("", ""); } // 未签名 / 读不到证书
-    }
 }
