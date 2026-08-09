@@ -44,6 +44,17 @@ public partial class MainWindow : FluentWindow
     private void OnThemeChanged(ApplicationTheme currentTheme, Color accent) => UpdateAppIcon();
 
     /// <summary>
+    /// 未配对引导的落点：切到「设备」页并让配对按钮拿到焦点（焦点框就是视觉指引）。
+    /// 页面实例可能被 NavigationView 缓存复用，所以用静态标志传递「这次要聚焦配对」，
+    /// 由 DevicePage 在 Loaded 时消费——已经停在设备页时也照样生效。
+    /// </summary>
+    public void GoToPairing()
+    {
+        DevicePage.FocusPairingOnLoad = true;
+        RootNavigation.Navigate(typeof(DevicePage));
+    }
+
+    /// <summary>
     /// 把 NavigationView 内所有 ScrollViewer 复位到顶部。左侧导航面板项少不滚动，
     /// 复位无副作用；真正生效的是承载右侧页面内容的那个宿主 ScrollViewer。
     /// </summary>

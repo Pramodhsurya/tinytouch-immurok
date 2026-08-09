@@ -39,6 +39,8 @@ public partial class FeaturesPage : Page
         _loading = true;
         try
         {
+            await PairBanner.RefreshAsync();
+
             string? r = await AppServices.Pipe.FeatureGetAsync();
             if (r is null || !r.StartsWith(IpcProtocol.Ok))
             {
@@ -83,6 +85,18 @@ public partial class FeaturesPage : Page
         if (sender is not ToggleSwitch sw || sw.Tag is not string name) return;
 
         bool on = sw.IsChecked == true;
+
+        // 五个功能全靠设备完成认证，未配对时开了也只是个摆设：拦下来说明原因并引导去配对，
+        // 同时把开关拨回原位——别让界面显示一个不会生效的「已开启」。
+        if (on && !await PairingGuard.EnsurePairedAsync(Window.GetWindow(this)))
+        {
+            _loading = true;
+            sw.IsChecked = false;
+            _loading = false;
+            StatusText.Text = T("msg.pair.required_banner");
+            return;
+        }
+
         sw.IsEnabled = false;
         try
         {

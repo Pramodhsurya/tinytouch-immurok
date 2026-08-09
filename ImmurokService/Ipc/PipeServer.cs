@@ -77,6 +77,16 @@ public sealed class PipeServer : IAsyncDisposable
                     continue;
                 }
 
+                // 配对也是流式命令：设备的指纹门/按键阶段要实时推给界面。
+                // CliServer 仍走 HandleAsync 里的非流式 PAIR:START（imk 不需要分步提示）。
+                if (request == $"{IpcProtocol.Pair}:{IpcProtocol.PairStart}")
+                {
+                    await _handlers.HandlePairStartStreamAsync(
+                        frame => IpcFraming.WriteFrameAsync(server, frame, ct),
+                        ct).ConfigureAwait(false);
+                    continue;
+                }
+
                 // OTA 推送也是流式命令。
                 if (request.StartsWith("OTA:PUSH:", StringComparison.Ordinal))
                 {

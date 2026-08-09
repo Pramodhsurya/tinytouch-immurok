@@ -74,8 +74,44 @@ public sealed class PipeClient
     public Task<string?> PairStatusAsync(CancellationToken ct = default)
         => SendAsync($"{IpcProtocol.Pair}:{IpcProtocol.PairStatus}", ct: ct);
 
-    public Task<string?> PairStartAsync(CancellationToken ct = default)
-        => SendAsync($"{IpcProtocol.Pair}:{IpcProtocol.PairStart}", timeoutMs: 90000, ct: ct);
+    /// <summary>
+    /// 流式配对：连接后发 PAIR:START，循环读取阶段帧（PROGRESS:...）回调 onProgress，
+    /// 直到收到终态帧（OK:PAIRED / ERROR:*）并返回之。
+    ///
+    /// 不走 <see cref="SendAsync"/> 的共享信号量：配对要挂到用户按完键为止（可达一分多钟），
+    /// 占着那把锁会让界面其它请求全堵在后面。服务端管道是多实例的，独立连接没问题。
+    /// </summary>
+    public async Task<string> PairStartStreamAsync(Action<string> onProgress, CancellationToken ct = default)
+    {
+        using var client = new NamedPipeClientStream(".", PipeNames.ClientService,
+            PipeDirection.InOut, PipeOptions.Asynchronous);
+
+        // 连不上 = 服务没在跑，这和「配对本身失败」是两码事，给个可分辨的码。
+        try { await client.ConnectAsync(5000, ct).ConfigureAwait(false); }
+        catch (Exception) { return "ERROR:NOSERVICE"; }
+
+        try
+        {
+            await IpcFraming.WriteFrameAsync(client, $"{IpcProtocol.Pair}:{IpcProtocol.PairStart}", ct)
+                .ConfigureAwait(false);
+
+            while (true)
+            {
+                string? frame = await IpcFraming.ReadFrameAsync(client, ct).ConfigureAwait(false);
+                if (frame is null) return "ERROR:DISCONNECTED";
+                if (frame.StartsWith("PROGRESS:", StringComparison.Ordinal))
+                {
+                    onProgress(frame);
+                    continue;
+                }
+                return frame; // 终态
+            }
+        }
+        catch (Exception ex)
+        {
+            return $"ERROR:{ex.Message}";
+        }
+    }
 
     public Task<string?> PairResetAsync(CancellationToken ct = default)
         => SendAsync($"{IpcProtocol.Pair}:{IpcProtocol.PairReset}", ct: ct);

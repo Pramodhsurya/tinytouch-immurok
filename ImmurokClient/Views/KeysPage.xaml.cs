@@ -40,6 +40,7 @@ public partial class KeysPage : Page
     {
         _selected.Clear();
         UpdateDelSelectedBtn();
+        await PairBanner.RefreshAsync();
         await LoadCategoryAsync(CatOtp, OtpPanel, OtpEmpty);
         await LoadCategoryAsync(CatSsh, SshPanel, SshEmpty);
         await LoadCategoryAsync(CatApi, ApiPanel, ApiEmpty);
@@ -113,9 +114,10 @@ public partial class KeysPage : Page
         {
             var codeText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0), FontFamily = new System.Windows.Media.FontFamily("Consolas") };
             var codeBtn = new Wpf.Ui.Controls.Button { Content = T("msg.keys.getcode"), MinWidth = 72, Margin = new Thickness(0, 0, 6, 0) };
-            // 认证窗内部同步阻塞（ShowDialog），这里不再需要 async。
-            codeBtn.Click += (_, _) =>
+            // 认证窗内部同步阻塞（ShowDialog）；async 只为先过一道未配对拦截。
+            codeBtn.Click += async (_, _) =>
             {
+                if (!await PairingGuard.EnsurePairedAsync(Window.GetWindow(this))) return;
                 string? cr = FpAuthDialog.Run(Window.GetWindow(this),
                     T("msg.fpauth.otp_code", e.Name),
                     () => AppServices.Pipe.KeyOtpAsync(e.Index));
@@ -136,6 +138,7 @@ public partial class KeysPage : Page
             var pubBtn = new Wpf.Ui.Controls.Button { Content = T("msg.keys.pubkey"), MinWidth = 72, Margin = new Thickness(0, 0, 6, 0) };
             pubBtn.Click += async (_, _) =>
             {
+                if (!await PairingGuard.EnsurePairedAsync(Window.GetWindow(this))) return;
                 string? pr = await AppServices.Pipe.KeySshPubAsync(e.Index);
                 // OK:<b64authkey>:<b64fp>
                 if (pr is not null && pr.StartsWith(IpcProtocol.Ok))
@@ -186,6 +189,7 @@ public partial class KeysPage : Page
     private async Task RenameAsync(byte cat, KeyEntry e)
     {
         if (_busy) return;
+        if (!await PairingGuard.EnsurePairedAsync(Window.GetWindow(this))) return;
         bool isOtp = cat == CatOtp;
         var (ok, name, svc) = InputDialog.Show(Window.GetWindow(this), T("keys.rename_title"),
             T("ph.name"), e.Name, isOtp ? T("ph.service") : null, e.Extra);
@@ -212,6 +216,7 @@ public partial class KeysPage : Page
     private async Task DeleteAsync(byte cat, KeyEntry e)
     {
         if (_busy) return;
+        if (!await PairingGuard.EnsurePairedAsync(Window.GetWindow(this))) return;
         var confirm = MessageBox.Show(T("msg.keys.del_confirm", e.Name),
             T("msg.keys.del_title"), MessageBoxButton.OKCancel, MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.OK) return;
@@ -232,6 +237,7 @@ public partial class KeysPage : Page
     private async void OnDeleteSelectedClick(object sender, RoutedEventArgs e)
     {
         if (_busy) return;
+        if (!await PairingGuard.EnsurePairedAsync(Window.GetWindow(this))) return;
         var sel = _selected.ToList();
         if (sel.Count == 0) { StatusText.Text = T("keys.none_selected"); return; }
         var confirm = MessageBox.Show(T("keys.del_sel_confirm", sel.Count),
@@ -280,6 +286,7 @@ public partial class KeysPage : Page
     private async void OnAddOtpClick(object sender, RoutedEventArgs e)
     {
         if (_busy) return;
+        if (!await PairingGuard.EnsurePairedAsync(Window.GetWindow(this))) return;
         string name = OtpName.Text.Trim();
         string secret = OtpSecret.Text.Trim();
         if (name.Length == 0 || secret.Length == 0) { StatusText.Text = T("msg.keys.need_name_secret"); return; }
@@ -306,6 +313,7 @@ public partial class KeysPage : Page
     private async void OnAddApiClick(object sender, RoutedEventArgs e)
     {
         if (_busy) return;
+        if (!await PairingGuard.EnsurePairedAsync(Window.GetWindow(this))) return;
         string name = ApiName.Text.Trim();
         string value = ApiValue.Text;
         if (name.Length == 0 || value.Length == 0) { StatusText.Text = T("msg.keys.need_name_value"); return; }
@@ -331,6 +339,7 @@ public partial class KeysPage : Page
     private async void OnGenSshClick(object sender, RoutedEventArgs e)
     {
         if (_busy) return;
+        if (!await PairingGuard.EnsurePairedAsync(Window.GetWindow(this))) return;
         string name = SshName.Text.Trim();
         if (name.Length == 0) { StatusText.Text = T("msg.keys.need_name"); return; }
         _busy = true;

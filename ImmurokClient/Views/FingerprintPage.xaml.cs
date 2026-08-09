@@ -34,6 +34,8 @@ public partial class FingerprintPage : Page
 
     private async Task RefreshAsync()
     {
+        await PairBanner.RefreshAsync();
+
         string? r = await AppServices.Pipe.FpSlotsAsync();
         if (r is null)
         {
@@ -112,6 +114,7 @@ public partial class FingerprintPage : Page
     private async Task EnrollAsync(byte slot)
     {
         if (_busy) return;
+        if (!await PairingGuard.EnsurePairedAsync(Window.GetWindow(this))) return;
 
         // 设备上已有指纹时，固件会先要求用「已登记的手指」验证一次，通过后才开始采集新指纹。
         // 不先说明的话，用户会在该换手指的时候继续按旧手指（对齐 macOS enroll.confirm.newfinger）。
@@ -144,6 +147,7 @@ public partial class FingerprintPage : Page
     private async Task DeleteAsync(byte slot)
     {
         if (_busy) return;
+        if (!await PairingGuard.EnsurePairedAsync(Window.GetWindow(this))) return;
         _busy = true;
         try
         {
@@ -164,6 +168,8 @@ public partial class FingerprintPage : Page
         if (_busy) return;
         if (_switchEnrolled)
         {
+            // 录入分支走 EnrollAsync，它自己会拦；这里只管删除分支。
+            if (!await PairingGuard.EnsurePairedAsync(Window.GetWindow(this))) return;
             _busy = true;
             try
             {

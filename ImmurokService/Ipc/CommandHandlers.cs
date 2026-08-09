@@ -223,6 +223,64 @@ public sealed class CommandHandlers
     }
 
     /// <summary>
+    /// 流式配对：把设备的 0x34 阶段通知实时推给客户端，最后一帧为终态。
+    /// 帧格式：<c>PROGRESS:&lt;PairStage&gt;</c>，指纹按错时附剩余次数
+    /// <c>PROGRESS:FingerprintRejected:&lt;remaining&gt;</c>；终态 <c>OK:PAIRED</c> / <c>ERROR:*</c>
+    /// （与非流式 <c>PAIR:START</c> 的终态一致，客户端解析逻辑不用分家）。
+    /// </summary>
+    public async Task HandlePairStartStreamAsync(Func<string, Task> writeFrame, CancellationToken ct)
+    {
+        if (!_ble.IsConnected)
+        {
+            await writeFrame(IpcProtocol.ErrNotConnected);
+            return;
+        }
+
+        // 起始阶段要靠槽位状态判断：设备上已有另一台主机时固件先挂指纹门。
+        // 读不到就按「只等按键」处理——旧固件本来就是单主机，只有这一步。
+        bool fpGateFirst = false;
+        var slots = await _ble.GetHostSlotStatusAsync();
+        if (slots is { Supported: true, Bitmap: > 0 }) fpGateFirst = true;
+
+        var channel = Channel.CreateUnbounded<string>();
+        void OnProgress(BleManager.PairStage stage, int remaining)
+            => channel.Writer.TryWrite(remaining >= 0
+                ? $"PROGRESS:{stage}:{remaining}"
+                : $"PROGRESS:{stage}");
+
+        _ble.PairProgress += OnProgress;
+        // 进度帧要边产生边发，所以另起一个泵；配对本身在当前流程里跑。
+        // 两者不会同时写管道：先 Complete 关掉泵、await 它退出，再写终态帧。
+        Task pump = Task.Run(async () =>
+        {
+            await foreach (string m in channel.Reader.ReadAllAsync(CancellationToken.None))
+                await writeFrame(m);
+        }, CancellationToken.None);
+
+        string terminal;
+        try
+        {
+            PairFailureReason reason = await _ble.StartPairingAsync(fpGateFirst, ct: ct);
+            terminal = reason == PairFailureReason.None
+                ? $"{IpcProtocol.Ok}:PAIRED"
+                : $"{IpcProtocol.Error}:{reason.ToString().ToUpperInvariant()}";
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "流式配对异常");
+            terminal = IpcProtocol.Error;
+        }
+        finally
+        {
+            _ble.PairProgress -= OnProgress;
+            channel.Writer.TryComplete();
+        }
+
+        try { await pump; } catch (Exception ex) { _log.LogDebug(ex, "配对进度泵结束"); }
+        await writeFrame(terminal);
+    }
+
+    /// <summary>
     /// 流式指纹录入：一路把设备的 0x11 进度事件推给客户端，最后一帧为终态。
     /// 帧格式：<c>PROGRESS:&lt;Event&gt;:&lt;current&gt;:&lt;total&gt;</c>；终态 <c>OK:COMPLETE</c> / <c>ERROR:*</c>。
     /// </summary>

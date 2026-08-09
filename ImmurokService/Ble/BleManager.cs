@@ -48,6 +48,31 @@ public sealed class BleManager : IAsyncDisposable
     // 连接串行化：避免 DeviceWatcher.Added 与启动查找并发重复连接。
     private readonly SemaphoreSlim _connectGate = new(1, 1);
 
+    // ---- 回连看门狗 ----
+    // DeviceWatcher 的 Added/Updated 原本是唯一的重连触发源，但它靠不住：
+    //   · 系统睡眠/休眠恢复、蓝牙适配器重置后 watcher 会静默变成 Stopped/Aborted，
+    //     之后再也不回调，服务就一直断着直到重启；
+    //   · Updated 只在被监听的属性**变化**时触发，错过那个沿就永远等下去；
+    //   · TryConnectDeviceAsync 中途失败（GATT 忙、特征枚举空）后没有任何重试。
+    // 实测即使走运能自愈也要 30–40 秒。这里加一个低频轮询兜底，自己去找、去连。
+    private Timer? _reconnectTimer;
+    private int _reconnectBusy;          // 0/1：tick 防重入
+    private int _backoffIndex;
+    private DateTime _lastTickUtc;
+    private int _lastArmedSec;
+    /// <summary>
+    /// 退避节奏（秒）。断开后先密集试几次（设备多半就在手边），长时间找不到就拉到 60s ——
+    /// 那时设备已经不在身边，快慢没有意义，只剩待机功耗有意义。
+    /// </summary>
+    private static readonly int[] BackoffSec = { 2, 2, 3, 5, 8, 13, 20, 30, 60 };
+    /// <summary>在线时的巡检间隔。只做「链路还活着吗 / 是不是刚睡醒」两项检查，不扫描。</summary>
+    private const int ConnectedTickSec = 5;
+    /// <summary>每隔多少轮退避扫描做一次「强制探测」（连系统报告未连接的设备也试）。</summary>
+    private const int ForceProbeEvery = 5;
+    private int _scanRounds;
+    /// <summary>上次成功连上的设备 id，跨断开保留，用于优先探测。</summary>
+    private string? _lastKnownDeviceId;
+
     // 配对：设备按键后异步送来 33B 公钥。
     private TaskCompletionSource<byte[]>? _pendingPairPubKey;
 
@@ -86,6 +111,26 @@ public sealed class BleManager : IAsyncDisposable
     /// <summary>指纹录入进度事件（0x11）。参数：事件、当前次数 current、总次数 total。</summary>
     public event Action<FpEnrollEvent, int, int>? EnrollProgress;
 
+    /// <summary>配对流程的实时阶段。</summary>
+    public enum PairStage
+    {
+        /// <summary>登记第二台主机的第 1 步：设备在等已登记指纹。</summary>
+        WaitFingerprint,
+        /// <summary>等物理按键。首次配对是唯一一步；登记第二台主机时是第 2 步。</summary>
+        WaitButton,
+        /// <summary>已按键，设备正在算 ECDH。</summary>
+        Computing,
+        /// <summary>指纹门里按错了手指，设备仍在等（参数=剩余次数）。</summary>
+        FingerprintRejected,
+    }
+
+    /// <summary>配对进度。参数：阶段、剩余重试次数（仅 FingerprintRejected 有意义，其余为 -1）。</summary>
+    public event Action<PairStage, int>? PairProgress;
+
+    /// <summary>当前配对指纹门里已按错的次数（对齐固件 FP_GATE_MAX_RETRIES=3）。</summary>
+    private int _pairFpFails;
+    private const int PairFpMaxRetries = 3;
+
     /// <summary>连接状态变化。</summary>
     public event Action<bool>? ConnectionChanged;
 
@@ -119,7 +164,116 @@ public sealed class BleManager : IAsyncDisposable
         _log.LogInformation("开始查找已配对的 immurok 设备…");
 
         // 启动即查一遍，命中立即连（不必等 watcher 回调）。
-        _ = InitialFindAsync(selector);
+        _ = ScanOnceAsync(verbose: true, probeAll: true);
+
+        StartReconnectWatchdog();
+    }
+
+    // ============ 回连看门狗 ============
+
+    private void StartReconnectWatchdog()
+    {
+        if (_reconnectTimer is not null) return;
+        _lastTickUtc = DateTime.UtcNow;
+        _lastArmedSec = BackoffSec[0];
+        _reconnectTimer = new Timer(OnReconnectTick, null,
+            TimeSpan.FromSeconds(_lastArmedSec), Timeout.InfiniteTimeSpan);
+    }
+
+    private void ArmReconnect(int seconds)
+    {
+        _lastArmedSec = seconds;
+        try { _reconnectTimer?.Change(TimeSpan.FromSeconds(seconds), Timeout.InfiniteTimeSpan); }
+        catch (ObjectDisposedException) { /* 服务停止中 */ }
+    }
+
+    private async void OnReconnectTick(object? _)
+    {
+        // 单次触发 + 每拍重新武装，所以正常不会重入；扫描慢过一拍时这道闸兜底。
+        if (Interlocked.Exchange(ref _reconnectBusy, 1) == 1) return;
+        try
+        {
+            DateTime now = DateTime.UtcNow;
+            TimeSpan gap = now - _lastTickUtc;
+            _lastTickUtc = now;
+
+            // 睡眠/休眠检测：进程被冻住时定时器不走，醒来后这一拍的实际间隔远大于预期。
+            // 不用 SystemEvents.PowerModeChanged —— 服务跑在 Session 0，那套广播到不到手
+            // 取决于系统版本，靠不住；时间跳变是自证的。
+            if (gap > TimeSpan.FromSeconds(_lastArmedSec + 20))
+            {
+                _log.LogInformation("检测到系统从睡眠/休眠恢复（本拍实际间隔 {Sec}s），重建设备监听并立即回连",
+                    (int)gap.TotalSeconds);
+                _backoffIndex = 0;
+                // 醒来时链路多半已经没了，但 ConnectionStatusChanged 未必补发过来。
+                MarkDisconnectedIfLinkDead(force: true);
+                RestartWatcher();
+                return; // RestartWatcher 内部已经查了一遍
+            }
+
+            // 漏掉的断开：ConnectionStatusChanged 偶尔不来（尤其恢复之后），
+            // 直接读设备的连接状态复核，免得抱着一条死链路当成在线。
+            MarkDisconnectedIfLinkDead(force: false);
+
+            if (_connected) { _backoffIndex = 0; return; }
+
+            // watcher 停摆后不会再有任何回调，必须重建。
+            DeviceWatcherStatus? st = _watcher?.Status;
+            if (_watcher is null || st is DeviceWatcherStatus.Stopped or DeviceWatcherStatus.Aborted)
+            {
+                _log.LogWarning("设备监听已停止（Status={Status}），重建", st);
+                RestartWatcher();
+                return;
+            }
+
+            // 稳态只探测系统报告已连接的 AEP（近乎零成本）；每 ForceProbeEvery 轮强制全探一次，
+            // 兜住「设备在身边、Windows 却还没把 HID 链路拉起来」这种需要我们主动捅一下的情况。
+            bool probeAll = _scanRounds++ % ForceProbeEvery == 0;
+            await ScanOnceAsync(verbose: false, probeAll).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "回连轮询异常");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _reconnectBusy, 0);
+            if (_connected)
+            {
+                _backoffIndex = 0;
+                ArmReconnect(ConnectedTickSec);
+            }
+            else
+            {
+                ArmReconnect(BackoffSec[Math.Min(_backoffIndex, BackoffSec.Length - 1)]);
+                if (_backoffIndex < BackoffSec.Length - 1) _backoffIndex++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 复核链路是否真的还活着。<paramref name="force"/> 用于睡眠恢复：此时
+    /// ConnectionStatus 也可能还没刷新，与其信它不如一律按断开重来。
+    /// </summary>
+    private void MarkDisconnectedIfLinkDead(bool force)
+    {
+        if (!_connected) return;
+        bool dead = force || _device is null;
+        if (!dead)
+        {
+            try { dead = _device!.ConnectionStatus == BluetoothConnectionStatus.Disconnected; }
+            catch { dead = true; } // 对象已失效
+        }
+        if (!dead) return;
+
+        _log.LogWarning("看门狗复核：链路已失效，按断开处理");
+        HandleDisconnect();
+    }
+
+    private void RestartWatcher()
+    {
+        StopScan();
+        StartScan(); // 重建 watcher 并立即查一遍
     }
 
     public void StopScan()
@@ -132,24 +286,51 @@ public sealed class BleManager : IAsyncDisposable
         _watcher = null;
     }
 
-    private async Task InitialFindAsync(string selector)
+    private const string AepIsConnected = "System.Devices.Aep.IsConnected";
+
+    /// <summary>
+    /// 枚举已配对 BLE 设备，探测 immurok 服务并尝试连接。
+    /// 启动时跑一次，之后由回连看门狗按退避节奏反复跑，所以要控制成本：
+    ///
+    /// <para><paramref name="verbose"/>=false 时日志压到 Debug，否则断开期间几秒刷一屏。</para>
+    ///
+    /// <para><paramref name="probeAll"/>=false 时**只探测系统报告已连接的 AEP**。
+    /// FindAllAsync 读的是 PnP 存储，不动射频，基本免费；真正贵的是
+    /// FromIdAsync + GetGattServicesAsync(Uncached)——对不在身边的设备，它会发起一次
+    /// 连接尝试直到超时，在待机状态下反复做就是实打实的射频功耗。设备不在身边时
+    /// 常态就退化成一次注册表查询，由看门狗每隔几轮再强制探一次兜底。</para>
+    /// </summary>
+    private async Task ScanOnceAsync(bool verbose, bool probeAll)
     {
+        LogLevel lvl = verbose ? LogLevel.Information : LogLevel.Debug;
         try
         {
+            string selector = BluetoothLEDevice.GetDeviceSelectorFromPairingState(true);
             DeviceInformationCollection infos = await DeviceInformation.FindAllAsync(
-                selector, new[] { "System.Devices.Aep.IsConnected" });
-            _log.LogInformation("已配对 BLE 设备 {Count} 台，逐个探测 immurok 服务…", infos.Count);
-            foreach (DeviceInformation info in infos)
+                selector, new[] { AepIsConnected });
+
+            // 上次连上的那台优先探测：稳态下一次就命中，不必把耳机鼠标挨个做服务发现。
+            var ordered = infos.OrderByDescending(i => i.Id == _lastKnownDeviceId).ToList();
+
+            int probed = 0;
+            foreach (DeviceInformation info in ordered)
             {
                 if (_connected) break;
+                bool aepConnected = info.Properties.TryGetValue(AepIsConnected, out object? v) && v is true;
+                if (!probeAll && !aepConnected) continue;
+                probed++;
                 await TryConnectDeviceAsync(info.Id, info.Name);
             }
+
+            _log.Log(lvl, "已配对 BLE 设备 {Count} 台，探测 {Probed} 台（probeAll={All}）",
+                infos.Count, probed, probeAll);
             if (!_connected)
-                _log.LogWarning("未在已配对设备中找到 immurok（请确认设备已在系统蓝牙里配对并连接）");
+                _log.Log(verbose ? LogLevel.Warning : LogLevel.Debug,
+                    "未在已配对设备中找到 immurok（请确认设备已在系统蓝牙里配对并连接）");
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "初始查找失败");
+            _log.Log(lvl, ex, "查找 immurok 设备失败");
         }
     }
 
@@ -274,6 +455,7 @@ public sealed class BleManager : IAsyncDisposable
             _cmdChar = cmd;
             _rspChar = rsp;
             _connectedDeviceId = deviceId;
+            _lastKnownDeviceId = deviceId; // 跨断开保留，下次扫描优先探它
             DeviceName = device.Name;
             _device.ConnectionStatusChanged += OnConnectionStatusChanged;
             _connected = true;
@@ -349,7 +531,13 @@ public sealed class BleManager : IAsyncDisposable
         _fpGateFails = 0;
 
         if (was) ConnectionChanged?.Invoke(false);
-        // DeviceWatcher 仍在运行，设备重新可用时会经 Added/Updated 自动重连。
+
+        // DeviceWatcher 的 Added/Updated 可能带我们回来，但不能只指望它（见看门狗注释）。
+        // 断开即回到最快的重试节奏：别让上一轮长时间找不到攒下的退避拖慢这次回连。
+        // _scanRounds 一并归零，保证断开后的头一次扫描就是强制全探。
+        _backoffIndex = 0;
+        _scanRounds = 0;
+        ArmReconnect(BackoffSec[0]);
     }
 
     // ============ 命令发送 ============
@@ -378,11 +566,28 @@ public sealed class BleManager : IAsyncDisposable
 
             _log.LogDebug("TX cmd=0x{Cmd:X2} [{Hex}]", (byte)command, Convert.ToHexString(packet));
 
-            GattWriteResult w = await _cmdChar.WriteValueWithResultAsync(packet.AsBuffer(), GattWriteOption.WriteWithResponse);
+            // WriteWithResponse 要等对端 ATT ACK。设备执行完命令立刻重启的场景（SLOT_CLEAR
+            // 自清槽、FACTORY_RESET）里这个 ACK 永远不会回来，链路断开时 WinRT 直接抛
+            // OperationCanceledException/COMException，而不是给一个失败的 GattWriteResult。
+            // 让它冒出去会把整条 IPC 请求变成 ERROR，调用方（如 ClearOwnSlotAsync）后面
+            // 「清本地绑定」的收尾就跑不到了——本机于是留着一把设备已经作废的 shared_key。
+            // 本方法对外的契约本就是「超时或断开返回 null」，这里补齐实现。
+            GattWriteResult w;
+            try
+            {
+                w = await _cmdChar.WriteValueWithResultAsync(packet.AsBuffer(), GattWriteOption.WriteWithResponse);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "写 CMD 0x{Cmd:X2} 时链路中断", (byte)command);
+                lock (_pendingLock) { if (_pendingResponse == tcs) _pendingResponse = null; }
+                return null;
+            }
+
             if (w.Status != GattCommunicationStatus.Success)
             {
                 _log.LogError("写 CMD 失败: {Status}", w.Status);
-                lock (_pendingLock) { _pendingResponse = null; }
+                lock (_pendingLock) { if (_pendingResponse == tcs) _pendingResponse = null; }
                 return null;
             }
 
@@ -487,6 +692,29 @@ public sealed class BleManager : IAsyncDisposable
             return;
         }
 
+        // 登记第二台主机时固件先挂指纹门，按错手指发 [0x07]、连错 3 次或门超时发 [0x06]
+        // （hidkbd.c:3210 / 3197）。这两帧不带命令码，_pendingFpGate 在配对期间又是空的，
+        // 原来会一路掉到下面的「在途命令响应」被当成未识别通知丢掉：用户按错手指界面毫无
+        // 反应，设备放弃后还要干等外层 60s 才报失败。
+        if (pairTcs is not null && data.Length == 1)
+        {
+            if (data[0] == (byte)ImmurokStatus.ErrFpNotMatch) // 0x07：还能再试
+            {
+                _pairFpFails++;
+                int left = PairFpMaxRetries - _pairFpFails;
+                _log.LogWarning("配对指纹门：不匹配，剩余 {Left} 次", left);
+                PairProgress?.Invoke(PairStage.FingerprintRejected, left < 0 ? 0 : left);
+                return;
+            }
+            if (data[0] == (byte)ImmurokStatus.ErrTimeout) // 0x06：设备已放弃指纹门
+            {
+                _log.LogWarning("配对指纹门：设备已终止（按错次数用尽或超时）");
+                _pendingPairPubKey = null;
+                pairTcs.TrySetException(new TimeoutException("pair fingerprint gate aborted"));
+                return;
+            }
+        }
+
         // 其余：在途命令响应。
         lock (_pendingLock)
         {
@@ -562,9 +790,11 @@ public sealed class BleManager : IAsyncDisposable
         {
             case 0x03:
                 _log.LogInformation("配对：指纹已通过，请按设备物理按键（登记第二台主机）");
+                PairProgress?.Invoke(PairStage.WaitButton, -1);
                 break;
             case 0x01:
                 _log.LogInformation("配对：已按键，正在进行 ECDH…");
+                PairProgress?.Invoke(PairStage.Computing, -1);
                 break;
             case 0x00:
                 _log.LogWarning("配对：按键 30s 超时");
@@ -630,10 +860,26 @@ public sealed class BleManager : IAsyncDisposable
             return ClearOwnResult.ClearedLocalOnly;
         }
 
-        byte[]? r = await SendCommandAsync(ImmurokCommand.SlotClear, timeoutMs: 10000);
+        // 只有「设备明确回了拒绝」才保留本地绑定；断开、超时、写失败一概按已清处理。
+        // 设备收到 0x3C 后当场清槽 + 擦 BLE bond + 重启，回复多半送不出来，这条路径才是常态。
+        // 这里若因为拿不到确认就跳过 ClearPairing，本机会留着一把对端已作废的 shared_key，
+        // 界面显示「已绑定的设备未连接」，而且再也解不掉（设备侧已经没这个槽了）。
+        byte[]? r;
+        try
+        {
+            r = await SendCommandAsync(ImmurokCommand.SlotClear, timeoutMs: 10000);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "解绑本机：发送 SLOT_CLEAR 期间链路中断，按设备已清处理");
+            r = null;
+        }
+
         if (r is { Length: >= 2 } && r[1] == 0xF2)
-            return ClearOwnResult.Rejected; // 明确拒绝
-        _security.ClearPairing(); // 断开/超时/OK 都视为设备已清（重启），本地照清
+            return ClearOwnResult.Rejected; // 设备明确拒绝：本机不是活跃槽
+
+        _security.ClearPairing();
+        _log.LogInformation("解绑本机完成，本地绑定数据已清除");
         return ClearOwnResult.ClearedOnDevice;
     }
 
@@ -741,9 +987,16 @@ public sealed class BleManager : IAsyncDisposable
     /// ECDH 配对。流程：PAIR_INIT → 设备回 WAIT_BUTTON(0xF0) → 用户按设备键 →
     /// 设备送 33B 公钥 → 我方 PAIR_CONFIRM(附我方公钥) → 完成 HKDF 并存 shared_key。
     /// </summary>
-    public async Task<PairFailureReason> StartPairingAsync(int retries = 3, CancellationToken ct = default)
+    /// <param name="fpGateFirst">
+    /// 设备上已有另一台主机时为 true：固件会先挂指纹门、通过后才挂按键门
+    /// （hidkbd.c 的 slot2_enroll 分支）。两条路径的 PAIR_INIT 响应都是 WAIT_BUTTON，
+    /// 从响应里分不出来，只能由调用方按槽位状态告诉我们，用于发出正确的起始阶段。
+    /// </param>
+    public async Task<PairFailureReason> StartPairingAsync(
+        bool fpGateFirst = false, int retries = 3, CancellationToken ct = default)
     {
         if (!_connected) return PairFailureReason.Generic;
+        _pairFpFails = 0;
 
         byte[]? initResp = await SendCommandAsync(ImmurokCommand.PairInit, timeoutMs: 5000, ct: ct);
         if (initResp is not { Length: >= 1 })
@@ -753,7 +1006,7 @@ public sealed class BleManager : IAsyncDisposable
         {
             if (retries <= 0) return PairFailureReason.LinkParams;
             await Task.Delay(5000, ct);
-            return await StartPairingAsync(retries - 1, ct);
+            return await StartPairingAsync(fpGateFirst, retries - 1, ct);
         }
 
         if (initResp.Length < 2 || initResp[0] != (byte)ImmurokCommand.PairInit)
@@ -766,6 +1019,10 @@ public sealed class BleManager : IAsyncDisposable
             byte code = initResp[1];
             if (code == (byte)ImmurokStatus.ErrNeedsReset) return PairFailureReason.NeedsReset;
             if (code != (byte)ImmurokStatus.ErrWaitButton) return PairFailureReason.Generic;
+
+            // 设备已进入等待：告诉界面现在该做什么。后续 0x34 通知会把阶段推着往前走。
+            PairProgress?.Invoke(
+                fpGateFirst ? PairStage.WaitFingerprint : PairStage.WaitButton, -1);
 
             var pairTcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
             _pendingPairPubKey = pairTcs;
@@ -1204,6 +1461,11 @@ public sealed class BleManager : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (_reconnectTimer is not null)
+        {
+            await _reconnectTimer.DisposeAsync();
+            _reconnectTimer = null;
+        }
         StopScan();
         if (_rspChar is not null) { try { _rspChar.ValueChanged -= OnRspValueChanged; } catch { } }
         _service?.Dispose();

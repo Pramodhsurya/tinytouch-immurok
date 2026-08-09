@@ -31,6 +31,24 @@
                     </StackPanel>
                     <TextBlock x:Name="PairText" Text="{loc:Tr common.querying}" Opacity="0.85" Margin="0,0,0,10" />
                     <ui:Button x:Name="PairBtn" Content="{loc:Tr device.pair.start}" Icon="{ui:SymbolIcon Link24}" Click="OnPairClick" />
+                    <!-- 实时配对步骤。帧来自 Service 的 PAIR:START 流（源头是设备的 0x34 通知），
+                         所以勾是真的走到了那一步，不是按时间猜的。首次配对只有「按键」一步，
+                         登记第二台主机才会显示指纹那一行。 -->
+                    <StackPanel x:Name="PairSteps" Margin="0,10,0,0" Visibility="Collapsed">
+                        <StackPanel x:Name="PairStep1Row" Orientation="Horizontal" Margin="0,0,0,3">
+                            <TextBlock x:Name="PairStep1Mark" Width="20" FontSize="12" VerticalAlignment="Top" />
+                            <TextBlock x:Name="PairStep1Text" FontSize="12" TextWrapping="Wrap" MaxWidth="500" />
+                        </StackPanel>
+                        <StackPanel x:Name="PairStep2Row" Orientation="Horizontal">
+                            <TextBlock x:Name="PairStep2Mark" Width="20" FontSize="12" VerticalAlignment="Top" />
+                            <TextBlock x:Name="PairStep2Text" FontSize="12" TextWrapping="Wrap" MaxWidth="500" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- 配对操作的结果单独一行：PairText 是「当前状态」，刷新时会被重写，
+                         把失败原因写在那里等于刷新一次就丢。 -->
+                    <TextBlock x:Name="PairResult" Text="" Margin="0,8,0,0" Opacity="0.85"
+                               FontSize="12" TextWrapping="Wrap" Visibility="Collapsed" />
                     <TextBlock x:Name="PairHint"
                                Text="{loc:Tr device.pair.hint}"
                                Margin="0,8,0,0" Opacity="0.55" FontSize="12" TextWrapping="Wrap" />
@@ -47,9 +65,10 @@
                     <TextBlock x:Name="DualDesc" Text="{loc:Tr device.dual.desc}"
                                Opacity="0.6" FontSize="12" Margin="0,0,0,10" TextWrapping="Wrap" />
 
-                    <!-- 槽位行：解绑按钮平时不可见，鼠标移到本行才淡入（Opacity 与 IsHitTestVisible
-                         同步切换，避免点到看不见的按钮）。按钮是「解绑本机」还是「解绑另一台」，
-                         由该槽是不是活跃槽决定，在 RefreshDualHostAsync 里设置。 -->
+                    <!-- 槽位行的按钮由 ConfigureSlotButton 按槽位状态决定：
+                         已占用 → 解绑（本机/另一台），平时不可见、鼠标移到本行才淡入
+                         （Opacity 与 IsHitTestVisible 同步切换，避免点到看不见的按钮）；
+                         空槽 + 本机未配对 → 「在此配对」，属于主要动作，始终可见不藏。 -->
                     <!-- MinHeight 固定行高：空槽没有按钮、被占用的槽有按钮，不定高两行会一高一矮。
                          按钮 Height=24，连同 Padding 一起收在 32 之内，两行始终等高。 -->
                     <Border x:Name="Slot1Row" CornerRadius="6" Padding="12,4" Margin="0,0,0,6" MinHeight="32"
@@ -64,10 +83,10 @@
                                 <TextBlock Text="{loc:Tr device.slot1}" Width="60" FontWeight="SemiBold" VerticalAlignment="Center" />
                                 <TextBlock x:Name="Slot1State" Text="" VerticalAlignment="Center" />
                             </StackPanel>
-                            <ui:Button x:Name="Slot1UnbindBtn" Grid.Column="1" Tag="1"
+                            <ui:Button x:Name="Slot1ActionBtn" Grid.Column="1"
                                        Appearance="Secondary" Padding="10,0" FontSize="12" Height="24"
                                        Opacity="0" IsHitTestVisible="False"
-                                       Click="OnSlotUnbindClick" />
+                                       Click="OnSlotActionClick" />
                         </Grid>
                     </Border>
                     <Border x:Name="Slot2Row" CornerRadius="6" Padding="12,4" Margin="0" MinHeight="32"
@@ -82,10 +101,10 @@
                                 <TextBlock Text="{loc:Tr device.slot2}" Width="60" FontWeight="SemiBold" VerticalAlignment="Center" />
                                 <TextBlock x:Name="Slot2State" Text="" VerticalAlignment="Center" />
                             </StackPanel>
-                            <ui:Button x:Name="Slot2UnbindBtn" Grid.Column="1" Tag="2"
+                            <ui:Button x:Name="Slot2ActionBtn" Grid.Column="1"
                                        Appearance="Secondary" Padding="10,0" FontSize="12" Height="24"
                                        Opacity="0" IsHitTestVisible="False"
-                                       Click="OnSlotUnbindClick" />
+                                       Click="OnSlotActionClick" />
                         </Grid>
                     </Border>
 

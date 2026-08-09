@@ -14,6 +14,31 @@ public partial class DevicePage : Page
     private byte _activeSlot;
     private bool _connected;
 
+    /// <summary>本地是否存着 shared_key（PAIR:STATUS 的答案）。只代表「我们这边有一把钥匙」。</summary>
+    private bool _paired;
+
+    /// <summary>
+    /// 这把钥匙设备还认不认。本地有 shared_key 不等于配对有效：设备上本机所在的活跃槽
+    /// 可能已经被清空（另一台主机点了「解绑另一台」、或设备被复位过），这时本地那把钥匙
+    /// 已经作废。界面上一切「是否已配对」的判断都要用这个，而不是 <see cref="_paired"/>——
+    /// 否则本机会永远显示「已配对」、连配对按钮都不给，彻底卡死。
+    /// 设备不在线时无从复核，退回等于 <see cref="_paired"/>。
+    /// </summary>
+    private bool _bindingValid;
+
+    // 配对提示要分两种：设备一个槽都没占 → 只按物理键；已被另一台占了一个槽 → 固件先挂
+    // 指纹门再挂按键门（hidkbd.c 的 slot2_enroll 分支）。两条路径给 app 的响应都是
+    // WAIT_BUTTON，分不出来，只能靠槽位状态判断，所以在这里记下来。
+    // 读不到槽位（旧固件/查询失败）时 _slotsKnown 为 false，退回不区分的合并文案。
+    private bool _slotsKnown;
+    private bool _deviceBound;
+
+    /// <summary>
+    /// 由 <see cref="MainWindow.GoToPairing"/> 置位：本次进入设备页是「未配对引导」带过来的，
+    /// 加载完成后把焦点落到配对按钮上。页面实例会被 NavigationView 缓存复用，故用静态标志传递。
+    /// </summary>
+    public static bool FocusPairingOnLoad;
+
     public DevicePage()
     {
         InitializeComponent();
@@ -22,6 +47,12 @@ public partial class DevicePage : Page
             Loc.Instance.LanguageChanged -= OnLanguageChanged;
             Loc.Instance.LanguageChanged += OnLanguageChanged;
             await RefreshAsync();
+            if (FocusPairingOnLoad)
+            {
+                FocusPairingOnLoad = false;
+                PairBtn.BringIntoView();
+                PairBtn.Focus();
+            }
         };
         Unloaded += (_, _) => Loc.Instance.LanguageChanged -= OnLanguageChanged;
     }
@@ -30,6 +61,11 @@ public partial class DevicePage : Page
 
     private async Task RefreshAsync()
     {
+        // 上一次操作的结果与步骤不跨刷新保留（PairAsync 会在刷新之后重新写上自己的结果）。
+        SetPairResult("");
+        PairSteps.Visibility = Visibility.Collapsed;
+        _pairStage = PairUiStage.None;
+
         // 连接状态
         string? status = await AppServices.Pipe.StatusAsync();
         bool connected = false;
@@ -64,17 +100,45 @@ public partial class DevicePage : Page
         // 配对状态
         string? pair = await AppServices.Pipe.PairStatusAsync();
         bool paired = pair?.Contains("PAIRED") == true && pair.Contains("UNPAIRED") != true;
-        PairText.Text = paired ? T("msg.dev.paired") : T("msg.dev.unpaired");
-        PairBtn.IsEnabled = connected && !paired;
+        _paired = paired;
+        _connected = connected;
+        _slotsKnown = false;
+        _deviceBound = false;
+        // 先按本地绑定乐观判定；设备在线时 RefreshDualHostAsync 会拿槽位状态复核，可能推翻。
+        _bindingValid = paired;
+
+        // 未配对时先给合并文案兜底，拿到槽位状态后换成对应那一种。
+        PairHint.Text = connected ? T("device.pair.hint") : T("device.pair.need_connect");
+        ApplyPairCard();
 
         // 双主机
         await RefreshDualHostAsync(connected, paired);
     }
 
+    /// <summary>
+    /// 按 <see cref="_paired"/> / <see cref="_bindingValid"/> 渲染配对卡片的状态行与按钮。
+    /// 槽位状态复核完要再调一次——那时才知道设备认不认本地这把钥匙。
+    ///
+    /// 没有有效绑定时按钮一律可见可点，不拿「设备已连接」当前置条件：配第二台主机时设备
+    /// 常常还连在第一台上、或刚在系统蓝牙里配好还没被服务接上，按钮此时若是灰的或干脆不画，
+    /// 用户看到的就是「根本没有配对入口」。改成点了再说明缺什么。
+    /// </summary>
+    private void ApplyPairCard()
+    {
+        bool stale = _paired && !_bindingValid;
+        PairText.Text = stale ? T("msg.dev.paired_stale")
+            : _bindingValid ? T("msg.dev.paired")
+            : T("msg.dev.unpaired");
+
+        PairBtn.Visibility = _bindingValid ? Visibility.Collapsed : Visibility.Visible;
+        PairBtn.IsEnabled = !_bindingValid;
+        // 绑定有效时这段提示讲的是「怎么配对」，没有按钮了也就没有意义，整段收起。
+        PairHint.Visibility = _bindingValid ? Visibility.Collapsed : Visibility.Visible;
+    }
+
     private async Task RefreshDualHostAsync(bool connected, bool paired)
     {
         DualHostCard.Visibility = Visibility.Collapsed;
-        _connected = connected;
 
         // 设备不在身边、但本机仍有绑定：仍要给出「解绑本机」入口（只清本地绑定数据），
         // 否则用户无法改配新设备。槽位状态要查设备，此时未知，隐藏槽位行。
@@ -114,31 +178,71 @@ public partial class DevicePage : Page
         Slot1State.Text = SlotLabel(slot1, active == 1);
         Slot2State.Text = SlotLabel(slot2, active == 2);
 
-        // 每个槽自己知道该给哪种解绑按钮：活跃槽=本机，另一个已占用的槽=另一台。
-        ConfigureSlotButton(Slot1UnbindBtn, 1, slot1, active == 1, paired);
-        ConfigureSlotButton(Slot2UnbindBtn, 2, slot2, active == 2, paired);
+        _slotsKnown = true;
+        _deviceBound = slot1 || slot2;
+
+        // 设备认不认本机，看的是「本机所在的活跃槽」占没占。本地有 shared_key 但这个槽是
+        // 空的（典型：设备绑在槽 1 给了另一台，本机是活跃的槽 2 却还没登记），说明本地这份
+        // 绑定在设备侧已经不存在了。不把它判为失效的话，卡片会一直显示「已配对」并把配对
+        // 按钮藏起来 —— 正是「槽 2 空着却没有配对入口」的成因。
+        bool selfSlotOccupied = active == 1 ? slot1 : active == 2 && slot2;
+        if (_paired && !selfSlotOccupied) _bindingValid = false;
+
+        // 每个槽自己知道该给哪种按钮：活跃槽=解绑本机，另一台占用的槽=解绑另一台。
+        // 空槽给「在此配对」的两种情形：① 它就是本机的活跃槽（设备正是拿这个槽认我们，
+        // 配对必然落在它上面）；② 另一个槽已被别人占了（配第二台主机的常见入口）。
+        // 两槽全空又没有活跃槽的新设备不给，免得同样的动作在两行里各出现一次。
+        bool canPair = !_bindingValid;
+        ConfigureSlotButton(Slot1ActionBtn, 1, slot1, active == 1, _bindingValid,
+            pairHere: canPair && (active == 1 || slot2));
+        ConfigureSlotButton(Slot2ActionBtn, 2, slot2, active == 2, _bindingValid,
+            pairHere: canPair && (active == 2 || slot1));
         UpdateSlotReveal();
+
+        // 按设备上的实际占用情况说清楚这次配对要做什么：
+        // 两槽全空 = 首次配对，固件只挂按键门；已占一个 = 登记第二台，固件先指纹门再按键门。
+        if (canPair)
+        {
+            string how = (slot1, slot2) switch
+            {
+                (true, true) => T("device.pair.slots_full"),
+                (true, false) => T("device.pair.slot_hint", 2),
+                (false, true) => T("device.pair.slot_hint", 1),
+                _ => T("device.pair.hint.fresh"),
+            };
+            // 本地绑定作废时，先解释「为什么明明配过却要重配」，再讲怎么配。
+            PairHint.Text = _paired
+                ? T(active == 0 ? "device.pair.stale_reset" : "device.pair.stale", active) + "\n" + how
+                : how;
+        }
+        ApplyPairCard();
 
         DualHostCard.Visibility = Visibility.Visible;
     }
 
     /// <summary>
-    /// 按槽位状态决定这一行的解绑按钮：空槽没有按钮；活跃槽（本机）给「解绑本机」；
-    /// 另一台占用的槽给「解绑另一台」。用 Tag 记住槽号，点击时据此分派。
+    /// 按槽位状态决定这一行的按钮：活跃槽（本机）给「解绑本机」；另一台占用的槽给
+    /// 「解绑另一台」；空槽按 <paramref name="pairHere"/> 决定给不给「在此配对」。
+    /// Tag 记「动作:槽号」，点击时据此分派。
     /// </summary>
     private static void ConfigureSlotButton(
-        Wpf.Ui.Controls.Button btn, byte slot, bool occupied, bool isSelf, bool paired)
+        Wpf.Ui.Controls.Button btn, byte slot, bool occupied, bool isSelf, bool bindingValid, bool pairHere)
     {
         if (!occupied)
         {
-            btn.Visibility = Visibility.Collapsed;
+            if (!pairHere) { btn.Visibility = Visibility.Collapsed; return; }
+
+            btn.Visibility = Visibility.Visible;
+            btn.Content = T("device.pair.here");
+            btn.Tag = $"pair:{slot}";
+            btn.IsEnabled = true;
             return;
         }
 
         btn.Visibility = Visibility.Visible;
         btn.Content = T(isSelf ? "device.unbind.self" : "device.unbind.other");
-        btn.Tag = slot.ToString();
-        btn.IsEnabled = !isSelf || paired; // 「解绑本机」要本机确实有绑定
+        btn.Tag = $"unbind:{slot}";
+        btn.IsEnabled = !isSelf || bindingValid; // 「解绑本机」要本机确实有有效绑定
     }
 
     /// <summary>
@@ -153,53 +257,202 @@ public partial class DevicePage : Page
 
     private void OnSlotRowHover(object sender, System.Windows.Input.MouseEventArgs e) => UpdateSlotReveal();
 
-    /// <summary>悬停哪一行就淡入哪一行的按钮；同步 IsHitTestVisible，避免点到看不见的按钮。</summary>
+    /// <summary>
+    /// 悬停哪一行就淡入哪一行的解绑按钮；同步 IsHitTestVisible，避免点到看不见的按钮。
+    /// 「在此配对」不参与藏显——它是主要动作，藏起来就等于没有配对入口。
+    /// </summary>
     private void UpdateSlotReveal()
     {
-        Reveal(Slot1UnbindBtn, Slot1Row.IsMouseOver);
-        Reveal(Slot2UnbindBtn, Slot2Row.IsMouseOver);
+        Reveal(Slot1ActionBtn, Slot1Row.IsMouseOver);
+        Reveal(Slot2ActionBtn, Slot2Row.IsMouseOver);
 
         static void Reveal(Wpf.Ui.Controls.Button btn, bool hovering)
         {
+            if (IsPairAction(btn)) { btn.Opacity = 1; btn.IsHitTestVisible = true; return; }
             bool on = hovering && btn.Visibility == Visibility.Visible;
             btn.Opacity = on ? 1 : 0;
             btn.IsHitTestVisible = on;
         }
     }
 
-    /// <summary>槽位行内的解绑按钮：按 Tag 里的槽号分派到「解绑本机」或「解绑另一台」。</summary>
-    private async void OnSlotUnbindClick(object sender, RoutedEventArgs e)
+    private static bool IsPairAction(Wpf.Ui.Controls.Button btn)
+        => (btn.Tag as string)?.StartsWith("pair:") == true;
+
+    /// <summary>槽位行内的按钮：按 Tag 里的「动作:槽号」分派到配对 / 解绑本机 / 解绑另一台。</summary>
+    private async void OnSlotActionClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Wpf.Ui.Controls.Button btn) return;
-        if (!byte.TryParse(btn.Tag as string, out byte slot)) return;
+        if (btn.Tag is not string tag) return;
+        string[] t = tag.Split(':');
+        if (t.Length < 2 || !byte.TryParse(t[1], out byte slot)) return;
 
+        if (t[0] == "pair") { await PairAsync(); return; }
         if (slot == _activeSlot) await UnbindSelfAsync();
         else await UnbindOtherAsync(slot);
     }
 
+    /// <summary>
+    /// 槽位状态文案。空槽也分两种：本机正落在这个槽上（设备就是拿它认我们，只是还没登记）
+    /// 要说清楚，否则「空」旁边冒出个「在此配对」会让人不知道配的是谁。
+    /// </summary>
     private static string SlotLabel(bool occupied, bool active)
     {
-        if (!occupied) return T("msg.slot.empty");
+        if (!occupied) return active ? T("msg.slot.empty_self") : T("msg.slot.empty");
         return active ? T("msg.slot.self_active") : T("msg.slot.other");
     }
 
     private async void OnRefreshClick(object sender, RoutedEventArgs e) => await RefreshAsync();
 
-    private async void OnPairClick(object sender, RoutedEventArgs e)
+    private async void OnPairClick(object sender, RoutedEventArgs e) => await PairAsync();
+
+    private async Task PairAsync()
     {
-        PairBtn.IsEnabled = false;
-        PairText.Text = T("msg.pair.progress");
-        string? r = await AppServices.Pipe.PairStartAsync();
-        PairText.Text = r switch
+        if (_bindingValid) return;
+
+        // 设备没连上就别发命令空等：直接说清楚缺什么、去哪儿补。
+        // （服务侧也会回 ERR:NOT_CONNECTED，但那要等一个来回，且文案帮不上忙。）
+        if (!_connected)
         {
-            var x when x?.Contains("PAIRED") == true => T("msg.pair.ok"),
-            var x when x?.Contains("NEEDSRESET") == true => T("msg.pair.needsreset"),
-            var x when x?.Contains("LINKPARAMS") == true => T("msg.pair.linkparams"),
-            var x when x?.Contains("WAITBUTTON") == true => T("msg.pair.waitbutton"),
-            null => T("msg.pair.noservice"),
+            SetPairResult(T("msg.pair.notconnected"));
+            MessageBox.Show(Window.GetWindow(this), T("msg.pair.need_connect_body"),
+                T("device.pair"), MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        // 槽位状态在 RefreshDualHostAsync 里已经读过，这里只用来决定要不要画指纹那一步。
+        // （Service 会自己再查一次来决定起始阶段，两边判据一致。）
+        bool twoStep = _slotsKnown && _deviceBound;
+        PairBtn.IsEnabled = false;
+        Slot1ActionBtn.IsEnabled = Slot2ActionBtn.IsEnabled = false;
+        BeginPairSteps(twoStep);
+        SetPairResult(T("msg.pair.running"));
+
+        // 进度回调来自管道读取线程，必须切回 UI 线程再动控件。
+        // 用 BeginInvoke 而非 Invoke：进度只是提示，不该让读取循环等 UI 排队；
+        // 同优先级投递本身保序，步骤不会乱跳。
+        string r = await AppServices.Pipe.PairStartStreamAsync(
+            frame => Dispatcher.BeginInvoke(new Action(() => OnPairProgress(frame))));
+
+        string result = r switch
+        {
+            var x when x.Contains("PAIRED") => T("msg.pair.ok"),
+            var x when x.Contains("NOSERVICE") => T("msg.pair.noservice"),
+            var x when x.Contains("NOT_CONNECTED") => T("msg.pair.notconnected"),
+            var x when x.Contains("NEEDSRESET") => T("msg.pair.needsreset"),
+            var x when x.Contains("LINKPARAMS") => T("msg.pair.linkparams"),
+            // 超时到底卡在哪一步，看设备最后推到的阶段，不靠猜。
+            var x when x.Contains("WAITBUTTON")
+                => T(_pairStage == PairUiStage.WaitFingerprint
+                    ? "msg.pair.waitbutton_fp" : "msg.pair.waitbutton"),
             _ => T("msg.pair.fail"),
         };
+
+        // RefreshAsync 会按最新状态重设三个按钮的可用性并收起步骤，无需在此手工恢复；
+        // 但它也会重写 PairText / 清 PairResult，所以结果文案放在刷新之后。
         await RefreshAsync();
+        SetPairResult(result);
+    }
+
+    // ---- 实时配对步骤 ----
+
+    private enum PairUiStage { None, WaitFingerprint, WaitButton, Computing }
+    private enum StepState { Pending, Active, Done }
+
+    private PairUiStage _pairStage = PairUiStage.None;
+
+    /// <summary>✓ 用绿色，和「已完成」这件事对上；其余两态靠字重与透明度区分。</summary>
+    private static readonly System.Windows.Media.Brush DoneBrush =
+        new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromRgb(0x4C, 0xAF, 0x50));
+
+    private void BeginPairSteps(bool twoStep)
+    {
+        PairStep1Text.Text = T("pair.step.fp");
+        PairStep2Text.Text = T("pair.step.button");
+        // 首次配对没有指纹这一步，整行不画——留一行灰字反而让人以为漏了操作。
+        PairStep1Row.Visibility = twoStep ? Visibility.Visible : Visibility.Collapsed;
+
+        _pairStage = twoStep ? PairUiStage.WaitFingerprint : PairUiStage.WaitButton;
+        ApplyPairStage();
+        PairSteps.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>PROGRESS:&lt;stage&gt;[:&lt;remaining&gt;] —— 由 Service 转发的设备 0x34 通知。</summary>
+    private void OnPairProgress(string frame)
+    {
+        string[] p = frame.Split(IpcProtocol.Sep);
+        if (p.Length < 2) return;
+
+        switch (p[1])
+        {
+            case nameof(PairUiStage.WaitFingerprint):
+                // 服务端是在配对前刚查的槽位，判据比本页缓存新：它说要指纹，就把这一行补出来。
+                PairStep1Row.Visibility = Visibility.Visible;
+                _pairStage = PairUiStage.WaitFingerprint;
+                SetPairResult(T("msg.pair.running"));
+                break;
+            case nameof(PairUiStage.WaitButton):
+                _pairStage = PairUiStage.WaitButton;
+                SetPairResult(T("msg.pair.running"));
+                break;
+            case nameof(PairUiStage.Computing):
+                _pairStage = PairUiStage.Computing;
+                SetPairResult(T("msg.pair.computing"));
+                break;
+            case "FingerprintRejected":
+                // 阶段不变，设备还在等；只报还能试几次。
+                int.TryParse(p.Length >= 3 ? p[2] : "", out int left);
+                SetPairResult(T("msg.pair.fp_rejected", left));
+                return;
+            default:
+                return; // 未知阶段（固件比客户端新）：忽略，别把界面搞乱
+        }
+        ApplyPairStage();
+    }
+
+    private void ApplyPairStage()
+    {
+        // 指纹这一步：走到 WaitButton 及以后就算过了。
+        SetStep(PairStep1Mark, PairStep1Text,
+            _pairStage == PairUiStage.WaitFingerprint ? StepState.Active : StepState.Done);
+        SetStep(PairStep2Mark, PairStep2Text, _pairStage switch
+        {
+            PairUiStage.WaitFingerprint => StepState.Pending,
+            PairUiStage.WaitButton => StepState.Active,
+            _ => StepState.Done,
+        });
+    }
+
+    private static void SetStep(TextBlock mark, TextBlock label, StepState state)
+    {
+        switch (state)
+        {
+            case StepState.Done:
+                mark.Text = "✓";
+                mark.Foreground = DoneBrush;
+                mark.Opacity = label.Opacity = 0.75;
+                label.FontWeight = FontWeights.Normal;
+                break;
+            case StepState.Active:
+                mark.Text = "▶";
+                mark.ClearValue(TextBlock.ForegroundProperty);
+                mark.Opacity = label.Opacity = 1.0;
+                label.FontWeight = FontWeights.SemiBold;
+                break;
+            default:
+                mark.Text = "○";
+                mark.ClearValue(TextBlock.ForegroundProperty);
+                mark.Opacity = label.Opacity = 0.45;
+                label.FontWeight = FontWeights.Normal;
+                break;
+        }
+    }
+
+    /// <summary>配对操作结果行；无内容时收起，免得卡片底部凭空多一段空白。</summary>
+    private void SetPairResult(string text)
+    {
+        PairResult.Text = text;
+        PairResult.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private async void OnUnbindSelfClick(object sender, RoutedEventArgs e) => await UnbindSelfAsync();

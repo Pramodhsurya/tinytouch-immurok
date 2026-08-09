@@ -4,11 +4,14 @@
       xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
       xmlns:loc="clr-namespace:ImmurokClient.Localization"
       xmlns:h="clr-namespace:ImmurokClient.Helpers"
+      xmlns:v="clr-namespace:ImmurokClient.Views"
       Title="{loc:Tr nav.features}">
     <ScrollViewer VerticalScrollBarVisibility="Auto" h:WheelScroll.Enabled="True">
         <StackPanel Margin="28,24,28,24" MaxWidth="640" HorizontalAlignment="Left">
             <TextBlock Text="{loc:Tr nav.features}" FontSize="28" FontWeight="Bold" Margin="0,0,0,2" />
             <TextBlock Text="{loc:Tr features.subtitle}" Opacity="0.6" Margin="0,0,0,20" />
+
+            <v:PairingBanner x:Name="PairBanner" />
 
             <!-- 屏幕解锁 -->
             <ui:Card Margin="0,0,0,14" Padding="18">
