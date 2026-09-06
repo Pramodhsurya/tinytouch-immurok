@@ -45,6 +45,18 @@ public partial class StatusPage : Page
         AddItem(T("msg.status.paired"), paired);
         AddItem(T("msg.status.pass"), passConfigured);
         AddItem(T("msg.status.cp"), cpInstalled, cpInstalled ? null : T("msg.status.cp_hint"));
+
+        // IPC 加固各项（设计稿 §4）：与顶部横幅同一数据源。老版本服务不认这条命令时不显示。
+        var sec = SecurityStatusInfo.Parse(await AppServices.Pipe.SecurityStatusAsync());
+        if (sec is not null)
+        {
+            foreach (var item in sec.Items)
+            {
+                string? hint = item.Ok ? (item.HintKey is { } h ? T(h) : null)
+                                       : (item.BannerKey is { } b ? T(b) : null);
+                AddItem(T(item.LabelKey), item.Ok, hint);
+            }
+        }
     }
 
     /// <summary>读注册表判断 CP 是否已注册（只读 HKLM，无需管理员）。</summary>

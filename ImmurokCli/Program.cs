@@ -114,6 +114,8 @@ internal static class Program
 
     private static string? CheckError(string resp)
     {
+        // 服务端的明确拒绝码（DENY:<reason>），和 ERROR:* 一样要给出人话；裸 "DENY" 是设备指纹没过，由各命令自己处理。
+        if (resp.StartsWith("DENY:", StringComparison.Ordinal)) return DenyReason(resp);
         if (!resp.StartsWith("ERROR:", StringComparison.Ordinal)) return null;
         string reason = resp[6..];
         return reason switch
@@ -125,6 +127,14 @@ internal static class Program
             _ => reason,
         };
     }
+
+    private static string DenyReason(string resp) => resp switch
+    {
+        "DENY:NOT_OWNER" => "denied: this immurok is paired by another user account on this PC; only that account can use it",
+        "DENY:GATE_TIMEOUT" => "denied: fingerprint not touched in time",
+        "DENY:GATE_REJECTED" => "denied: fingerprint rejected on the device",
+        _ => $"denied ({resp[5..]})",
+    };
 
     // ---- list ----
 
@@ -408,20 +418,26 @@ internal static class Program
         bool cancelled = _userCancelled;         // \u5173\u95ed\u7a97\u53e3\u524d\u5b9a\u683c\u72b6\u6001
         bool timedOut = _timedOut;
         bool ok = resp == "OK" && !cancelled && !timedOut;
+        // \u670d\u52a1\u7aef\u660e\u786e\u62d2\u7edd\uff08DENY:NOT_OWNER \u7b49\uff09\u662f\u79d2\u56de\u7684\uff1a\u7a97\u53e3\u4e00\u95ea\u5c31\u6ca1\uff0c\u7528\u6237\u770b\u4e0d\u5230\u539f\u56e0\u3002
+        // \u628a\u539f\u56e0\u5199\u8fdb\u7a97\u53e3\u5e76\u591a\u505c\u4e00\u4f1a\u513f\uff0c\u7ec8\u7aef\u4e0a\u4e5f\u518d\u6253\u4e00\u904d\u3002
+        string? denied = resp.StartsWith("DENY:", StringComparison.Ordinal) ? DenyReason(resp) : null;
         try
         {
             _win.Dispatcher.Invoke(() =>
             {
                 _timer?.Stop();
+                if (_bar is not null && !ok) _bar.Value = 0;
                 if (_status is not null)
                 {
-                    _status.Text = cancelled ? "Cancelled" : timedOut ? "Timed out" : (ok ? "\u2713 Authorized" : "\u2717 Denied");
+                    _status.Text = cancelled ? "Cancelled" : timedOut ? "Timed out"
+                        : ok ? "\u2713 Authorized"
+                        : denied is not null ? $"\u2717 {denied}" : "\u2717 Denied";
                     _status.Foreground = Brush(ok ? "#FF3FB950" : (cancelled || timedOut ? "#FFB0B0B0" : "#FFE05252"));
                 }
             });
         }
         catch { /* ignore */ }
-        Thread.Sleep(ok ? 500 : (timedOut ? 700 : 300));
+        Thread.Sleep(ok ? 500 : timedOut ? 700 : denied is not null ? 2500 : 300);
         _closing = true;
         CloseWin();
 

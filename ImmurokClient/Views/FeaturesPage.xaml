@@ -12,6 +12,8 @@
             <TextBlock Text="{loc:Tr features.subtitle}" Opacity="0.6" Margin="0,0,0,20" />
 
             <v:PairingBanner x:Name="PairBanner" />
+            <!-- IPC 加固健康横幅（设计稿 §4）：与功能开关放在一起。 -->
+            <v:SecurityBanner x:Name="SecBanner" />
 
             <!-- 屏幕解锁 -->
             <ui:Card Margin="0,0,0,14" Padding="18">

@@ -24,10 +24,23 @@ public sealed class CommandHandlers
     private readonly SshAgentServer _sshAgent;
     private readonly AppSettings _settings;
     private readonly FpInjectionSignal _injectionSignal;
+    private readonly OwnerStore _owner;
+    private readonly CallerPolicy _policy;
+    private readonly ScreenUnlocker _unlocker;
+    private readonly DataDirSecurity _dataDir;
+    private readonly PairingStore _pairing;
+    private readonly SecurityStatus _status;
 
     public CommandHandlers(ILogger<CommandHandlers> log, BleManager ble, ImmurokSecurity security,
-        CredentialStore creds, SshAgentServer sshAgent, AppSettings settings, FpInjectionSignal injectionSignal)
+        CredentialStore creds, SshAgentServer sshAgent, AppSettings settings, FpInjectionSignal injectionSignal,
+        OwnerStore owner, CallerPolicy policy,
+        ScreenUnlocker unlocker, DataDirSecurity dataDir, PairingStore pairing, SecurityStatus status)
     {
+        _policy = policy;
+        _unlocker = unlocker;
+        _dataDir = dataDir;
+        _pairing = pairing;
+        _status = status;
         _log = log;
         _ble = ble;
         _security = security;
@@ -35,9 +48,83 @@ public sealed class CommandHandlers
         _sshAgent = sshAgent;
         _settings = settings;
         _injectionSignal = injectionSignal;
+        _owner = owner;
     }
 
-    public async Task<string> HandleAsync(string request, CancellationToken ct)
+    // ---- 命令分级（设计稿 §3.3 第二层）。key = VERB 或 VERB:SUB。 ----
+
+    /// <summary>只读、不泄密：任何本机进程都可以发。</summary>
+    private static readonly HashSet<string> ReadOnlyCommands = new(StringComparer.Ordinal)
+    {
+        "STATUS", "INFO", "SECURITY:STATUS", "FEATURE:GET", "PASS:STATUS", "PAIR:STATUS", "SLOT:STATUS",
+        "FP:LIST", "FP:SLOTS", "FP:STATUS", "KEY:LIST", "KEY:SSHPUB", "OTA:INFO", "OTA:VERSION", "SSHAGENT:STATUS",
+    };
+
+    /// <summary>靠设备指纹门（+ GateBudget）而不靠身份：本来就是给 imk 用的。</summary>
+    private static readonly HashSet<string> DeviceGatedForAll = new(StringComparer.Ordinal) { "KEY:OTP" };
+
+    /// <summary>
+    /// 固件自己不设门、又会产生持久写入的命令：Service 先发 AUTH_REQUEST 逼一次真实触摸。
+    /// 固件已设门的（FP:ENROLL/DELETE、KEY:DELETE/ADD*/SSHGEN、SLOT:CLEAR、PAIR:START 的配对流程本身）
+    /// 不重复要门，否则用户每个动作要摸两次。
+    /// 只有 PASS:SET（写凭据管理器）和 OTA:PUSH（刷固件）要门。功能开关（FEATURE:SET）和 SSHAGENT:ON
+    /// 不要门（2026-09-06 用户决定）：开关本身不放行任何秘密——解锁推密码、SSH 签名、读 OTP 各自仍要触摸，
+    /// 攻击者替用户打开开关什么也拿不到，加门只是每次开关多摸一次。关功能、清密码、解绑设备
+    /// （PASS:CLEAR、FEATURE:SET:*:0、SSHAGENT:OFF、PAIR:RESET）同样不要门，只受 owner 校验（§3.5）。
+    /// </summary>
+    private static bool NeedsHostGate(string key) => key switch
+    {
+        "PASS:SET" => true,
+        "OTA:PUSH" => true,
+        _ => false,
+    };
+
+    private static string CommandKey(string[] parts)
+    {
+        string verb = parts[0];
+        return parts.Length >= 2 && verb is "FEATURE" or "PASS" or "PAIR" or "SLOT" or "FP" or "KEY" or "OTA" or "SSHAGENT" or "INJECT" or "SECURITY"
+            ? $"{verb}:{parts[1]}"
+            : verb;
+    }
+
+    /// <summary>
+    /// 授权检查，在分派（含流式命令）之前调用。返回 null = 放行；否则为拒绝应答。
+    /// 第一层 <see cref="CallerPolicy"/> 是纵深防御（可被注入绕过），第二层的门才是边界。
+    /// 拒绝一律回明确错误码、不断连（§9.9）。
+    /// </summary>
+    public async Task<string?> AuthorizeAsync(string request, CallerIdentity? caller, CancellationToken ct)
+    {
+        string[] parts = request.Split(IpcProtocol.Sep);
+        string key = CommandKey(parts);
+
+        if (ReadOnlyCommands.Contains(key) || DeviceGatedForAll.Contains(key)) return null;
+
+        if (_policy.Classify(caller) != CallerKind.TrustedClient)
+        {
+            _log.LogWarning("{Key}：调用方不可信，拒绝（{Caller} image={Image}）", key, caller?.ToString() ?? "unknown", caller?.ImagePath ?? "?");
+            return IpcProtocol.ErrCallerNotTrusted;
+        }
+
+        if (!NeedsHostGate(key)) return null;
+
+        if (!_ble.IsConnected) return IpcProtocol.ErrNotConnected;
+        _log.LogInformation("{Key}：要求设备指纹确认", key);
+        var outcome = await _ble.AuthenticateDetailedAsync().ConfigureAwait(false);
+        switch (outcome)
+        {
+            case BleManager.GateOutcome.Ok:
+                return null;
+            case BleManager.GateOutcome.Timeout:
+                _log.LogWarning("{Key}：指纹确认超时 / 取消，拒绝", key);
+                return IpcProtocol.DenyGateTimeout;
+            default:
+                _log.LogWarning("{Key}：指纹确认未通过，拒绝", key);
+                return IpcProtocol.DenyGateRejected;
+        }
+    }
+
+    /// <param name="caller">对端进程身份；取不到为 null。只用于拒绝，不用于放行。</param>
+    public async Task<string> HandleAsync(string request, CallerIdentity? caller, CancellationToken ct)
     {
         _log.LogDebug("IPC 请求: {Request}", request.Split(':')[0]);
         string[] parts = request.Split(IpcProtocol.Sep);
@@ -50,12 +137,12 @@ public sealed class CommandHandlers
                 IpcProtocol.Status => HandleStatus(),
                 IpcProtocol.Info   => await HandleInfoAsync(),
                 IpcProtocol.Fp     => await HandleFpAsync(parts, ct),
-                IpcProtocol.Pair   => await HandlePairAsync(parts, ct),
+                IpcProtocol.Pair   => await HandlePairAsync(parts, caller, ct),
                 IpcProtocol.Slot   => await HandleSlotAsync(parts),
-                IpcProtocol.Key    => await HandleKeyAsync(parts),
+                IpcProtocol.Key    => await HandleKeyAsync(parts, caller),
                 IpcProtocol.SshAgent => await HandleSshAgentAsync(parts),
-                IpcProtocol.Pass   => HandlePass(parts),
-                IpcProtocol.Auth   => await HandleAuthAsync(parts, ct),
+                IpcProtocol.Pass   => HandlePass(parts, caller),
+                IpcProtocol.Auth   => await HandleAuthAsync(parts, caller, ct),
                 // 取消进行中的指纹门：不做连接检查，尽力而为（客户端认证弹窗点取消时用）。
                 IpcProtocol.CancelGate => await HandleCancelGateAsync(),
                 // 功能开关：不要求设备在线（纯本地设置）。
@@ -63,8 +150,17 @@ public sealed class CommandHandlers
                 // 指纹注入信号长轮询：挂起等信号或超时，客户端零空转。
                 IpcProtocol.Inject => await HandleInjectAsync(parts, ct),
                 IpcProtocol.Ota    => IpcProtocol.ErrOtaNotAvailable, // OTA 待阶段5实现
+                // IPC 加固健康状态（只读，任何人可查；只放枚举值，不放路径）。
+                IpcProtocol.Security => parts.Length >= 2 && parts[1] == IpcProtocol.SecurityStatus
+                    ? HandleSecurityStatus() : IpcProtocol.ErrUnknownCommand,
                 _ => IpcProtocol.ErrUnknownCommand,
             };
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // 服务停止：INJECT:POLL 这类长轮询会被取消，是正常关停路径，不是异常。
+            _log.LogDebug("请求因服务停止而取消: {Verb}", verb);
+            return IpcProtocol.Error;
         }
         catch (Exception ex)
         {
@@ -111,6 +207,71 @@ public sealed class CommandHandlers
         }
 
         return IpcProtocol.ErrUnknownCommand;
+    }
+
+    /// <summary>
+    /// owner 校验（设计稿 §3.5）。返回 true 表示要拒绝，<paramref name="response"/> 为拒绝应答。
+    /// 没有 owner 记录时告警放行——升级过渡，配对或 PASS:SET 一次就补上，不锁死单用户机器。
+    /// 调用方身份取不到时按「不是 owner」拒绝：身份只能用来拒绝，不能用来放行。
+    /// </summary>
+    private bool DenyIfNotOwner(CallerIdentity? caller, string what, out string response)
+    {
+        response = IpcProtocol.DenyNotOwner;
+        if (!_owner.IsSet)
+        {
+            _log.LogWarning("{What}：尚无 owner 记录，放行（配对或设置密码后会补上）", what);
+            return false;
+        }
+        if (caller is null)
+        {
+            _log.LogWarning("{What}：取不到调用方身份，拒绝", what);
+            return true;
+        }
+        if (_owner.IsOwner(caller.Sid) == true) return false;
+        _log.LogWarning("{What}：调用方不是 owner，拒绝（{Caller}）", what, caller);
+        return true;
+    }
+
+    /// <summary>把调用方记为 owner（配对成功 / PASS:SET）。</summary>
+    private void RecordOwner(CallerIdentity? caller, string what)
+    {
+        if (caller is null)
+        {
+            _log.LogWarning("{What}：取不到调用方身份，无法记录 owner", what);
+            return;
+        }
+        _owner.Save(caller.Sid, caller.Account);
+    }
+
+    /// <summary>
+    /// SECURITY:STATUS（设计稿 §4）。各项是给人看的健康提示，不是安全判定的输入（§9.2）：
+    ///   cp_pipe: ok / squatted / unknown（还没触发过解锁）
+    ///   service_pipe: ok / contended（某条管道的首实例创建失败，名字被占）
+    ///   caller_check: signed / path-only（Service 未签名）/ off（--allow-unsigned-clients）
+    ///   data_acl: ok / loose（数据目录 DACL 里仍有 Users / Everyone）
+    ///   pairing_scope: user / machine（未迁移）/ unreadable（服务账户被改过）/ none（未配对）
+    ///   owner: set / unset
+    /// </summary>
+    private string HandleSecurityStatus()
+    {
+        _ = _security.IsPaired; // 刷新 KeyScope
+        string cp = _unlocker.LastPeerCheck switch
+        {
+            ScreenUnlocker.PeerCheck.Ok => "ok",
+            ScreenUnlocker.PeerCheck.Squatted => "squatted",
+            _ => "unknown",
+        };
+        string pipe = _status.AnyPipeContended ? "contended" : "ok";
+        string acl = _dataDir.IsLoose() ? "loose" : "ok";
+        string scope = _pairing.KeyScope switch
+        {
+            PairingStore.Scope.User => "user",
+            PairingStore.Scope.Machine => "machine",
+            PairingStore.Scope.Unreadable => "unreadable",
+            _ => "none",
+        };
+        return $"{IpcProtocol.Ok}:cp_pipe={cp};service_pipe={pipe};caller_check={_policy.Mode};" +
+               $"data_acl={acl};pairing_scope={scope};owner={(_owner.IsSet ? "set" : "unset")}";
     }
 
     /// <summary>取消进行中的指纹门，让设备停止闪灯等待，等待中的操作立即以失败收尾。</summary>
@@ -196,7 +357,7 @@ public sealed class CommandHandlers
         }
     }
 
-    private async Task<string> HandlePairAsync(string[] parts, CancellationToken ct)
+    private async Task<string> HandlePairAsync(string[] parts, CallerIdentity? caller, CancellationToken ct)
     {
         if (parts.Length < 2) return IpcProtocol.ErrInvalidFormat;
 
@@ -207,15 +368,24 @@ public sealed class CommandHandlers
 
             case IpcProtocol.PairStart:
             {
+                // 重新配对等于换设备 / 换主人：已有 owner 时只有 owner 能做；要换人先 PAIR:RESET。
+                if (DenyIfNotOwner(caller, "PAIR:START", out string deny)) return deny;
                 if (!_ble.IsConnected) return IpcProtocol.ErrNotConnected;
                 PairFailureReason reason = await _ble.StartPairingAsync(ct: ct);
-                return reason == PairFailureReason.None
-                    ? $"{IpcProtocol.Ok}:PAIRED"
-                    : $"{IpcProtocol.Error}:{reason.ToString().ToUpperInvariant()}";
+                if (reason == PairFailureReason.None)
+                {
+                    RecordOwner(caller, "PAIR:START");
+                    return $"{IpcProtocol.Ok}:PAIRED";
+                }
+                return $"{IpcProtocol.Error}:{reason.ToString().ToUpperInvariant()}";
             }
             case IpcProtocol.PairReset:
+            {
+                if (DenyIfNotOwner(caller, "PAIR:RESET", out string deny)) return deny;
                 _ble.ResetPairing();
+                _owner.Clear();
                 return $"{IpcProtocol.Ok}:RESET";
+            }
 
             default:
                 return IpcProtocol.ErrUnknownCommand;
@@ -228,8 +398,13 @@ public sealed class CommandHandlers
     /// <c>PROGRESS:FingerprintRejected:&lt;remaining&gt;</c>；终态 <c>OK:PAIRED</c> / <c>ERROR:*</c>
     /// （与非流式 <c>PAIR:START</c> 的终态一致，客户端解析逻辑不用分家）。
     /// </summary>
-    public async Task HandlePairStartStreamAsync(Func<string, Task> writeFrame, CancellationToken ct)
+    public async Task HandlePairStartStreamAsync(CallerIdentity? caller, Func<string, Task> writeFrame, CancellationToken ct)
     {
+        if (DenyIfNotOwner(caller, "PAIR:START", out string deny))
+        {
+            await writeFrame(deny);
+            return;
+        }
         if (!_ble.IsConnected)
         {
             await writeFrame(IpcProtocol.ErrNotConnected);
@@ -261,9 +436,15 @@ public sealed class CommandHandlers
         try
         {
             PairFailureReason reason = await _ble.StartPairingAsync(fpGateFirst, ct: ct);
-            terminal = reason == PairFailureReason.None
-                ? $"{IpcProtocol.Ok}:PAIRED"
-                : $"{IpcProtocol.Error}:{reason.ToString().ToUpperInvariant()}";
+            if (reason == PairFailureReason.None)
+            {
+                RecordOwner(caller, "PAIR:START");
+                terminal = $"{IpcProtocol.Ok}:PAIRED";
+            }
+            else
+            {
+                terminal = $"{IpcProtocol.Error}:{reason.ToString().ToUpperInvariant()}";
+            }
         }
         catch (Exception ex)
         {
@@ -396,7 +577,7 @@ public sealed class CommandHandlers
     }
 
     /// <summary>密钥库：SSH / OTP / API 列表、TOTP 取码、删除、SSH 公钥导出。</summary>
-    private async Task<string> HandleKeyAsync(string[] parts)
+    private async Task<string> HandleKeyAsync(string[] parts, CallerIdentity? caller)
     {
         if (parts.Length < 2) return IpcProtocol.ErrInvalidFormat;
         if (!_ble.IsConnected) return IpcProtocol.ErrNotConnected;
@@ -407,6 +588,8 @@ public sealed class CommandHandlers
             {
                 if (parts.Length < 3 || !byte.TryParse(parts[2], out byte cat))
                     return IpcProtocol.ErrInvalidFormat;
+                // 列表也只给 owner（2026-09-06 用户决定）：值拿不到，名字也没必要给另一个账号看。
+                if (DenyIfNotOwner(caller, "KEY:LIST", out string deny)) return deny;
                 int count = await _ble.GetKeyCountAsync(cat);
                 var entries = new List<string>();
                 for (byte i = 0; i < count; i++)
@@ -428,6 +611,10 @@ public sealed class CommandHandlers
             }
             case IpcProtocol.KeyOtp:
             {
+                // 读秘密只给 owner（2026-09-06 多用户测试后补上）：切换用户后另一账号的进程还活着，
+                // 而指纹门预算是服务级的——owner 为别的事触摸一次，对方 60s 内不用触摸就能读走。
+                // 与 SSH agent 管道（ACL 只给 owner）、AUTH / APPROVE 的 owner 校验对齐。
+                if (DenyIfNotOwner(caller, "KEY:OTP", out string deny)) return deny;
                 if (!_settings.OtpEnabled) return IpcProtocol.Deny; // 功能开关：OTP 已关闭
                 if (parts.Length < 3 || !byte.TryParse(parts[2], out byte idx))
                     return IpcProtocol.ErrInvalidFormat;
@@ -620,7 +807,7 @@ public sealed class CommandHandlers
     }
 
     /// <summary>登录密码配置（存 Windows 凭据管理器，供 CP 解锁时读取）。</summary>
-    private string HandlePass(string[] parts)
+    private string HandlePass(string[] parts, CallerIdentity? caller)
     {
         if (parts.Length < 2) return IpcProtocol.ErrInvalidFormat;
         switch (parts[1])
@@ -631,6 +818,7 @@ public sealed class CommandHandlers
             case IpcProtocol.PassSet:
             {
                 // PASS:SET:<b64user>:<b64pass>
+                if (DenyIfNotOwner(caller, "PASS:SET", out string deny)) return deny;
                 if (parts.Length < 4) return IpcProtocol.ErrInvalidFormat;
                 string user, pass;
                 try
@@ -640,15 +828,26 @@ public sealed class CommandHandlers
                 }
                 catch { return IpcProtocol.ErrInvalidFormat; }
                 if (string.IsNullOrEmpty(pass)) return IpcProtocol.ErrInvalidFormat;
-                if (string.IsNullOrEmpty(user)) user = Environment.UserName;
+                // 未带用户名时用调用方账户（DOMAIN\user）。不能用 Environment.UserName：
+                // Service 跑在 SYSTEM 下，那会存成 "SYSTEM"。
+                if (string.IsNullOrEmpty(user)) user = caller?.Account ?? _owner.Account ?? "";
+                if (string.IsNullOrEmpty(user))
+                {
+                    _log.LogWarning("PASS:SET 未带用户名且取不到调用方账户，拒绝");
+                    return IpcProtocol.ErrInvalidFormat;
+                }
                 _creds.Save(user, pass);
-                _log.LogInformation("登录密码已保存（用户 {User}）", user);
+                RecordOwner(caller, "PASS:SET");
+                _log.LogInformation("登录密码已保存");
                 return IpcProtocol.Ok;
             }
 
             case IpcProtocol.PassClear:
+            {
+                if (DenyIfNotOwner(caller, "PASS:CLEAR", out string deny)) return deny;
                 _creds.Clear();
                 return IpcProtocol.Ok;
+            }
 
             default:
                 return IpcProtocol.ErrUnknownCommand;
@@ -659,8 +858,10 @@ public sealed class CommandHandlers
     /// AUTH:username:service —— 等待一次签名指纹匹配（30s 超时），用于未来的权限授权场景。
     /// 屏幕解锁走独立的 CP 管道，不经此路径。
     /// </summary>
-    private async Task<string> HandleAuthAsync(string[] parts, CancellationToken ct)
+    private async Task<string> HandleAuthAsync(string[] parts, CallerIdentity? caller, CancellationToken ct)
     {
+        // 触摸只授权给 owner 的请求：否则同机另一个账号发 AUTH，机主的一次触摸就把授权给了他。
+        if (DenyIfNotOwner(caller, "AUTH", out string deny)) return deny;
         if (!_ble.IsConnected) return IpcProtocol.ErrNotConnected;
 
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);

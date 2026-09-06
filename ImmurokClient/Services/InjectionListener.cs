@@ -15,10 +15,9 @@ public sealed class InjectionListener
     private CancellationTokenSource? _cts;
 
     /// <summary>
-    /// 专用管道客户端，不能共用 <see cref="AppServices.Pipe"/>。
-    /// PipeClient 内部有 SemaphoreSlim(1,1) 把该实例上的所有请求串行化，而本监听的每一发
-    /// 都要在服务端挂起 25 秒——共用就会把 UI 的 STATUS/FEATURE 等请求全堵在后面，
-    /// 表现为「切换页面后 20 多秒才刷新」。各自一个实例即各自一把锁，互不影响。
+    /// 专用管道客户端，与 UI 的 <see cref="AppServices.Pipe"/> 分开，纯粹为了职责清晰。
+    /// （PipeClient 早先有一把 SemaphoreSlim(1,1) 串行化请求，本监听每发挂 25 秒会把 UI 请求
+    /// 全堵在后面，所以才必须分实例；那把锁已经去掉，现在共用也不会堵。）
     /// 服务端管道是多实例的，并发连接没问题。
     /// </summary>
     private readonly PipeClient _pipe = new();

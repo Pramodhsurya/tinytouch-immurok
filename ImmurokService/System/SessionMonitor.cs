@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using Microsoft.Extensions.Logging;
 
 namespace ImmurokService.Platform;
@@ -58,6 +59,36 @@ public sealed class SessionMonitor
         return string.IsNullOrEmpty(domain) ? user : $"{domain}\\{user}";
     }
 
+    /// <summary>
+    /// 取活动控制台会话登录用户的 SID。优先 <c>WTSQueryUserToken</c>（需要 SYSTEM，拿到的是会话
+    /// 真实 token 的 SID，不经名字解析）；控制台调试模式下没有该权限，退回按用户名解析。
+    /// </summary>
+    public SecurityIdentifier? GetActiveConsoleUserSid()
+    {
+        uint sessionId = WTSGetActiveConsoleSessionId();
+        if (sessionId == 0xFFFFFFFF) return null;
+
+        if (WTSQueryUserToken(sessionId, out IntPtr token) && token != IntPtr.Zero)
+        {
+            try
+            {
+                using var identity = new WindowsIdentity(token);
+                return identity.User;
+            }
+            catch (Exception ex) { _log.LogDebug(ex, "解析会话 token 失败"); }
+            finally { CloseHandle(token); }
+        }
+
+        string? account = GetActiveConsoleUser();
+        if (string.IsNullOrEmpty(account)) return null;
+        try { return (SecurityIdentifier)new NTAccount(account).Translate(typeof(SecurityIdentifier)); }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "账户名解析 SID 失败");
+            return null;
+        }
+    }
+
     private string? QueryString(uint sessionId, WTS_INFO_CLASS cls)
     {
         if (!WTSQuerySessionInformation(IntPtr.Zero, sessionId, cls, out IntPtr buffer, out _) || buffer == IntPtr.Zero)
@@ -85,4 +116,10 @@ public sealed class SessionMonitor
 
     [DllImport("wtsapi32.dll")]
     private static extern void WTSFreeMemory(IntPtr memory);
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSQueryUserToken(uint sessionId, out IntPtr token);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
 }

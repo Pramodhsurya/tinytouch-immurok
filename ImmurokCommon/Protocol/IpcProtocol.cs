@@ -24,6 +24,8 @@ public static class IpcProtocol
     public const string Feature     = "FEATURE";
     /// <summary>指纹注入信号轮询。INJECT:POLL -&gt; OK:&lt;pageId&gt;（有一次非锁屏态指纹匹配可用于注入，取用并消费）| OK（无）。</summary>
     public const string Inject      = "INJECT";
+    public const string Security    = "SECURITY";      // SECURITY:STATUS -> OK:cp_pipe=..;service_pipe=..;caller_check=..;data_acl=..;pairing_scope=..;owner=..
+    public const string SecurityStatus = "STATUS";
     public const string InjectPoll  = "POLL";
 
     // FEATURE 子命令与功能名
@@ -80,6 +82,9 @@ public static class IpcProtocol
     // ---- 响应 ----
     public const string Ok      = "OK";        // 亦有 OK:count / OK:DELETED / OK:ENROLL_STARTED / OK:IDLE 等
     public const string Deny    = "DENY";
+    public const string DenyNotOwner = "DENY:NOT_OWNER"; // 调用方 / 目标会话不是设备 owner
+    public const string DenyGateRejected = "DENY:GATE_REJECTED"; // 设备指纹门：按错 / 被拒
+    public const string DenyGateTimeout  = "DENY:GATE_TIMEOUT";  // 设备指纹门：超时 / 取消
     public const string Skip    = "SKIP";
     public const string Busy    = "BUSY";
     public const string Timeout = "TIMEOUT";
@@ -95,6 +100,7 @@ public static class IpcProtocol
     public const string ErrDeleteFailed    = "ERROR:DELETE_FAILED";
     public const string ErrOtaNotAvailable = "ERROR:OTA_NOT_AVAILABLE";
     public const string ErrHmacMismatch    = "ERROR:HMAC_MISMATCH";
+    public const string ErrCallerNotTrusted = "ERROR:CALLER_NOT_TRUSTED"; // 调用方不在安装目录 / 签名不符（§3.3）
 
     public const char Sep = ':';
 }

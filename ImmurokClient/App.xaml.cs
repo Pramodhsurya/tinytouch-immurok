@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Imaging;
 using H.NotifyIcon;
+using ImmurokCommon.Protocol;
 
 namespace ImmurokClient;
 
@@ -66,7 +67,9 @@ public partial class App : Application
         _tray.TrayMouseDoubleClick += (_, _) => ShowWindow();
         _tray.ForceCreate();
 
-        _window.Show();
+        // 已配对的机器上启动（通常是开机自启）不弹主窗口，只驻托盘；未配对或服务没起来才显示，
+        // 让用户看到配对引导。托盘菜单「打开」与双击照常可拉出窗口。
+        _ = ShowWindowUnlessPairedAsync();
 
         // 开机自启：首次运行默认开启；之后只在安装路径变化时校正，不覆盖用户的选择。
         // 注入必须由本进程（用户会话）完成，客户端不常驻就等于功能静默失效。
@@ -74,6 +77,20 @@ public partial class App : Application
 
         // 指纹触发注入：后台轮询服务端信号，命中前台注入项时自动填入密码。
         Services.AppServices.Injection.Start();
+    }
+
+    /// <summary>查一次配对状态决定首屏显不显示。服务没响应按未配对处理（此时更需要让用户看到状态）。</summary>
+    private async System.Threading.Tasks.Task ShowWindowUnlessPairedAsync()
+    {
+        bool paired = false;
+        try
+        {
+            string? r = await Services.AppServices.Pipe.SendAsync(
+                $"{IpcProtocol.Pair}:{IpcProtocol.PairStatus}", timeoutMs: 3000);
+            paired = r?.Contains("PAIRED") == true && !r.Contains("UNPAIRED");
+        }
+        catch { /* 服务未运行 */ }
+        if (!paired) ShowWindow();
     }
 
     private void ShowWindow()

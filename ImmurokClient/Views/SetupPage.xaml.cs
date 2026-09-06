@@ -122,15 +122,19 @@ public partial class SetupPage : Page
         var (ok, pwd) = PasswordDialog.Show(Window.GetWindow(this), T("setup.pass.set"));
         if (!ok || string.IsNullOrEmpty(pwd)) return;
 
-        string? r = await AppServices.Pipe.PassSetAsync(Environment.UserName, pwd);
-        PassHint.Text = r == "OK" ? T("msg.setup.saved") : T("msg.setup.save_fail", r ?? "");
+        // 写凭据要在设备上触摸确认：用统一的指纹等待窗（30s 倒计时 + 取消），取消 / 超时返回 null。
+        string? r = FpAuthDialog.Run(Window.GetWindow(this),
+            T("msg.fpauth.pass_set"),
+            () => AppServices.Pipe.PassSetAsync(Environment.UserName, pwd));
+        PassHint.Text = r == "OK" ? T("msg.setup.saved") : T("msg.setup.save_fail", r ?? T("msg.setup.pass_cancelled"));
         await RefreshAsync();
     }
 
     private async void OnClearClick(object sender, RoutedEventArgs e)
     {
-        await AppServices.Pipe.PassClearAsync();
-        PassHint.Text = T("msg.setup.cleared");
+        // 清密码不要门，但受 owner 校验：非 owner 会回 DENY:NOT_OWNER，不能一律提示「已清除」。
+        string? r = await AppServices.Pipe.PassClearAsync();
+        PassHint.Text = r == "OK" ? T("msg.setup.cleared") : T("common.op_fail", r ?? "");
         await RefreshAsync();
     }
 }

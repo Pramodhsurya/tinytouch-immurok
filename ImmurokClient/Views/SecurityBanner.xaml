@@ -1,0 +1,33 @@
+<UserControl x:Class="ImmurokClient.Views.SecurityBanner"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             Visibility="Collapsed">
+    <!-- 与 PairingBanner 同款：外边距放在内层 Border 上，整体 Collapsed 时不占空白。放在「功能」页顶部。 -->
+    <Grid>
+        <Border x:Name="Bar" CornerRadius="6" Padding="14,10" Margin="0,0,0,14"
+                Background="#2230B050" BorderBrush="#5530B050" BorderThickness="1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="0,0,12,0">
+                    <ui:SymbolIcon x:Name="Icon" Symbol="ShieldCheckmark24" Foreground="#FF30B050" FontSize="18"
+                                   Margin="0,0,8,0" VerticalAlignment="Center" />
+                    <TextBlock x:Name="Text" TextWrapping="Wrap" VerticalAlignment="Center" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <ui:Button x:Name="DetailsButton" Icon="{ui:SymbolIcon Info24}" Appearance="Primary"
+                               Click="OnDetailsClick" Visibility="Collapsed" />
+                    <ui:Button x:Name="CloseButton" Icon="{ui:SymbolIcon Dismiss24}" Appearance="Transparent"
+                               Click="OnCloseClick" Margin="6,0,0,0" ToolTip="×" />
+                </StackPanel>
+            </Grid>
+        </Border>
+        <!-- 收起后的绿盾牌：页面右上角一枚，点击展开。 -->
+        <ui:Button x:Name="Shield" Icon="{ui:SymbolIcon ShieldCheckmark24}" Appearance="Transparent"
+                   Foreground="#FF30B050" HorizontalAlignment="Right" VerticalAlignment="Top"
+                   Margin="0,0,0,8" Padding="6,2" Visibility="Collapsed" Click="OnShieldClick" />
+    </Grid>
+</UserControl>

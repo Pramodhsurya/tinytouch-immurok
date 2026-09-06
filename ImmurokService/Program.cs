@@ -74,6 +74,13 @@ builder.Services.AddSerilog(Log.Logger, dispose: true);
 builder.Services.AddSingleton<ImmurokSecurity>();
 builder.Services.AddSingleton<PairingStore>();
 builder.Services.AddSingleton<CredentialStore>();
+builder.Services.AddSingleton<OwnerStore>();
+builder.Services.AddSingleton<DataDirSecurity>();
+// 调用方分级（§3.3）。--allow-unsigned-clients 只给开发构建，安装包不传。
+builder.Services.AddSingleton(new CallerPolicyOptions(
+    args.Contains("--allow-unsigned-clients", StringComparer.OrdinalIgnoreCase)));
+builder.Services.AddSingleton<CallerPolicy>();
+builder.Services.AddSingleton<SecurityStatus>();
 builder.Services.AddSingleton<FpInjectionSignal>();
 builder.Services.AddSingleton<BleManager>();
 builder.Services.AddSingleton<SessionMonitor>();

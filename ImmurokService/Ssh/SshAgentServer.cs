@@ -1,6 +1,9 @@
 using System.IO.Pipes;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using ImmurokService.Ble;
+using ImmurokService.Ipc;
+using ImmurokService.Security;
 using Microsoft.Extensions.Logging;
 
 namespace ImmurokService.Ssh;
@@ -23,19 +26,26 @@ public sealed class SshAgentServer : IAsyncDisposable
 
     private readonly ILogger<SshAgentServer> _log;
     private readonly BleManager _ble;
+    private readonly OwnerStore _owner;
 
     private CancellationTokenSource? _cts;
     private Task? _acceptLoop;
+    private bool _warnedNoOwner;
+
+    /// <summary>第一个实例创建失败（管道名被占，通常是 Windows 内置 ssh-agent 没停）时为 true。</summary>
+    public bool Contended { get; private set; }
 
     // 身份缓存：keyBlob(104B) + 名称 + 设备槽位。
     private volatile List<(byte Idx, string Name, byte[] Blob)> _identities = new();
 
     public bool IsRunning => _acceptLoop is not null;
 
-    public SshAgentServer(ILogger<SshAgentServer> log, BleManager ble)
+    public SshAgentServer(ILogger<SshAgentServer> log, BleManager ble, OwnerStore owner, SecurityStatus status)
     {
         _log = log;
         _ble = ble;
+        _owner = owner;
+        status.RegisterPipe(PipeName, () => Contended);
     }
 
     public void Start()
@@ -75,21 +85,23 @@ public sealed class SshAgentServer : IAsyncDisposable
 
     private async Task AcceptLoopAsync(CancellationToken ct)
     {
+        bool first = true;
         while (!ct.IsCancellationRequested)
         {
             NamedPipeServerStream? pipe = null;
             try
             {
-                pipe = new NamedPipeServerStream(PipeName, PipeDirection.InOut,
-                    NamedPipeServerStream.MaxAllowedServerInstances,
-                    PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                pipe = CreatePipe(first);
+                first = false;
+                Contended = false;
                 await pipe.WaitForConnectionAsync(ct).ConfigureAwait(false);
                 _ = HandleClientAsync(pipe, ct);
             }
             catch (OperationCanceledException) { pipe?.Dispose(); break; }
-            catch (IOException ex)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                // 管道名被占用（Windows 内置 ssh-agent 未停）等。
+                // 管道名被占用（Windows 内置 ssh-agent 未停）等。不静默，Contended 供状态页。
+                Contended = true;
                 _log.LogError(ex, "SSH agent 管道创建失败（是否未停用 Windows ssh-agent 服务？）");
                 pipe?.Dispose();
                 await Task.Delay(2000, ct).ContinueWith(_ => { }, CancellationToken.None);
@@ -101,6 +113,33 @@ public sealed class SshAgentServer : IAsyncDisposable
                 await Task.Delay(1000, ct).ContinueWith(_ => { }, CancellationToken.None);
             }
         }
+    }
+
+    /// <summary>
+    /// ssh-agent 管道 ACL：owner（设备主人）读写，SYSTEM 与本进程用户完全控制（<see cref="PipeAcl"/>）。
+    /// 之前用的是无 ACL 重载，即 SYSTEM token 的默认 DACL（SYSTEM + Administrators）——普通用户 token
+    /// 连 <c>ssh-add -l</c> 都是 Permission denied，功能对标准用户实际上是坏的。没有 owner 记录时退回
+    /// Authenticated Users 读写并告警一次。对标 Linux 的活动会话校验（设计稿 §3.4）。
+    /// 每次 accept 都重建实例，配对换了 owner 之后下一条连接就用新 ACL。
+    /// </summary>
+    private NamedPipeServerStream CreatePipe(bool first)
+    {
+        SecurityIdentifier? rw = _owner.Sid;
+        if (rw is null)
+        {
+            if (!_warnedNoOwner)
+            {
+                _log.LogWarning("尚无 owner 记录，SSH agent 管道暂向所有本机用户开放（配对或设置密码后收紧）");
+                _warnedNoOwner = true;
+            }
+            rw = new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null);
+        }
+        return NamedPipeServerStreamAcl.Create(
+            PipeName, PipeDirection.InOut,
+            NamedPipeServerStream.MaxAllowedServerInstances,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | (first ? PipeOptions.FirstPipeInstance : PipeOptions.None),
+            0, 0, PipeAcl.Build(rw));
     }
 
     private async Task HandleClientAsync(NamedPipeServerStream pipe, CancellationToken ct)

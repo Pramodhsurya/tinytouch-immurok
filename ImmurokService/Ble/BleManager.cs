@@ -80,6 +80,10 @@ public sealed class BleManager : IAsyncDisposable
     //   0x07 = 按错指纹（累计 3 次失败判负）；0x06 = 超时/终止；0x10 = 门已通过(继续等结果)；
     //   其余 = 结果字节（如 SLOT_CLEAR 的 [status]、OTP 的 [OK][6 位]）。
     private TaskCompletionSource<byte[]?>? _pendingFpGate;
+
+    // 读秘密命令的主机侧指纹门预算（设计稿 §3.6 过渡方案），见 GateBudget 的注释。
+    private readonly GateBudget _gateBudget = new();
+    public GateBudget GateBudget => _gateBudget;
     private int _fpGateFails;
 
     /// <summary>进入指纹门（设备开始等待触摸）。用于终端提示。</summary>
@@ -529,6 +533,7 @@ public sealed class BleManager : IAsyncDisposable
         _pendingFpGate?.TrySetResult(null);
         _pendingFpGate = null;
         _fpGateFails = 0;
+        _gateBudget.Reset();
 
         if (was) ConnectionChanged?.Invoke(false);
 
@@ -673,11 +678,13 @@ public sealed class BleManager : IAsyncDisposable
             }
             if (data.Length == 1 && data[0] == 0x10) // FP_GATE_APPROVED：门过了但结果随后到，继续等
             {
+                _gateBudget.Touched();
                 FpGateApproved?.Invoke();
                 return;
             }
 
-            // 其余 = 结果
+            // 其余 = 结果。走到这里说明设备上刚过了一次真实指纹门（按错是 0x07、终止是 0x06）。
+            _gateBudget.Touched();
             var gr = _pendingFpGate; _pendingFpGate = null;
             gr.TrySetResult(data);
             return;
@@ -1206,6 +1213,7 @@ public sealed class BleManager : IAsyncDisposable
     /// <summary>读取整条条目（分块 KEY_READ，off 递增至设备报告的可读大小）。用于 imk get 读 API 值。</summary>
     public async Task<byte[]?> ReadKeyEntryAsync(byte cat, byte idx)
     {
+        if (!await EnsureSecretBudgetAsync("KEY_READ").ConfigureAwait(false)) return null;
         byte[]? acc = null;
         int total = 0, off = 0;
         for (int guard = 0; guard < 64; guard++)
@@ -1225,23 +1233,51 @@ public sealed class BleManager : IAsyncDisposable
         return acc;
     }
 
+    /// <summary>
+    /// 读秘密命令（OTP 取码 / API 值 / 签名）转发前的预算检查。预算耗尽就先发 AUTH_REQUEST——
+    /// 固件对它永远要求新触摸——逼一次真实触摸；用户没摸 / 按错 / 超时返回 false，调用方按拒绝处理。
+    /// 不能只依赖固件自己的门：它的 cooldown 会被每次通过续期（见 <see cref="Ble.GateBudget"/>）。
+    /// </summary>
+    private async Task<bool> EnsureSecretBudgetAsync(string what)
+    {
+        if (_gateBudget.TryUse()) return true;
+        _log.LogInformation("{What}：指纹门预算耗尽，要求重新触摸", what);
+        if (!await AuthenticateAsync().ConfigureAwait(false))
+        {
+            _log.LogInformation("{What}：重新触摸未通过，拒绝", what);
+            return false;
+        }
+        return _gateBudget.TryUse();
+    }
+
+    public enum GateOutcome { Ok, Rejected, Timeout }
+
     /// <summary>裸指纹认证（AUTH_REQUEST 0x33，含指纹门）。用于 imk agent 运行高危命令前的用户在场确认。</summary>
     public async Task<bool> AuthenticateAsync(int timeoutMs = 30000)
+        => await AuthenticateDetailedAsync(timeoutMs).ConfigureAwait(false) == GateOutcome.Ok;
+
+    /// <summary>
+    /// 同 <see cref="AuthenticateAsync"/>，但区分「超时 / 取消」与「按错 / 被拒」——拒绝要有话说（设计稿 §9.9）。
+    /// 固件对 AUTH_REQUEST 永远要求一次新触摸（hidkbd.c:5908），不看 cooldown。
+    /// </summary>
+    public async Task<GateOutcome> AuthenticateDetailedAsync(int timeoutMs = 30000)
     {
         byte[]? r = await SendCommandAsync(ImmurokCommand.AuthRequest, Array.Empty<byte>());
-        if (r is not { Length: >= 1 }) return false;
-        if (r[0] == (byte)ImmurokStatus.Ok) return true;
+        if (r is not { Length: >= 1 }) return GateOutcome.Timeout;
+        if (r[0] == (byte)ImmurokStatus.Ok) return GateOutcome.Ok;
         if (r[0] == (byte)ImmurokStatus.WaitFingerprint)
         {
             byte[]? res = await RunFpGateAsync(timeoutMs);
-            return res is { Length: >= 1 } && res[0] == (byte)ImmurokStatus.Ok;
+            if (res is null) return GateOutcome.Timeout;
+            return res is { Length: >= 1 } && res[0] == (byte)ImmurokStatus.Ok ? GateOutcome.Ok : GateOutcome.Rejected;
         }
-        return false;
+        return GateOutcome.Rejected;
     }
 
     /// <summary>取 TOTP 当前验证码（KEY_OTP_GET，含指纹门）。返回 6 位数字或 null。</summary>
     public async Task<string?> GetOtpCodeAsync(byte idx)
     {
+        if (!await EnsureSecretBudgetAsync("KEY_OTP_GET").ConfigureAwait(false)) return null;
         uint ts = (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         byte[] payload = { idx, (byte)ts, (byte)(ts >> 8), (byte)(ts >> 16), (byte)(ts >> 24) };
         byte[]? r = await SendCommandAsync(ImmurokCommand.KeyOtpGet, payload);
@@ -1414,6 +1450,7 @@ public sealed class BleManager : IAsyncDisposable
     public async Task<byte[]?> SshSignAsync(byte idx, byte[] hash32)
     {
         if (hash32.Length != 32) return null;
+        if (!await EnsureSecretBudgetAsync("KEY_SIGN").ConfigureAwait(false)) return null;
         byte[] payload = new byte[3 + 32];
         payload[0] = CatSsh; payload[1] = idx; payload[2] = 0;
         Array.Copy(hash32, 0, payload, 3, 32);

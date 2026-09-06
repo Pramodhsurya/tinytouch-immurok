@@ -41,6 +41,9 @@ public partial class MainWindow : FluentWindow
         RootNavigation.Navigate(typeof(DevicePage));
     }
 
+    /// <summary>「功能」页安全横幅的「查看详情」落点：状态页。</summary>
+    public void GoToStatus() => RootNavigation.Navigate(typeof(StatusPage));
+
     private void OnThemeChanged(ApplicationTheme currentTheme, Color accent) => UpdateAppIcon();
 
     /// <summary>

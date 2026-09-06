@@ -40,6 +40,7 @@ public partial class FeaturesPage : Page
         try
         {
             await PairBanner.RefreshAsync();
+            await SecBanner.RefreshAsync();
 
             string? r = await AppServices.Pipe.FeatureGetAsync();
             if (r is null || !r.StartsWith(IpcProtocol.Ok))

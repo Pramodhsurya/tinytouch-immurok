@@ -7,14 +7,17 @@ namespace ImmurokClient.Services;
 
 /// <summary>
 /// 连接 Service 的命名管道客户端（文本协议）。每次请求短连接：连接→发一帧→收一帧→关闭。
+///
+/// <para>请求之间不串行化。以前这里有一把 SemaphoreSlim(1,1)，后果是：一条要等设备指纹门的
+/// 请求（最长 30s）会把同实例上的所有请求堵在后面——页面停在「查询中」、按钮点了没反应，
+/// 连 <see cref="CancelGateAsync"/> 也排在门后面，等待窗的「取消」实际到不了服务端。
+/// 服务端管道是多实例的（AUTH 占着连接 30s 期间并发 STATUS 照常应答，2026-09-06 实测），
+/// 并发短连接没有问题。</para>
 /// </summary>
 public sealed class PipeClient
 {
-    private readonly SemaphoreSlim _gate = new(1, 1);
-
     public async Task<string?> SendAsync(string request, int timeoutMs = 15000, CancellationToken ct = default)
     {
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             using var client = new NamedPipeClientStream(".", PipeNames.ClientService,
@@ -31,13 +34,13 @@ public sealed class PipeClient
         {
             return null; // Service 未运行 / 超时
         }
-        finally
-        {
-            _gate.Release();
-        }
     }
 
     // ---- 便捷封装 ----
+
+    /// <summary>IPC 加固健康状态（老版本服务回 UNKNOWN_COMMAND，调用方按「无数据」处理）。</summary>
+    public Task<string?> SecurityStatusAsync(CancellationToken ct = default)
+        => SendAsync($"{IpcProtocol.Security}:{IpcProtocol.SecurityStatus}", timeoutMs: 5000, ct: ct);
 
     public Task<string?> StatusAsync(CancellationToken ct = default)
         => SendAsync(IpcProtocol.Status, ct: ct);
@@ -78,8 +81,8 @@ public sealed class PipeClient
     /// 流式配对：连接后发 PAIR:START，循环读取阶段帧（PROGRESS:...）回调 onProgress，
     /// 直到收到终态帧（OK:PAIRED / ERROR:*）并返回之。
     ///
-    /// 不走 <see cref="SendAsync"/> 的共享信号量：配对要挂到用户按完键为止（可达一分多钟），
-    /// 占着那把锁会让界面其它请求全堵在后面。服务端管道是多实例的，独立连接没问题。
+    /// 配对要挂到用户按完键为止（可达一分多钟），中间有多个阶段帧，所以不走 <see cref="SendAsync"/>
+    /// 的「一帧问一帧答」。服务端管道是多实例的，独立连接没问题。
     /// </summary>
     public async Task<string> PairStartStreamAsync(Action<string> onProgress, CancellationToken ct = default)
     {
@@ -173,7 +176,7 @@ public sealed class PipeClient
     public Task<string?> FeatureGetAsync(CancellationToken ct = default)
         => SendAsync($"{IpcProtocol.Feature}:{IpcProtocol.FeatureGet}", ct: ct);
 
-    /// <summary>写功能开关。ssh 会连带启停 agent，故留长一点超时。</summary>
+    /// <summary>写功能开关（不需设备触摸）。ssh 会连带启停 agent，故留长一点超时。</summary>
     public Task<string?> FeatureSetAsync(string name, bool on, CancellationToken ct = default)
         => SendAsync($"{IpcProtocol.Feature}:{IpcProtocol.FeatureSet}:{name}:{(on ? 1 : 0)}", timeoutMs: 20000, ct: ct);
 
@@ -188,7 +191,8 @@ public sealed class PipeClient
     {
         string bu = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(user));
         string bp = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(password));
-        return SendAsync($"{IpcProtocol.Pass}:{IpcProtocol.PassSet}:{bu}:{bp}", ct: ct);
+        // 服务侧要求一次设备指纹确认（最长 30s），超时要留够；调用方应套在 FpAuthDialog 里。
+        return SendAsync($"{IpcProtocol.Pass}:{IpcProtocol.PassSet}:{bu}:{bp}", timeoutMs: 35000, ct: ct);
     }
 
     public Task<string?> PassClearAsync(CancellationToken ct = default)
@@ -227,6 +231,7 @@ public sealed class PipeClient
     public Task<string?> SshAgentStatusAsync(CancellationToken ct = default)
         => SendAsync($"{IpcProtocol.SshAgent}:STATUS", ct: ct);
 
+    /// <summary>启停 SSH agent（不需设备触摸；每次签名各自过指纹门）。</summary>
     public Task<string?> SshAgentSetAsync(bool on, CancellationToken ct = default)
         => SendAsync($"{IpcProtocol.SshAgent}:{(on ? "ON" : "OFF")}", timeoutMs: 20000, ct: ct);
 }

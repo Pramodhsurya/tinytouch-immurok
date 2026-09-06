@@ -17,7 +17,7 @@
 ;    并始终保留密码登录作为后备。
 
 #ifndef AppVersion
-  #define AppVersion "0.4.1"
+  #define AppVersion "0.5.0"
 #endif
 #ifndef StageDir
   #define StageDir "stage"
@@ -67,12 +67,34 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 
+[Dirs]
+; 数据目录只给 SYSTEM / Administrators（Inno 的 Permissions 只追加 ACE，不断开 ProgramData 的继承；
+; 服务启动时 DataDirSecurity 会断开继承并对账，这里保证目录一开始就存在且带上这两条）
+Name: "{commonappdata}\immurok"; Permissions: system-full admins-full
+Name: "{commonappdata}\immurok\logs"; Permissions: system-full admins-full
+
 [Files]
-; 暂存目录里已是发布好的三个程序 + CP DLL + 图标，整体收进来
-Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 暂存目录里已是发布好的三个程序 + CP DLL + 图标，整体收进来（CP DLL 单独一条，见下）
+Source: "{#StageDir}\*"; DestDir: "{app}"; Excludes: "ImmurokCredentialProvider.dll"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs
+
+; Credential Provider 是 LogonUI.exe 进程内加载的 COM DLL。平时桌面上 LogonUI 不在跑，
+; 覆盖没问题；但升级时若控制台正停在锁屏 / 登录界面（远程跑安装、切换用户留了一个账号在
+; 登录界面、安装中途自动锁屏），DLL 正被占用，覆盖会失败，留下「新 Service + 旧 CP」
+; 的半装状态（设计稿 §9.4）。PrepareToInstall 停得掉服务和客户端，但 LogonUI 不能也不该杀。
+; restartreplace：占用时登记为「重启后替换」并在结束页提示重启（[Messages] 里说明了为什么）；
+; uninsrestartdelete：卸载时同理，占用则重启后删除。
+Source: "{#StageDir}\ImmurokCredentialProvider.dll"; DestDir: "{app}"; \
+    Flags: ignoreversion restartreplace uninsrestartdelete
 
 [Icons]
 Name: "{group}\immurok"; Filename: "{app}\ImmurokClient.exe"; WorkingDir: "{app}"
+
+[Messages]
+; 只有 CP DLL 被 LogonUI 占用、登记为重启后替换时，Inno 才会走到「需要重启」的结束页。
+; 默认文案只说「必须重启」，这里讲清楚重启前锁屏解锁跑的还是旧版本，让用户能做判断。
+FinishedRestartLabel=Setup could not replace the lock-screen component (Credential Provider) because the Windows sign-in screen was using it. It has been scheduled to be replaced on the next restart.%n%nUntil then, fingerprint unlock at the lock screen keeps running the previous version, while the background service is already the new one.%n%nRestart now to complete the installation of [name]?
+FinishedRestartMessage=Setup could not replace the lock-screen component (Credential Provider) because the Windows sign-in screen was using it. It has been scheduled to be replaced on the next restart.%n%nUntil then, fingerprint unlock at the lock screen keeps running the previous version.%n%nRestart now to complete the installation of [name]?
 
 [Registry]
 ; ---- Credential Provider 的 COM 注册 ----

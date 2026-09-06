@@ -14,6 +14,7 @@ public static class ClientSettings
     {
         public string? Language { get; set; }
         public bool AutoStartInitialized { get; set; }
+        public bool SecurityBannerCollapsed { get; set; }
     }
 
     private static string Dir =>
@@ -49,6 +50,13 @@ public static class ClientSettings
     {
         get => _data.Language;
         set { _data.Language = value; Save(); }
+    }
+
+    /// <summary>IPC 加固横幅（全绿时）是否已被用户收起为盾牌。有异常时横幅不可收起，此项不生效。</summary>
+    public static bool SecurityBannerCollapsed
+    {
+        get => _data.SecurityBannerCollapsed;
+        set { _data.SecurityBannerCollapsed = value; Save(); }
     }
 
     /// <summary>是否已做过「首次运行默认开启自启」。置位后不再自动改写用户的选择。</summary>

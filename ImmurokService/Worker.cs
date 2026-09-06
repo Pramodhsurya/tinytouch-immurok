@@ -3,6 +3,7 @@ using ImmurokService.Ipc;
 using ImmurokService.Security;
 using ImmurokService.Platform;
 using ImmurokService.Ssh;
+using System.Security.Principal;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -27,6 +28,8 @@ public sealed class Worker : BackgroundService
     private readonly CliServer _cli;
     private readonly AppSettings _settings;
     private readonly FpInjectionSignal _injectionSignal;
+    private readonly OwnerStore _owner;
+    private readonly DataDirSecurity _dataDir;
 
     // 预授权：指纹先到、CP 还没就绪时置位，短时间内 CP 一上线即可解锁。
     private DateTime _preAuthUntil = DateTime.MinValue;
@@ -49,7 +52,9 @@ public sealed class Worker : BackgroundService
         SshAgentServer sshAgent,
         CliServer cli,
         AppSettings settings,
-        FpInjectionSignal injectionSignal)
+        FpInjectionSignal injectionSignal,
+        OwnerStore owner,
+        DataDirSecurity dataDir)
     {
         _log = log;
         _ble = ble;
@@ -62,11 +67,15 @@ public sealed class Worker : BackgroundService
         _cli = cli;
         _settings = settings;
         _injectionSignal = injectionSignal;
+        _owner = owner;
+        _dataDir = dataDir;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _log.LogInformation("ImmurokService 启动");
+        MigrateOwnerFromCredential();
+        _dataDir.Apply();   // 数据目录 ACL 对账（安装包也设，谁先到都行）
 
         _ble.SignedFingerprintMatched += OnSignedFingerprintMatched;
         _ble.ConnectionChanged += OnConnectionChanged;
@@ -182,6 +191,34 @@ public sealed class Worker : BackgroundService
         }
     }
 
+    /// <summary>
+    /// 升级过渡：旧安装没有 owner 文件，但凭据里存着 PASS:SET 时的用户名（客户端传的是
+    /// Environment.UserName，本机账户）。把它解析成 SID 记为 owner，免得升级后要重设一次密码
+    /// 才能过 owner 校验。解析不出、或解析出的不是普通账户 SID（例如老 bug 存下的 "SYSTEM"）
+    /// 就留空，走「无 owner 告警放行」。
+    /// </summary>
+    private void MigrateOwnerFromCredential()
+    {
+        try
+        {
+            if (_owner.IsSet) return;
+            if (!_creds.TryRead(out string username, out _) || string.IsNullOrEmpty(username)) return;
+            var sid = (SecurityIdentifier)new NTAccount(username).Translate(typeof(SecurityIdentifier));
+            if (!sid.IsAccountSid())
+            {
+                _log.LogWarning("凭据里的用户名不是普通账户，不迁移为 owner");
+                return;
+            }
+            string account = ((NTAccount)sid.Translate(typeof(NTAccount))).Value;
+            _owner.Save(sid, account);
+            _log.LogInformation("owner 已从既有凭据迁移");
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "从既有凭据解析 owner 失败，保持无 owner");
+        }
+    }
+
     private void TryUnlock()
     {
         // 功能开关：在这里统一拦，事件驱动与预授权窗口两条路径都覆盖到。
@@ -196,9 +233,32 @@ public sealed class Worker : BackgroundService
             _log.LogWarning("未配置登录密码，无法解锁");
             return;
         }
-        // 若凭据里没存用户名，回退到当前活动会话用户。
+        // owner 校验（设计稿 §3.5）：目标会话的属主必须是设备主人，否则 owner 的凭据会被
+        // 拿去解同机另一个账号的会话（多半会被 LogonUI 拒，但那是下游兜底，不是设计）。
+        // 没有 owner 记录时告警放行（升级过渡，配对或设置密码后会补上）。
+        if (_owner.Sid is { } ownerSid)
+        {
+            var target = _session.GetActiveConsoleUserSid();
+            if (target is null || !ownerSid.Equals(target))
+            {
+                _log.LogWarning("活动会话的属主不是 owner，不推送凭据");
+                return;
+            }
+        }
+        else
+        {
+            _log.LogWarning("尚无 owner 记录，跳过会话属主校验（配对或设置密码后会补上）");
+        }
+
+        // 若凭据里没存用户名，回退到活动会话用户，再退到 owner 账户。
+        // 不用 Environment.UserName：Service 跑在 SYSTEM 下，那是 "SYSTEM"。
         if (string.IsNullOrEmpty(username))
-            username = _session.GetActiveConsoleUser() ?? Environment.UserName;
+            username = _session.GetActiveConsoleUser() ?? _owner.Account ?? "";
+        if (string.IsNullOrEmpty(username))
+        {
+            _log.LogWarning("凭据未存用户名且取不到会话用户，无法解锁");
+            return;
+        }
 
         bool ok = _unlocker.Unlock(username, password);
         if (ok) _lastAuthFlow = DateTime.UtcNow; // 抑制紧随其后的 0x23 长按锁屏
