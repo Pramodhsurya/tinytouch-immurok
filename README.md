@@ -97,12 +97,15 @@ with bare `git push`, the skill isn't loading — verify the install path.
 YAML frontmatter + markdown:
 
 - Trigger conditions (when the skill applies)
-- The core rule (`imk run --agent -- ...`)
+- The core rule (`imk run --agent -- ...`) and why an unwrapped command
+  still makes the device blink
+- What one touch covers: the 10 s window for sudo / SSH signing / secret
+  reads, and how to order a wrapped command around it
 - Three usage patterns (privileged command / env-file injection / direct
   secret read)
 - When NOT to wrap (manual user commands, CI, read-only ops, nesting)
 - Discovery checklist
-- Troubleshooting matrix
+- Troubleshooting matrix, including "LED blinks but no overlay"
 - Security gotchas (don't put literal secrets in the wrapped command)
 - Project-side hints for repo maintainers
 

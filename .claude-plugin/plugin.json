@@ -1,6 +1,6 @@
 {
   "name": "imk-tools",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Helper for AI coding agents on macOS projects that use immurok / imk for fingerprint-gated authorization. Teaches the agent when to wrap commands with `imk run --agent` and when not to.",
   "author": {
     "name": "immurok",
