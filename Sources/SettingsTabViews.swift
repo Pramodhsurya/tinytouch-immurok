@@ -1021,9 +1021,19 @@ struct KeysTabView: View {
     }
 
     private func importOTP() {
+        // 选文件前先告诉用户认哪些格式，免得选完才报「无法识别」。
+        let formats = NSAlert()
+        formats.alertStyle = .informational
+        formats.messageText = "keys.import.formats.title".localized
+        formats.informativeText = "keys.import.formats.message".localized
+        formats.addButton(withTitle: "keys.import.formats.choose".localized)
+        formats.addButton(withTitle: "keys.cancel".localized)
+        guard formats.runModalOverSettings() == .alertFirstButtonReturn else { return }
+
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [UTType.commaSeparatedText, UTType.json]
         panel.allowsMultipleSelection = false
+        panel.message = "keys.import.formats.panel".localized
         guard panel.runModalOverSettings() == .OK, let url = panel.url else { return }
 
         let isJSON = url.pathExtension.lowercased() == "json"
@@ -2172,6 +2182,9 @@ struct PermissionsTabView: View {
 
     private var pamKeyInstalled: Bool { setupManager.pamKeyStatus == .installed }
 
+    private static let pamStrongHelpURL =
+        URL(string: "https://immurok.com/blog/making-the-local-channel-as-trustworthy-as-the-device/")!
+
     @ViewBuilder
     private var pamSecurityBanner: some View {
         if pamKeyInstalled && pamBannerDismissed {
@@ -2193,6 +2206,15 @@ struct PermissionsTabView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
+                // 无论是否启用都有：解释「本地信道为什么要签名」的博客
+                Button {
+                    NSWorkspace.shared.open(Self.pamStrongHelpURL)
+                } label: {
+                    Image(systemName: "questionmark.circle")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("permission.pam.strong.help".localized)
                 if pamKeyInstalled {
                     Button {
                         withAnimation { pamBannerDismissed = true }
@@ -2567,9 +2589,6 @@ struct AboutTabView: View {
     @State private var isHoveringLanguage = false
     @State private var isHoveringGitHub = false
     @State private var isHoveringUninstall = false
-    @State private var isHoveringStats = false
-    // 匿名使用统计开关（笔记本图标，带笔=开、不带笔=关）
-    @AppStorage("immurok.telemetry.enabled") private var telemetryEnabled = true
     @Environment(\.openWindow) private var openWindow
     // 诊断日志默认仅在 Debug 构建显示；正式版折叠，点左下角图标展开
     #if DEBUG
@@ -2682,20 +2701,6 @@ struct AboutTabView: View {
                     .foregroundColor(isHoveringGitHub ? .accentColor : .secondary)
                     .onHover { isHoveringGitHub = $0 }
                     .help("GitHub")
-
-                    // 匿名使用统计开关：笔记本带笔=开，不带笔=关
-                    Button {
-                        telemetryEnabled.toggle()
-                    } label: {
-                        Image(systemName: telemetryEnabled ? "square.and.pencil" : "note.text")
-                            .font(.system(size: 16))
-                            .frame(width: 32, height: 32)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(isHoveringStats ? .accentColor : (telemetryEnabled ? .secondary : Color.secondary.opacity(0.4)))
-                    .onHover { isHoveringStats = $0 }
-                    .help("fwupdate.telemetry.tip".localized)
                 }
 
                 Spacer()

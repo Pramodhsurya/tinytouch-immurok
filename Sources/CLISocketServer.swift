@@ -303,12 +303,53 @@ class CLISocketServer {
             return
         }
 
-        // Require fingerprint verification for API secrets
+        // API secrets: ask the device whether a touch is needed right now.
+        // Inside the 10 s AUTH cooldown (an `imk run --agent` approval, a
+        // sudo touch) the read goes straight through — the firmware's
+        // asymmetric grant, same as KEY_SIGN and OTP. Only when the device
+        // says WAIT_FP do we open the gate, and only then does an agent get
+        // the overlay. Previously this path fired an unconditional
+        // AUTH_REQUEST: a guaranteed second touch, with no HUD.
+        guard let idx = findKeyIndex(cat: .api, name: name) else {
+            sendLine(clientSocket, notFoundResponse(name: name))
+            return
+        }
+        let probeSem = DispatchSemaphore(value: 0)
+        var needsTouch: Bool?
+        bleManager.apiSecretNeedsFingerprint(idx: UInt8(idx)) { result in
+            needsTouch = result
+            probeSem.signal()
+        }
+        guard probeSem.wait(timeout: .now() + 10) == .success, let gated = needsTouch else {
+            sendLine(clientSocket, "ERROR:READ_FAILED")
+            return
+        }
+        if !gated {
+            Task { @MainActor in LogManager.shared.log("imk get api: within AUTH/KEYSTORE cooldown, no touch") }
+            handleGetAPI(clientSocket, name: name)
+            return
+        }
+
         let spinner = TerminalSpinner(clientSocket: clientSocket)
         spinner?.start()
 
+        let overlay = AgentGateOverlaySession(
+            socketFD: clientSocket,
+            service: "imk-cli",
+            fallbackCommand: "imk get imk://api/\(name)",
+            kind: .secretAccess,
+            onReject: { [weak self] in
+                NSLog("CLISocketServer: GET api rejected from overlay — cancelling gate")
+                self?.bleManager.cancelUnlock()
+            }
+        )
+        overlay?.gateRequired()
+
         let previousAttemptFailed = bleManager.onFingerprintAttemptFailed
-        bleManager.onFingerprintAttemptFailed = { remaining in spinner?.showTryAgain(remaining: remaining) }
+        bleManager.onFingerprintAttemptFailed = { remaining in
+            spinner?.showTryAgain(remaining: remaining)
+            overlay?.attemptFailed(remaining: remaining)
+        }
 
         // Ctrl+C kills `imk` instantly; nothing else would tell us. Without
         // this the device kept waiting for a touch and the spinner kept
@@ -316,6 +357,7 @@ class CLISocketServer {
         let disconnectWatcher = ClientDisconnectWatcher.start(socket: clientSocket) { [weak self] in
             NSLog("CLISocketServer: GET client gone (Ctrl+C) — cancelling fingerprint gate")
             spinner?.abandon()
+            overlay?.finish(.denied)
             self?.bleManager.cancelUnlock()
         }
         defer { disconnectWatcher.stop() }
@@ -336,11 +378,13 @@ class CLISocketServer {
 
         guard waitResult == .success, approved else {
             spinner?.stop(waitResult == .timedOut ? .timeout : .tryAgain)
+            overlay?.finish(waitResult == .timedOut ? .timedOut : .denied)
             sendLine(clientSocket, "ERROR:FINGERPRINT_DENIED")
             return
         }
 
         spinner?.stop(.approved)
+        overlay?.finish(.approved)
 
         handleGetAPI(clientSocket, name: name)
     }
@@ -406,8 +450,27 @@ class CLISocketServer {
         let spinner = TerminalSpinner(clientSocket: clientSocket)
         spinner?.start()
 
+        // Agent-originated OTP read: HUD once the device asks for a touch
+        // (OTP rides the AUTH cooldown, so a read right after an approval
+        // never prompts).
+        let overlay = AgentGateOverlaySession(
+            socketFD: clientSocket,
+            service: "imk-cli",
+            fallbackCommand: "imk get imk://otp/\(name)",
+            kind: .secretAccess,
+            onReject: { [weak self] in
+                NSLog("CLISocketServer: GET otp rejected from overlay — cancelling gate")
+                self?.bleManager.cancelGateAndRelease()
+            }
+        )
+
         let previousAttemptFailed = bleManager.onFingerprintAttemptFailed
-        bleManager.onFingerprintAttemptFailed = { remaining in spinner?.showTryAgain(remaining: remaining) }
+        let previousGateRequired = bleManager.onFingerprintGateRequired
+        bleManager.onFingerprintAttemptFailed = { remaining in
+            spinner?.showTryAgain(remaining: remaining)
+            overlay?.attemptFailed(remaining: remaining)
+        }
+        bleManager.onFingerprintGateRequired = { overlay?.gateRequired() }
 
         // Same Ctrl+C handling as GET:api. OTP runs on the device behind the
         // FP gate, so the cancel goes through cancelGateAndRelease() (which
@@ -415,6 +478,7 @@ class CLISocketServer {
         let disconnectWatcher = ClientDisconnectWatcher.start(socket: clientSocket) { [weak self] in
             NSLog("CLISocketServer: OTP client gone (Ctrl+C) — cancelling fingerprint gate")
             spinner?.abandon()
+            overlay?.finish(.denied)
             self?.bleManager.cancelGateAndRelease()
         }
         defer { disconnectWatcher.stop() }
@@ -430,14 +494,17 @@ class CLISocketServer {
         let waitResult = sem.wait(timeout: .now() + 35)
         disconnectWatcher.stop()
         bleManager.onFingerprintAttemptFailed = previousAttemptFailed
+        bleManager.onFingerprintGateRequired = previousGateRequired
 
         guard waitResult == .success, let code = otpCode else {
             spinner?.stop(waitResult == .timedOut ? .timeout : .tryAgain)
+            overlay?.finish(waitResult == .timedOut ? .timedOut : .denied)
             sendLine(clientSocket, "ERROR:FINGERPRINT_DENIED")
             return
         }
 
         spinner?.stop(.approved)
+        overlay?.finish(.approved)
         sendLine(clientSocket, "OK:\(code)")
     }
 

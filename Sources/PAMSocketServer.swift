@@ -419,10 +419,19 @@ class PAMSocketServer {
             agentCommand = cmd
             NSLog("PAMSocketServer: Auth originated from AI agent — showing overlay (cmd=%@)",
                   cmd ?? "<unknown>")
+            Task { @MainActor in
+                LogManager.shared.log("PAM AUTH \(service): overlay shown (caller=agent, marker=\(cmd != nil ? "yes" : "no"))")
+            }
         case .manual:
             showOverlay = false
             agentCommand = nil
             NSLog("PAMSocketServer: Auth originated from manual user action — overlay suppressed")
+            // NSLog from this app reaches neither immurok.log nor the unified
+            // log, so without this line "LED blinks but no window" is
+            // undiagnosable after the fact.
+            Task { @MainActor in
+                LogManager.shared.log("PAM AUTH \(service): overlay suppressed (caller=manual — no imk marker / unknown agent binary in parent chain)")
+            }
         }
 
         // User-action intent — captured by overlay button callbacks, read
@@ -604,6 +613,7 @@ class PAMSocketServer {
 
         guard bleManager.deviceState.isConnected, bleManager.isDeviceVerified else {
             NSLog("PAMSocketServer: AGENT_APPROVE rejected — device not ready")
+            Task { @MainActor in LogManager.shared.log("AGENT_APPROVE: ERROR (device not connected/verified)") }
             sendResponse(clientSocket, response: "ERROR")
             return
         }
@@ -611,9 +621,12 @@ class PAMSocketServer {
         // Same exclusive slot as AUTH: never two auths concurrently, and
         // never an agent approval while keystore maintenance owns the device.
         guard let activityToken = DeviceActivityCoordinator.shared.tryBegin(.auth) else {
+            let blocker = DeviceActivityCoordinator.shared.currentActivity?.rawValue ?? "?"
+            Task { @MainActor in LogManager.shared.log("AGENT_APPROVE: BUSY (\(blocker) in flight)") }
             sendResponse(clientSocket, response: "BUSY")
             return
         }
+        Task { @MainActor in LogManager.shared.log("AGENT_APPROVE: overlay shown") }
         defer { DeviceActivityCoordinator.shared.end(activityToken) }
 
         final class IntentBox { var value: UserAuthIntent = .none }
@@ -692,6 +705,7 @@ class PAMSocketServer {
         }
 
         NSLog("PAMSocketServer: AGENT_APPROVE result: %@", response)
+        Task { @MainActor in LogManager.shared.log("AGENT_APPROVE: \(response)") }
         sendResponse(clientSocket, response: response)
     }
 

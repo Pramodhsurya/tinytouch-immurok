@@ -30,7 +30,7 @@ final class LocalizationFallbackTests: XCTestCase {
         return try JSONDecoder().decode([String: String].self, from: data)
     }
 
-    private static let jsonLanguages = ["es", "fr", "ja", "pt", "ru"]
+    private static let jsonLanguages = ["de", "es", "fr", "ja", "pt", "ru"]
 
     /// `%@`, `%d`, `%1$d` … — must match one-for-one between EN and translation.
     private static let formatSpecifier = try! NSRegularExpression(
@@ -144,9 +144,9 @@ final class LocalizationFallbackTests: XCTestCase {
     // MARK: - 5. No Chinese leaks into the non-Chinese packs
 
     func testNoChineseInLatinAndCyrillicPacks() throws {
-        // es/fr/pt/ru must contain no Han ideographs at all.
+        // de/es/fr/pt/ru must contain no Han ideographs at all.
         let han = CharacterSet(charactersIn: "\u{4E00}"..."\u{9FFF}")
-        for code in ["es", "fr", "pt", "ru"] {
+        for code in ["de", "es", "fr", "pt", "ru"] {
             let pack = try loadPack(code)
             for (key, value) in pack {
                 XCTAssertNil(value.rangeOfCharacter(from: han),

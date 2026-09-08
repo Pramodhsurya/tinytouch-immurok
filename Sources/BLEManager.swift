@@ -557,8 +557,39 @@ class BLEManager: NSObject {
                     completion(String(data: data[1..<7], encoding: .ascii))
                 }
                 self.startGateTimeout()
+                // Same hook sshSign fires: lets CLISocketServer raise the
+                // agent overlay only when a real touch is needed.
+                self.onFingerprintGateRequired?()
             } else {
                 completion(nil)
+            }
+        }
+    }
+
+    /// Ask the device whether reading the secret half of an API entry needs
+    /// a fresh touch right now. Firmware answers a KEY_READ at offset >= 32
+    /// with SEC_ERR_WAIT_FP (0x11) when neither the KEYSTORE nor the AUTH
+    /// cooldown is active — without entering the gate or blinking — so this
+    /// is a side-effect-free probe. `imk get imk://api/...` used to fire an
+    /// unconditional AUTH_REQUEST first (a second touch even 2 s after
+    /// `imk run --agent` was approved, since firmware never short-circuits
+    /// AUTH_REQUEST on cooldown); with the probe a read inside the 10 s
+    /// AUTH cooldown goes straight through, matching KEY_SIGN / OTP.
+    /// completion(nil) = device unreachable / unexpected reply.
+    func apiSecretNeedsFingerprint(idx: UInt8, completion: @escaping (Bool?) -> Void) {
+        guard deviceState.isConnected else {
+            completion(nil)
+            return
+        }
+        sendCommand(.keyRead, payload: [KeystoreCategory.api.rawValue, idx, 32]) { response in
+            guard let response = response, response.count >= 1 else {
+                completion(nil)
+                return
+            }
+            switch response[0] {
+            case ImmurokStatus.waitFingerprint.rawValue: completion(true)
+            case ImmurokStatus.ok.rawValue:              completion(false)
+            default:                                     completion(nil)
             }
         }
     }

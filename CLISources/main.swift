@@ -233,7 +233,7 @@ func cmdRun(_ args: [String]) -> Int32 {
             stderr("imk: agent approval failed: \(msg)")
             return 1
         }
-        // Marker is defense-in-depth: if the 5-min sudo pre-auth window
+        // Marker is defense-in-depth: if the 10 s sudo pre-auth window
         // expires mid-command and a late sudo arrives, the App-side caller
         // classifier still recognises this as agent-initiated.
         AgentMarker.write(command: cmdString)
@@ -454,9 +454,10 @@ func printUsage() {
       get imk://category/name          Output secret value to stdout
       run [opts] -- CMD                Inject secrets / mark as agent
                                        opts: --env-file FILE
-                                             --agent NAME   (label run as
-                                                             AI agent for
-                                                             auth overlay)
+                                             --agent   (AI agent run: show
+                                                        the auth overlay and
+                                                        wait for a touch
+                                                        before launching CMD)
       pam-key install|remove|status    Copy the app's PAM channel key to
                                        /etc/immurok/pam (install/remove
                                        need sudo). install verifies the

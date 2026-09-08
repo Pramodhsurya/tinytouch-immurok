@@ -29,7 +29,6 @@ final class FirmwareUpdateService: ObservableObject {
     private var lastEnforcedVersion: String?
 
     static let manifestURL = URL(string: "https://immurok.com/fw/manifest.json")!
-    static let telemetryURL = URL(string: "https://immurok.com/api/t")!
     static let checkInterval: TimeInterval = 24 * 3600
     static let reconnectTimeout: TimeInterval = 60
     static let minBatteryPct = 30
@@ -38,37 +37,22 @@ final class FirmwareUpdateService: ObservableObject {
     private static let kLastCheck = "immurok.fwupdate.lastCheck"
     private static let kPendingTarget = "immurok.fwupdate.pendingTargetVersion"
     private static let kPendingFile = "immurok.fwupdate.pendingTargetFile"
-    private static let kTelemetryEnabled = "immurok.telemetry.enabled"
-    private static let kClientID = "immurok.telemetry.clientId"
     private static let kNotifiedVersion = "immurok.fwupdate.notifiedVersion"
 
     private let bleManager: BLEManager
     private weak var viewModel: AppViewModel?
     private var manifest: UpdateManifest?
     private var updateTask: Task<Void, Never>?
-    let telemetry: TelemetryClient
 
     init(bleManager: BLEManager, viewModel: AppViewModel) {
         self.bleManager = bleManager
         self.viewModel = viewModel
 
+        // 固件升级的匿名统计（GA4，经官网 /api/t 转发）已于 build 488 移除。
+        // 旧版本落盘过一个随机 clientId 和开关，这里顺手清掉，不留标识符。
         let defaults = UserDefaults.standard
-        if defaults.string(forKey: Self.kClientID) == nil {
-            defaults.set(UUID().uuidString, forKey: Self.kClientID)
-        }
-        // 默认开启（spec §5）——由 AppDefaults.register() 统一注册，这里不再落盘 seed
-        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-        telemetry = TelemetryClient(
-            clientID: defaults.string(forKey: Self.kClientID)!,
-            appVersion: appVersion,
-            isEnabled: { defaults.bool(forKey: Self.kTelemetryEnabled) },
-            sender: { data in
-                var req = URLRequest(url: Self.telemetryURL)
-                req.httpMethod = "POST"
-                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                req.httpBody = data
-                URLSession.shared.dataTask(with: req).resume()  // fire-and-forget
-            })
+        defaults.removeObject(forKey: "immurok.telemetry.clientId")
+        defaults.removeObject(forKey: "immurok.telemetry.enabled")
     }
 
     // MARK: - 强制升级
@@ -119,13 +103,9 @@ final class FirmwareUpdateService: ObservableObject {
                                               minDirect: m.latest.minDirect)
                 let available = plan != .upToDate && plan != .unknown
                 self.updateAvailable = available
-                telemetry.send(.fwCheck(deviceVersion: deviceVersion,
-                                        latestVersion: m.latest.version,
-                                        updateAvailable: available))
                 if available {
                     state = .updateAvailable(target: m.latest.version,
                                              notes: m.latest.notes)
-                    telemetry.send(.fwPromptShown(from: deviceVersion, to: m.latest.version))
                     // 明确升级提示：每个版本只弹一次系统通知，避免每 24h 检查重复打扰
                     let notified = UserDefaults.standard.string(forKey: Self.kNotifiedVersion)
                     if notified != m.latest.version {
@@ -179,8 +159,6 @@ final class FirmwareUpdateService: ObservableObject {
                                    ("final", m.latest.version)]
         default: return
         }
-        telemetry.send(.fwUpdateStarted(from: deviceVersion, to: m.latest.version, hops: hops.count))
-        let t0 = Date()
 
         // 预检
         guard preflight() else { return }
@@ -192,7 +170,6 @@ final class FirmwareUpdateService: ObservableObject {
             targetData = try await download(asset: m.latest)
         } catch {
             state = .failed(message: "fwupdate.error.download".localized)
-            telemetry.send(.fwUpdateFailed(stage: "download", errorCode: "download_failed", hop: "final"))
             return
         }
 
@@ -201,12 +178,10 @@ final class FirmwareUpdateService: ObservableObject {
         var retries = 0
         let totalHops = Double(hops.count)
         for (idx, hop) in hops.enumerated() {
-            let hopStart = Date()
             let pkgData: Data
             if hop.role == "bridge" {
                 guard let bridge = await loadBridgePackage(manifest: m) else {
                     state = .failed(message: "fwupdate.error.bridge".localized)
-                    telemetry.send(.fwUpdateFailed(stage: "download", errorCode: "bridge_missing", hop: "bridge"))
                     return
                 }
                 pkgData = bridge
@@ -223,12 +198,9 @@ final class FirmwareUpdateService: ObservableObject {
             } catch let e as OTAEngineError {
                 let (msgKey, code) = Self.mapEngineError(e)
                 state = .failed(message: msgKey.localized)
-                telemetry.send(.fwUpdateFailed(stage: Self.isVerifyError(e) ? "verify" : "transfer",
-                                               errorCode: code, hop: hop.role))
                 return
             } catch {
                 state = .failed(message: "fwupdate.error.generic".localized)
-                telemetry.send(.fwUpdateFailed(stage: "transfer", errorCode: "package_error", hop: hop.role))
                 return
             }
             completedHops += 1.0
@@ -238,11 +210,8 @@ final class FirmwareUpdateService: ObservableObject {
             let reconnected = await waitForVersion(hop.version, timeout: Self.reconnectTimeout)
             guard reconnected else {
                 state = .failed(message: "fwupdate.error.reconnect".localized)
-                telemetry.send(.fwUpdateFailed(stage: "reconnect", errorCode: "timeout", hop: hop.role))
                 return
             }
-            telemetry.send(.fwHopDone(hop: hop.role,
-                                      durationMs: Int(Date().timeIntervalSince(hopStart) * 1000)))
             // 本跳已确认重连成功；若后面还有跳，持久化待执行的最终包以便崩溃/退出后续跳
             if hops.count == 2 && idx == 0 {
                 persistPendingHop(target: m.latest.version, fileData: targetData)
@@ -254,9 +223,6 @@ final class FirmwareUpdateService: ObservableObject {
         state = .success(version: m.latest.version)
         UserDefaults.standard.removeObject(forKey: Self.kNotifiedVersion)  // 已升级，允许下个版本再提示
         NotificationCenter.default.post(name: .firmwareUpdateFinished, object: m.latest.version)
-        telemetry.send(.fwUpdateSuccess(from: deviceVersion, to: m.latest.version,
-                                        totalDurationMs: Int(Date().timeIntervalSince(t0) * 1000),
-                                        retries: retries))
     }
 
     /// 断连/超时类错误自动重试一次（从 ERASE 重来，spec §2）；验签类错误不重试。
@@ -316,7 +282,6 @@ final class FirmwareUpdateService: ObservableObject {
               let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
             clearPendingHop(); return
         }
-        telemetry.send(.fwUpdateResumed(pendingHop: "final"))
         updateTask = Task {
             guard preflight() else { updateTask = nil; return }
             do {
@@ -350,17 +315,14 @@ final class FirmwareUpdateService: ObservableObject {
         guard let vm = viewModel else { return false }
         guard vm.isDeviceConnected, bleManager.isOTAAvailable else {
             state = .failed(message: "fwupdate.error.notconnected".localized)
-            telemetry.send(.fwUpdateFailed(stage: "preflight", errorCode: "not_connected", hop: "-"))
             return false
         }
         if let batt = vm.batteryLevel, batt < Self.minBatteryPct {
             state = .failed(message: "fwupdate.error.battery".localized)
-            telemetry.send(.fwUpdateFailed(stage: "preflight", errorCode: "low_battery", hop: "-"))
             return false
         }
         guard !vm.isPairing else {
             state = .failed(message: "fwupdate.error.busy".localized)
-            telemetry.send(.fwUpdateFailed(stage: "preflight", errorCode: "device_busy", hop: "-"))
             return false
         }
         return true

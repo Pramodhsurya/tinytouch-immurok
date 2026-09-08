@@ -18,7 +18,6 @@ enum AppDefaults {
             "immurok.sshAgentEnabled": true,
             "immurok.cliEnabled": true,
             "immurok.quickFillEnabled": true,
-            "immurok.telemetry.enabled": true,
         ])
     }
 }

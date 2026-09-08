@@ -314,11 +314,31 @@ class SSHAgentServer {
         // Device returns 0x10 (cooldown) or 0x11 (need FP) deterministically.
         let spinner = TerminalSpinner(clientSocket: clientSocket)
 
+        // Agent-originated sign (git push / ssh run by an AI agent, wrapped
+        // or not): raise the same HUD the sudo path shows, but only once the
+        // device says WAIT_FP. Manual ssh from a terminal → nil → no HUD.
+        let overlay = AgentGateOverlaySession(
+            socketFD: clientSocket,
+            service: "ssh-agent",
+            fallbackCommand: "ssh signing with key '\(keyName)'",
+            kind: .secretAccess,
+            onReject: {
+                NSLog("SSHAgentServer: sign rejected from overlay — cancelling gate")
+                BLEManager.shared.cancelGateAndRelease()
+            }
+        )
+
         let previousAttemptFailed = BLEManager.shared.onFingerprintAttemptFailed
         let previousGateApproved = BLEManager.shared.onFingerprintGateApproved
         let previousGateRequired = BLEManager.shared.onFingerprintGateRequired
-        BLEManager.shared.onFingerprintGateRequired = { spinner?.start() }
-        BLEManager.shared.onFingerprintAttemptFailed = { remaining in spinner?.showTryAgain(remaining: remaining) }
+        BLEManager.shared.onFingerprintGateRequired = {
+            spinner?.start()
+            overlay?.gateRequired()
+        }
+        BLEManager.shared.onFingerprintAttemptFailed = { remaining in
+            spinner?.showTryAgain(remaining: remaining)
+            overlay?.attemptFailed(remaining: remaining)
+        }
         BLEManager.shared.onFingerprintGateApproved = { spinner?.showSigning() }
 
         // Ctrl+C on `ssh` / `git push`: the client dies and its agent socket
@@ -350,12 +370,14 @@ class SSHAgentServer {
 
         guard result == .success, let sig = signature, sig.count == 64 else {
             spinner?.dismiss()
+            overlay?.finish(result == .timedOut ? .timedOut : .denied)
             NSLog("SSHAgentServer: Sign failed (timeout or error)")
             sendFailure(clientSocket)
             return
         }
 
         spinner?.dismiss()
+        overlay?.finish(.approved)
 
         // Build SSH signature response
         let r = sig.subdata(in: 0..<32)

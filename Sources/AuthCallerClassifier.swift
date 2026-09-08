@@ -104,6 +104,15 @@ enum AuthCallerClassifier {
         "/roo",
         "/zed",
         "Zed.app",
+        "/gemini",        // Gemini CLI
+        "/opencode",
+        "/copilot",       // GitHub Copilot CLI
+        "/goose",
+        "/kiro",
+        "Kiro.app",
+        "/droid",         // Factory
+        "Trae.app",
+        "Antigravity.app",
     ]
 
     /// Recognized terminal emulators — hitting one of these in the parent chain

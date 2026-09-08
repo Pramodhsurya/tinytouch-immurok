@@ -18,6 +18,7 @@ class LocalizationManager: ObservableObject {
         ("es", "Español"),
         ("pt", "Português"),
         ("ru", "Русский"),
+        ("de", "Deutsch"),
     ]
 
     private init() {
@@ -48,6 +49,8 @@ class LocalizationManager: ObservableObject {
             return "pt"
         } else if preferred.hasPrefix("ru") {
             return "ru"
+        } else if preferred.hasPrefix("de") {
+            return "de"
         }
 
         return "en"
@@ -103,7 +106,7 @@ class LocalizationManager: ObservableObject {
         case "zh-Hans": layers.append(("zh-Hans(built-in)", Self.zhHansStrings))
         case "zh-Hant": layers.append(("zh-Hant(built-in)", Self.zhHantStrings))
         case "en":      break   // already the base layer
-        default:        break   // JSON-only languages (ja/fr/es/pt/ru/…)
+        default:        break   // JSON-only languages (ja/fr/es/pt/ru/de/…)
         }
 
         // Bundled pack in app Resources.
@@ -241,9 +244,6 @@ class LocalizationManager: ObservableObject {
         "fwupdate.error.transfer": "传输中断，请重试",
         "fwupdate.error.reconnect": "设备未在预期时间内重连，请检查设备后重试",
         "fwupdate.error.generic": "升级失败，请重试",
-        "fwupdate.telemetry.toggle": "发送匿名使用统计",
-        "fwupdate.telemetry.hint": "仅升级流程的匿名事件（版本号、阶段、耗时），不含任何个人或设备身份数据",
-        "fwupdate.telemetry.tip": "允许匿名使用统计",
         "fwupdate.mandatory": "当前固件版本过旧，必须升级后才能正常使用",
         "fwupdate.window.subtitle": "检查并安装设备固件更新",
         "fwupdate.progress.downloading": "正在下载固件…",
@@ -314,6 +314,10 @@ class LocalizationManager: ObservableObject {
         "keys.import.exceeds.message": "无法导入 %1$d 条：剩余可用 %2$d 条（最大 %3$d 条）。请先删除一些条目再试。",
         "keys.import.failed": "导入失败",
         "keys.import.unknown.format": "无法识别的文件格式。请使用 CSV (otpauth:// 一行一条) 或 andOTP JSON 备份。",
+        "keys.import.formats.title": "导入 OTP",
+        "keys.import.formats.message": "支持两种文件：\n\n• CSV / 文本：每行一个 otpauth:// 链接（可带表头行），大多数验证器 App 的导出都是这种。\n• andOTP 的 JSON 备份（未加密）。\n\n设备只支持标准 TOTP：HMAC-SHA1、6 位、30 秒。HOTP、Steam、SHA256/512、7–8 位或其他周期的条目会被跳过，导入前会告诉你跳过了多少条。",
+        "keys.import.formats.choose": "选择文件…",
+        "keys.import.formats.panel": "选择 CSV 或 andOTP JSON 备份文件",
         "keys.import.skipped": "（%d 条跳过：仅支持标准 TOTP / HMAC-SHA1 / 6 位 / 30 秒）",
         "keys.import.all.skipped": "%d 条全部被跳过：仅支持标准 TOTP / HMAC-SHA1 / 6 位 / 30 秒。",
         "keys.full": "已达上限，请先删除一些条目",
@@ -498,6 +502,7 @@ class LocalizationManager: ObservableObject {
         "permission.pam.strong.hint.mismatch": "密钥不一致，需要重新授权。",
         "permission.pam.strong.enable": "启用…",
         "permission.pam.strong.reauth": "重新授权…",
+        "permission.pam.strong.help": "为什么需要强认证？",
         "alert.pamkey.failed.title": "启用强认证失败",
         "alert.pamkey.failed.manual": "请在终端执行：\nsudo imk pam-key install",
         "permission.authorization": "界面认证授权",
@@ -881,9 +886,6 @@ class LocalizationManager: ObservableObject {
         "fwupdate.error.transfer": "傳輸中斷，請重試",
         "fwupdate.error.reconnect": "裝置未在預期時間內重連，請檢查裝置後重試",
         "fwupdate.error.generic": "升級失敗，請重試",
-        "fwupdate.telemetry.toggle": "傳送匿名使用統計",
-        "fwupdate.telemetry.hint": "僅升級流程的匿名事件（版本號、階段、耗時），不含任何個人或裝置身分資料",
-        "fwupdate.telemetry.tip": "允許匿名使用統計",
         "fwupdate.mandatory": "目前韌體版本過舊，必須升級後才能正常使用",
         "fwupdate.window.subtitle": "檢查並安裝裝置韌體更新",
         "fwupdate.progress.downloading": "正在下載韌體…",
@@ -953,6 +955,10 @@ class LocalizationManager: ObservableObject {
         "keys.import.exceeds.message": "無法匯入 %1$d 條：剩餘可用 %2$d 條（最大 %3$d 條）。請先刪除一些條目再試。",
         "keys.import.failed": "匯入失敗",
         "keys.import.unknown.format": "無法識別的檔案格式。請使用 CSV (otpauth:// 一行一條) 或 andOTP JSON 備份。",
+        "keys.import.formats.title": "匯入 OTP",
+        "keys.import.formats.message": "支援兩種檔案：\n\n• CSV / 文字：每行一個 otpauth:// 連結（可含標題列），大多數驗證器 App 的匯出都是這種。\n• andOTP 的 JSON 備份（未加密）。\n\n裝置只支援標準 TOTP：HMAC-SHA1、6 位、30 秒。HOTP、Steam、SHA256/512、7–8 位或其他週期的項目會被略過，匯入前會告訴你略過了多少筆。",
+        "keys.import.formats.choose": "選擇檔案…",
+        "keys.import.formats.panel": "選擇 CSV 或 andOTP JSON 備份檔",
         "keys.import.skipped": "（%d 條跳過：僅支援標準 TOTP / HMAC-SHA1 / 6 位 / 30 秒）",
         "keys.import.all.skipped": "%d 條全部被跳過：僅支援標準 TOTP / HMAC-SHA1 / 6 位 / 30 秒。",
         "keys.full": "已達上限，請先刪除一些條目",
@@ -1137,6 +1143,7 @@ class LocalizationManager: ObservableObject {
         "permission.pam.strong.hint.mismatch": "金鑰不一致，需要重新授權。",
         "permission.pam.strong.enable": "啟用…",
         "permission.pam.strong.reauth": "重新授權…",
+        "permission.pam.strong.help": "為什麼需要強認證？",
         "alert.pamkey.failed.title": "啟用強認證失敗",
         "alert.pamkey.failed.manual": "請在終端機執行：\nsudo imk pam-key install",
         "permission.authorization": "介面認證授權",
@@ -1523,9 +1530,6 @@ class LocalizationManager: ObservableObject {
         "fwupdate.error.transfer": "Transfer interrupted, please retry",
         "fwupdate.error.reconnect": "Device did not reconnect in time, check the device and retry",
         "fwupdate.error.generic": "Update failed, please retry",
-        "fwupdate.telemetry.toggle": "Send anonymous usage statistics",
-        "fwupdate.telemetry.hint": "Only anonymous update-flow events (versions, stage, duration). No personal or device identity data.",
-        "fwupdate.telemetry.tip": "allow anonymous usage statistics",
         "fwupdate.mandatory": "Your firmware is too old — you must update it to keep using the device",
         "fwupdate.window.subtitle": "Check and install device firmware updates",
         "fwupdate.progress.downloading": "Downloading firmware\u{2026}",
@@ -1595,6 +1599,10 @@ class LocalizationManager: ObservableObject {
         "keys.import.exceeds.message": "Cannot import %1$d entries: only %2$d slots remaining (max %3$d). Delete some entries first.",
         "keys.import.failed": "Import Failed",
         "keys.import.unknown.format": "Unrecognized file format. Use CSV (one otpauth:// per line) or andOTP JSON backup.",
+        "keys.import.formats.title": "Import OTP",
+        "keys.import.formats.message": "Two file types are supported:\n\n• CSV / text: one otpauth:// URI per line (a header row is fine). Most authenticator apps export this.\n• andOTP JSON backup (unencrypted).\n\nThe device only supports standard TOTP: HMAC-SHA1, 6 digits, 30 seconds. HOTP, Steam, SHA256/512, 7–8 digit or other-period entries are skipped, and you will see how many before importing.",
+        "keys.import.formats.choose": "Choose File…",
+        "keys.import.formats.panel": "Choose a CSV or andOTP JSON backup file",
         "keys.import.skipped": "(%d skipped: only standard TOTP / HMAC-SHA1 / 6-digit / 30s supported)",
         "keys.import.all.skipped": "All %d entries skipped: only standard TOTP / HMAC-SHA1 / 6-digit / 30s supported.",
         "keys.full": "At capacity — delete some entries first",
@@ -1779,6 +1787,7 @@ class LocalizationManager: ObservableObject {
         "permission.pam.strong.hint.mismatch": "Key mismatch. Re-authorize to continue.",
         "permission.pam.strong.enable": "Enable…",
         "permission.pam.strong.reauth": "Re-authorize…",
+        "permission.pam.strong.help": "Why strong verification?",
         "alert.pamkey.failed.title": "Could not enable strong verification",
         "alert.pamkey.failed.manual": "Run this in Terminal:\nsudo imk pam-key install",
         "permission.authorization": "GUI Authorization",
