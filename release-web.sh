@@ -42,6 +42,7 @@ _vpat="$(sed -n 's/.*FW_VERSION_PATCH[[:space:]]*\([0-9]*\).*/\1/p' "$VERSION_H"
 VER_STR="$_vmaj.$_vmin.$_vpat"
 [ -n "$_vmaj" ] && [ -n "$_vmin" ] && [ -n "$_vpat" ] || die "cannot parse FW_VERSION_MAJOR/MINOR/PATCH from $VERSION_H"
 SEC_VER="$(sed -n 's/.*FW_SEC_VERSION[[:space:]]*\([0-9]*\).*/\1/p' "$VERSION_H" | head -1)"
+[ -n "$SEC_VER" ] || die "cannot parse FW_SEC_VERSION from $VERSION_H"
 
 mkdir -p "$DIST"
 LATEST_NAME="immurok-ik1-v$VER_STR.imfw"
@@ -62,7 +63,7 @@ cat > "$DIST/manifest.json" <<EOF
   "schema": 1,
   "latest": {
     "version": "$VER_STR",
-    "sec_version": ${SEC_VER:-1},
+    "sec_version": $SEC_VER,
     "format": "$FORMAT",
     "url": "https://immurok.com/fw/$LATEST_NAME",
     "sha256": "$LATEST_SHA",

@@ -96,6 +96,16 @@ fi
 FW_VER_MAJOR=$(grep 'FW_VERSION_MAJOR ' "$APP_DIR/APP/include/version.h" | awk '{print $3}')
 FW_VER_MINOR=$(grep 'FW_VERSION_MINOR ' "$APP_DIR/APP/include/version.h" | awk '{print $3}')
 FW_VER_PATCH=$(grep 'FW_VERSION_PATCH ' "$APP_DIR/APP/include/version.h" | awk '{print $3}')
+# Anti-rollback SVN lives in version.h too (FW_SEC_VERSION). It used to be a
+# hard-coded `--sec-version 1` here, so every package since 1.6.0 shipped SVN 1
+# and the device floor never moved: an official 1.8.2 package installs over
+# 1.8.3 and reopens the fixed H1 gate bug (2026-09-20 review, N2). Read it from
+# the header and refuse to package without it.
+FW_SEC_VER=$(grep 'FW_SEC_VERSION ' "$APP_DIR/APP/include/version.h" | awk '{print $3}')
+if ! [[ "$FW_SEC_VER" =~ ^[0-9]+$ ]]; then
+    echo_error "cannot parse FW_SEC_VERSION from $APP_DIR/APP/include/version.h"
+    exit 1
+fi
 GIT_HASH=$(git -C "$PROJECT_DIR" rev-parse --short=4 HEAD 2>/dev/null || echo "0000")
 FW_VERSION="${FW_VER_MAJOR}.${FW_VER_MINOR}.${FW_VER_PATCH}.${GIT_HASH}"
 
@@ -202,11 +212,13 @@ IMFW_OUTPUT="$OUTPUT_DIR/immurok_CH592F.imfw"
 
 if [ -f "$PACKAGE_SCRIPT" ] && [ -f "$KEYS_FILE" ]; then
     # IMFW_FORMAT: v2 (ECDSA, default for 1.6.0+) or v1 (HMAC, only for the
-    # 1.6.0 bootstrap that <=1.5.x devices must accept). IMFW_SEC_VERSION sets
-    # the v2 anti-rollback SVN.
-    echo_info "Packaging .imfw (format=${IMFW_FORMAT:-v2}, encrypted + signed)..."
+    # 1.6.0 bootstrap that <=1.5.x devices must accept). The v2 anti-rollback
+    # SVN comes from version.h (FW_SEC_VERSION); IMFW_SEC_VERSION overrides it
+    # only for special builds (e.g. re-packaging the 1.6.0 bridge).
+    SEC_VERSION="${IMFW_SEC_VERSION:-$FW_SEC_VER}"
+    echo_info "Packaging .imfw (format=${IMFW_FORMAT:-v2}, SVN=$SEC_VERSION, encrypted + signed)..."
     python3 "$PACKAGE_SCRIPT" "$APP_BIN" -o "$IMFW_OUTPUT" \
-        --format "${IMFW_FORMAT:-v2}" --sec-version "${IMFW_SEC_VERSION:-1}"
+        --format "${IMFW_FORMAT:-v2}" --sec-version "$SEC_VERSION"
     if [ $? -eq 0 ]; then
         imfw_size=$(stat -f%z "$IMFW_OUTPUT" 2>/dev/null || stat -c%s "$IMFW_OUTPUT" 2>/dev/null)
         echo_info ".imfw size: $imfw_size bytes ($(( imfw_size / 1024 ))KB)"

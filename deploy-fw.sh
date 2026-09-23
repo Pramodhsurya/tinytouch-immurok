@@ -94,8 +94,13 @@ fi
 VER_STR=$(python3 -c "import json;print(json.load(open('$WEB_DIST/manifest.json'))['latest']['version'])")
 
 # ── 3. 拷贝到 website/fw/ ──
+# 只拷本次的 latest + bridge，不要 web-dist/*.imfw 整目录：web-dist 里的历史
+# 版本可能是过期构建（2026-09-05 就把线上 1.7.0 覆盖成了另一个 build），
+# website/fw/ 里已发布的旧固件以 git 里的为准。
 mkdir -p "$FW_PUB_DIR"
-cp "$WEB_DIST"/*.imfw "$FW_PUB_DIR"/
+LATEST_FILE="immurok-ik1-v$VER_STR.imfw"
+cp "$WEB_DIST/$LATEST_FILE" "$FW_PUB_DIR"/
+cp "$WEB_DIST"/immurok-ik1-v1.6.0-bridge.imfw "$FW_PUB_DIR"/
 cp "$WEB_DIST"/manifest.json "$FW_PUB_DIR"/
 info "已拷贝到 ${FW_PUB_DIR}："
 ls -la "$FW_PUB_DIR" | sed 's/^/    /'

@@ -24,10 +24,20 @@ import sys
 import time
 
 def _default_socket_path():
+    """First existing daemon socket, in order: user-session daemon
+    ($XDG_RUNTIME_DIR/immurok), system daemon (/run/immurok), legacy
+    (~/.immurok). Falls back to the user-session path so the error message
+    names a sensible location."""
+    candidates = []
     xdg = os.environ.get("XDG_RUNTIME_DIR")
     if xdg:
-        return os.path.join(xdg, "immurok", "pam.sock")
-    return str(pathlib.Path.home() / ".immurok" / "pam.sock")
+        candidates.append(os.path.join(xdg, "immurok", "pam.sock"))
+    candidates.append("/run/immurok/pam.sock")
+    candidates.append(str(pathlib.Path.home() / ".immurok" / "pam.sock"))
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return candidates[0]
 
 def _default_firmware_path():
     # Script lives at <project>/ota/ota-update.py; build output at

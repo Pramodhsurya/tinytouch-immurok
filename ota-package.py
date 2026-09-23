@@ -134,8 +134,9 @@ def main():
                         help="output file path (default: same name with .imfw)")
     parser.add_argument("--format", choices=["v1", "v2"], default="v2",
                         help="header format: v1=HMAC bootstrap, v2=ECDSA (default)")
-    parser.add_argument("--sec-version", type=int, default=1,
-                        help="security version (SVN) for v2 anti-rollback (default 1)")
+    parser.add_argument("--sec-version", type=int, default=None,
+                        help="security version (SVN) for v2 anti-rollback; required for v2 "
+                             "(build-ota.sh passes FW_SEC_VERSION from version.h)")
     args = parser.parse_args()
 
     if not os.path.isfile(args.firmware):
@@ -153,6 +154,10 @@ def main():
         print("Error: firmware file is empty")
         sys.exit(1)
 
+    if args.format == "v2" and args.sec_version is None:
+        print("Error: --sec-version is required for v2 (read FW_SEC_VERSION from "
+              "firmware/APP/include/version.h; build-ota.sh does this for you)")
+        sys.exit(1)
     if args.format == "v2" and not (0 <= args.sec_version <= 0xFFFF):
         print(f"Error: --sec-version must fit in uint16 (0..65535)")
         sys.exit(1)
