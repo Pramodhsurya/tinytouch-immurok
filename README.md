@@ -146,5 +146,5 @@ The back of the production PCB exposes **VCC5 / TXD1 / RXD1 / DEBUG / GND** pads
 
 ## Schematic & PCB
 
-- [`schematic/Schematic1.6.5.pdf`](schematic/Schematic1.6.5.pdf) — complete schematic, current production revision (HW v1.6.5)
+- [`schematic/SCH7.pdf`](schematic/SCH7.pdf) — complete schematic, current revision (HW V7)
 - [`pcb/`](pcb/) — PCB layout renders (both sides); layout source files will be released after the Kickstarter campaign
