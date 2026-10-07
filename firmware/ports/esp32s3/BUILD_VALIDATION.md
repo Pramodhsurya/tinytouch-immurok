@@ -27,7 +27,9 @@ Before upload, USB enumeration and the existing control protocol confirmed `tiny
 
 The existing private pre-Bluetooth USB recovery backup passed checksum and restricted-permission checks. It is not committed or distributed and is not a fresh backup of the current BLE bond state.
 
-**Deployment pending:** the first fingerprint-gated USB OTA attempt stopped during `AUTH` because no enrolled fingerprint matched. No image data was uploaded. The new image has not yet booted on this device. Retry requires an enrolled-finger match, followed by a restart and runtime confirmation. Do not erase the sensor, bonds or NVS to bypass this gate.
+**Upload staged successfully:** after two unsuccessful fingerprint AUTH attempts that wrote no image data, the visible Terminal retry passed the enrolled-finger gate, uploaded the complete image, and received `OK OTA STAGED` / update-ready confirmation. Activation still requires a power cycle and runtime check. Preserve enrollment, bonds and NVS; do not use reset/recovery firmware to bypass authorization.
+
+A credited application image, manifest, checksums and ZIP bundle are uploaded as a **draft development release**: [ESP32 baseline 1](https://github.com/Pramodhsurya/tinytouch-immurok/releases/tag/untagged-72615b7f39d482ea9bc0). It remains a draft while device acceptance is pending.
 
 The update uses the existing application OTA path and preserves the partition layout. Current slots: NVS `0x9000/0x6000`, app0 `0x10000/0x100000`, app1 `0x110000/0x100000`, OTA metadata `0x210000/0x2000`, recovery data `0x212000/0x1000`. USB OTA stages the inactive app and changes the boot selection; it does not write a replacement partition table or NVS.
 
