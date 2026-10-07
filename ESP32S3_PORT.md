@@ -41,12 +41,15 @@ All components are included in this single repository, preserving their upstream
 
 ## Implementation order
 
+**User priority, 2026-10-07:** complete the standalone macOS app and all ESP32 functionality needed by it, including Mac tests and OTA/recovery, first. Windows follows Mac acceptance. Linux is explicitly on hold. PCB/enclosure and additional hardware follow Windows. All sources and platform app folders remain in this combined repository.
+
 1. Independently build the imported ESP-IDF baseline; retain recoverable original firmware and private local backups. No existing user enrollment or keys in public Git.
 2. Define shared capabilities and the ESP32 protocol implementation. Retain USB operation; do not mistake UUID changes for protocol compatibility. Establish command/session freshness and authorization tests before exposing key/secret operations.
 3. Integrate native Mac app with ESP32 device and verify pairing, enrollment, BLE/USB unlock, disconnect/reconnect and wrong-host rejection.
 4. Port host switching, authenticated sudo/PAM and SSH signing, then vault/TOTP, app unlock and agent approval. Each item requires its own functional/security checks.
-5. Validate Windows and Linux on their target operating systems; Mac builds do not prove their login integrations work.
-6. Implement signed ESP32 OTA and measure low-power behavior. Rework hardware only after board-specific validation; CH592F linker layout/bootloader cannot be flashed onto ESP32-S3.
+5. Implement signed ESP32 OTA/recovery, finish standalone Mac packaging and run the Mac acceptance suite. Hardware-dependent features remain unavailable until suitable hardware exists; do not block the Mac release on a future PCB.
+6. Validate Windows on its target operating system after the Mac release gate passes. Keep Linux implementation and runtime validation on hold until the user resumes it.
+7. Design the PCB/enclosure and add battery sensing, sensor power control and tamper hardware; then measure low-power behavior. CH592F linker layout/bootloader cannot be flashed onto ESP32-S3.
 
 ## Licensing and release boundaries
 

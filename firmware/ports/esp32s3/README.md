@@ -1,6 +1,6 @@
 # ESP32-S3 + ZW111 port baseline
 
-This directory imports the existing tinyTouch ESP-IDF implementation used by the working XIAO ESP32-S3 + ZW111 prototype. Its source build ID is `ble-reconnect-4`. Battery-powered Bluetooth lock-screen typing was verified on the original prototype. This copied project has not yet been independently built or flashed from this fork.
+This directory imports the existing tinyTouch ESP-IDF implementation used by the working XIAO ESP32-S3 + ZW111 prototype, derived from **tinyTouch by Zimeng Xiong**. Its source baseline is `ble-reconnect-4`; the fork's development build ID is `esp32-baseline-1`. Battery-powered Bluetooth lock-screen typing was verified on the original prototype. The imported project was independently built successfully with ESP-IDF 5.3.4 on 2026-10-07. See [build validation](BUILD_VALIDATION.md) for image details and device deployment status.
 
 **This is not an immurok-protocol-compatible release.** The stock immurok apps cannot communicate with this baseline yet. The original CH592F implementation remains elsewhere in this repository for feature-by-feature porting.
 
@@ -19,10 +19,10 @@ Battery wires are separate: red to BAT+, black to BAT-. USB data, BLE HID, and s
 
 ## Build
 
-Use ESP-IDF 5.3.4, target esp32s3. With ESP-IDF activated:
+Use ESP-IDF 5.3.4, target esp32s3. From the combined repository root, with ESP-IDF activated:
 
 ```sh
-idf.py -C ports/esp32s3 build
+idf.py -C firmware/ports/esp32s3 build
 ```
 
 Component dependencies are declared in `main/idf_component.yml`; generated components and build output are ignored. Never copy local flash backups, pairing keys, sensor templates, or signing keys into this repository. This development baseline does not establish a production secure-boot or signed-OTA release process.

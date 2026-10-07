@@ -4,6 +4,8 @@ Reviewed 2026-10-07 against the consolidated source at `b5b448f`. Target: Seeed 
 
 Use the [feature parity checklist](FEATURE_CHECKLIST.md) for implementation order and evidence-backed completion tracking. Its [upstream inventory](upstream-feature-sources.json) also covers the website, organization profile and archived Linux implementation.
 
+Priority update, 2026-10-07: finish Mac app/device features, standalone app packaging, OTA and Mac tests first; Windows follows, Linux is on hold, and PCB/additional hardware follow Windows. This overrides the original cross-platform grouping in the sequence below.
+
 ## The idea behind the system
 
 The sensor stores and matches fingerprint templates locally. Firmware controls enrollment, pairing, host selection, authenticated events, and access to device-held keys and secrets. A companion app receives those events and integrates with the operating system: screen unlock, privilege prompts, SSH, password managers, and command approval. The `imk` CLI is a client of that companion app; it is not a separate sensor driver.

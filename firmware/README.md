@@ -1,4 +1,12 @@
-# immurok Firmware (CH592F)
+# tinyTouch firmware: ESP32-S3 + ZW111
+
+For our XIAO ESP32-S3 device, build [`ports/esp32s3`](ports/esp32s3). That is the development firmware target. It derives from tinyTouch by **Zimeng Xiong**, with local Bluetooth additions; its MIT license and attribution are retained. See [credits](../CREDITS.md) and the [feature checklist](../docs/FEATURE_CHECKLIST.md) for provenance and validation status.
+
+The original CH592F source below remains a reference for porting immurok features. Its build instructions and images do not apply to ESP32-S3. No CH592F firmware binary is supplied as an ESP32 release.
+
+---
+
+# Upstream immurok Firmware (CH592F)
 
 Main application firmware for the immurok device, running on the WCH CH592F RISC-V BLE MCU.
 

@@ -4,7 +4,7 @@ Reviewed **2026-10-07**. Target: **ESP32-S3 + ZW111**, retaining Bluetooth and a
 
 This is the canonical checklist. Check a box only after the feature is implemented in our port and its acceptance criterion passes. Imported source, upstream marketing claims and a passing helper unit test do not complete an end-to-end feature. Prototype evidence is recorded separately below. Keep this file updated with each implementation commit; do not automatically check boxes from upstream status.
 
-**Status values:** `Not started`, `In progress`, `Blocked`, `Completed`. When work begins, set `In progress`; if a dependency prevents progress, use `Blocked` and record the reason. Set `Completed` and check the box together only after acceptance passes. Reopen both if a regression invalidates completion.
+**Status values:** `Not started`, `In progress`, `Blocked`, `On hold`, `Completed`. Linux is explicitly `On hold` at the user's request; it is retained for future work. When work begins, set `In progress`; if a dependency prevents progress, use `Blocked` and record the reason. Set `Completed` and check the box together only after acceptance passes. Reopen both if a regression invalidates completion.
 
 ## Read this first: implementation order
 
@@ -16,11 +16,16 @@ This is the canonical checklist. Check a box only after the feature is implement
 | **P3 — multiple hosts** | Isolated host slots, switch finger, second-host registration/revocation and lock request |
 | **P4 — privileged core** | Encrypted keystore, SSH/TOTP/API device operations, Mac PAM and trusted authentication routing |
 | **P5 — complete Mac workflows** | Vault UI/imports, Quick Fill, password managers/custom targets, CLI/agent workflow and localization |
-| **P6 — remaining parity/release** | Windows/Linux validation, signed OTA/recovery, measured power, added tamper hardware, packaging and website |
+| **P6 — finish Mac release** | Mac OTA/recovery, signing/packaging, diagnostics, comprehensive Mac tests and standalone tinyTouch.app delivery |
+| **P7 — Windows** | Windows companion, service, Credential Provider and Windows tests, after Mac acceptance |
+| **P8 — hardware / PCB** | Sensor gating, ADC, measured power, tamper, PCB/enclosure and public project/website work, after Windows |
+| **On hold — Linux** | Preserve all Linux requirements; do not implement/install/test Linux until the user resumes it |
 
-P6 work can proceed in independent tracks after its dependencies exist: Windows/Linux need P1–P4; OTA needs P0/P1 plus a defined signing/storage policy; sensor gating/tamper need new hardware. The order is a dependency plan, not an instruction to ignore a hardware prerequisite until later.
+**User priority (2026-10-07): finish the device functionality needed by Mac, a separate standalone Mac app, all Mac features and their tests before Windows. Linux is on hold. PCB/enclosure and additional hardware follow Windows.** Separate Mac app means its own `tinyTouch.app` build in `app-macos`, not another repository. Keep basic power/wiring safety checks in P0; future hardware-dependent features remain P8 and must be shown as unsupported in the initial Mac release.
 
-**First concrete tasks:** HW-01/HW-02 → FW-01 → FW-03/FW-07 → DOC-01/FW-09 → FW-08/FW-11–FW-15 → MAC-01–MAC-07/FW-10. Implement and validate one usable Mac path before enabling every privileged feature.
+Mac acceptance includes USB and BLE, pairing/enrollment, host management (two Macs where needed), screen/app unlock, SSH/PAM, vault/Quick Fill, agent approval, upgrades/recovery and feature-specific failure/security tests. Do not declare Mac complete from a successful build alone. Windows begins after this release gate passes; Linux rows remain on hold.
+
+**First concrete tasks:** HW-01/HW-02 → FW-01 → FW-03/FW-07 → DOC-01/FW-09 → FW-08/FW-11–FW-15 → MAC-01–MAC-07/FW-10. Implement and validate one usable Mac path before expanding to the remaining Mac workflows. Complete the Mac release gate before starting Windows.
 
 ## General feature index (references, not duplicate tasks)
 
@@ -80,7 +85,7 @@ Sources: [Firmware README](https://github.com/immurok/firmware/blob/main/README.
 
 | Done | Status | ID | Subfolder / area | Feature or deliverable | Implementation order | Completion criterion |
 | --- | --- | --- | --- | --- | --- | --- |
-| [ ] | Not started | FW-01 | `ports/esp32s3` | Independently build the imported working ESP-IDF baseline | P0 | Clean build succeeds with recorded dependencies and image/partition sizes |
+| [x] | Completed | FW-01 | `ports/esp32s3` | Independently build the imported working ESP-IDF baseline | P0 | Clean build succeeds with recorded dependencies and image/partition sizes |
 | [x] | Completed | FW-02 | `test` | Run existing ten host-side upstream test programs | P0 | All ten passed on this Mac on 2026-10-07 |
 | [ ] | Not started | FW-03 | `ports/esp32s3/main/fingerprint.*` | Adapt and verify ZW111 UART, touch detection and template discovery | P1 | Real sensor capacity/IDs confirmed; existing enrolled finger retained |
 | [ ] | Not started | FW-04 | `APP fingerprint / ESP32 driver` | Logical fingerprint enrollment with progress, completion and cancellation | P1 | ZW111 capture sequence exposed through capabilities; cancel leaves consistent slots |
@@ -109,12 +114,13 @@ Sources: [Firmware README](https://github.com/immurok/firmware/blob/main/README.
 | [ ] | Not started | FW-27 | `APP/totp_core.c` | Fingerprint-gated six-digit SHA-1 TOTP using host-supplied time | P4 | RFC 6238 vectors, time bounds and binary-secret encoding verified |
 | [ ] | Not started | FW-28 | `APP API secrets` | Fingerprint-gated API secret reads and masked metadata responses | P4 | Unauthenticated reads expose no secret; gate binds intended record |
 | [ ] | Not started | FW-29 | `APP reset / tamper` | Authenticated software reset and deliberate physical long-button reset | P6 | Templates, keys and bonds cleared; interrupted reset resumes safely |
-| [ ] | Not started | FW-30 | `APP battery / Profile` | Measured raw battery voltage and Battery Service notifications | P6 | ADC calibrated; no placeholder percentage shown as measured charge |
-| [ ] | Not started | FW-31 | `APP power / GPIO` | Sensor rail gating, touch/button wake and UART sleep configuration | P6 | Hardware supports control; sensor wakes/matches reliably after sleep |
-| [ ] | Not started | FW-32 | `APP advertising / low power` | Low-battery hysteresis, advertising phases and reconnect after wake | P6 | Measured power and threshold tests; recovery works while charging |
-| [ ] | Not started | FW-33 | `APP indicators` | Pair/enroll/auth/error/low-battery/reset LED feedback | P6 | Board-specific indicators match documented states |
-| [ ] | Not started | FW-34 | `APP/tamper.c / factory_test.*` | Case-open response, persistent wipe marker and factory-test behavior | P6 | Requires added hardware; cleanup survives interrupted power and respects factory state |
+| [ ] | Not started | FW-30 | `APP battery / Profile` | Measured raw battery voltage and Battery Service notifications | P8 | ADC calibrated; no placeholder percentage shown as measured charge |
+| [ ] | Not started | FW-31 | `APP power / GPIO` | Sensor rail gating, touch/button wake and UART sleep configuration | P8 | Hardware supports control; sensor wakes/matches reliably after sleep |
+| [ ] | Not started | FW-32 | `APP advertising / low power` | Low-battery hysteresis, advertising phases and reconnect after wake | P8 | Measured power and threshold tests; recovery works while charging |
+| [ ] | Not started | FW-33 | `APP indicators` | Pair/enroll/auth/error/low-battery/reset LED feedback | P8 | Board-specific indicators match documented states |
+| [ ] | Not started | FW-34 | `APP/tamper.c / factory_test.*` | Case-open response, persistent wipe marker and factory-test behavior | P8 | Requires added hardware; cleanup survives interrupted power and respects factory state |
 | [ ] | Not started | FW-35 | `tools/devtest / test` | Port device integration and regression suites to ESP32 | P6 | Read-only tests run routinely; reset/destructive tests isolated with recovery |
+| [ ] | In progress | FW-36 | `ports/esp32s3 / USB OTA` | Deploy and verify our baseline without erasing enrollment or host pairing | P0 | Enrolled-finger upload, activation, retained state, sensor and transport regression verified |
 
 ### app-macos
 
@@ -149,6 +155,8 @@ Sources: [Mac README](https://github.com/immurok/app-macos/blob/main/README.md),
 | [ ] | Not started | MAC-25 | `Sources logs / About` | Runtime logs, diagnostics, app version and update checks | P6 | Useful diagnosis without passwords/private keys; correct fork release endpoint |
 | [ ] | Not started | MAC-26 | `FirmwareUpdateKit / update service` | ESP32 package validation, download/cache, progress, cancel and completion UI | P6 | No CH592 image accepted; image-size limits negotiated; interrupted transfer handled |
 | [ ] | Not started | MAC-27 | `packaging / Tests` | Bundle signing, CLI deployment, updates and native regression suite | P6 | Fresh install/upgrade/uninstall verified; tests pass against ESP32 integration |
+| [ ] | Not started | MAC-28 | `packaging / app-macos` | Deliver a standalone tinyTouch.app for this Mac, with its companion CLI and own application identity | P6 | App runs independently of development terminals; login launch, permissions and Keychain migration tested |
+| [ ] | Not started | MAC-29 | `Tests / device acceptance` | Complete the Mac release gate across all supported features, transports and negative cases | P6 | Every supported Mac feature has recorded automated or manual acceptance evidence; remaining hardware limitations explicit |
 
 ### app-win
 
@@ -156,17 +164,17 @@ Sources: [Windows README](https://github.com/immurok/app-win/blob/main/README.md
 
 | Done | Status | ID | Subfolder / area | Feature or deliverable | Implementation order | Completion criterion |
 | --- | --- | --- | --- | --- | --- | --- |
-| [ ] | Not started | WIN-01 | `ImmurokCommon` | Align command enums, framing, capabilities and authenticated events | P6 | Cross-language fixtures agree; retired/unsupported commands handled explicitly |
-| [ ] | Not started | WIN-02 | `ImmurokService/Ble / Security` | BLE discovery/pairing/reconnect and protected per-user host credentials | P6 | ESP32 works for intended Windows user; other user/device cannot borrow authority |
-| [ ] | Not started | WIN-03 | `ImmurokService transport` | Add USB control transport and explicit mode selection | P6 | USB/BLE feature behavior matches without double output |
-| [ ] | Not started | WIN-04 | `ImmurokService/Ipc` | Hardened named-pipe IPC and per-user client authorization | P6 | Pipe/process/session spoofing and cross-user requests rejected |
-| [ ] | Not started | WIN-05 | `ImmurokCredentialProvider / System` | Native logon/lock-screen credential delivery through trusted provider | P6 | Real Windows login, lock/unlock and second-account behavior verified |
-| [ ] | Not started | WIN-06 | `ImmurokClient` | Tray/WPF UI, first-run pairing, fingerprint management and status/settings | P6 | Capability-driven ZW111 management and host slot flows tested |
-| [ ] | Not started | WIN-07 | `ImmurokService/Ssh / ImmurokConsolePrompt` | SSH agent and visible interactive signing authorization | P6 | OpenSSH/git signing succeeds only for approved operation |
-| [ ] | Not started | WIN-08 | `ImmurokClient / service key handlers` | SSH/TOTP/API management and supported secret retrieval workflows | P6 | Platform feature matrix reflects tested commands, not preview claims |
-| [ ] | Not started | WIN-09 | `ImmurokCli` | CLI commands and meaningful service/permission errors | P6 | Every advertised command tested against ESP32 service |
-| [ ] | Not started | WIN-10 | `ImmurokService/Ota` | ESP32 firmware validation/transfer and progress reporting | P6 | Wrong board/signature/version refused; disconnect handled |
-| [ ] | Not started | WIN-11 | `packaging / build/install scripts` | Service/provider installation, auto-start, app updates and clean removal | P6 | Install/upgrade/uninstall and upgrade while LogonUI holds provider tested safely |
+| [ ] | Not started | WIN-01 | `ImmurokCommon` | Align command enums, framing, capabilities and authenticated events | P7 | Cross-language fixtures agree; retired/unsupported commands handled explicitly |
+| [ ] | Not started | WIN-02 | `ImmurokService/Ble / Security` | BLE discovery/pairing/reconnect and protected per-user host credentials | P7 | ESP32 works for intended Windows user; other user/device cannot borrow authority |
+| [ ] | Not started | WIN-03 | `ImmurokService transport` | Add USB control transport and explicit mode selection | P7 | USB/BLE feature behavior matches without double output |
+| [ ] | Not started | WIN-04 | `ImmurokService/Ipc` | Hardened named-pipe IPC and per-user client authorization | P7 | Pipe/process/session spoofing and cross-user requests rejected |
+| [ ] | Not started | WIN-05 | `ImmurokCredentialProvider / System` | Native logon/lock-screen credential delivery through trusted provider | P7 | Real Windows login, lock/unlock and second-account behavior verified |
+| [ ] | Not started | WIN-06 | `ImmurokClient` | Tray/WPF UI, first-run pairing, fingerprint management and status/settings | P7 | Capability-driven ZW111 management and host slot flows tested |
+| [ ] | Not started | WIN-07 | `ImmurokService/Ssh / ImmurokConsolePrompt` | SSH agent and visible interactive signing authorization | P7 | OpenSSH/git signing succeeds only for approved operation |
+| [ ] | Not started | WIN-08 | `ImmurokClient / service key handlers` | SSH/TOTP/API management and supported secret retrieval workflows | P7 | Platform feature matrix reflects tested commands, not preview claims |
+| [ ] | Not started | WIN-09 | `ImmurokCli` | CLI commands and meaningful service/permission errors | P7 | Every advertised command tested against ESP32 service |
+| [ ] | Not started | WIN-10 | `ImmurokService/Ota` | ESP32 firmware validation/transfer and progress reporting | P7 | Wrong board/signature/version refused; disconnect handled |
+| [ ] | Not started | WIN-11 | `packaging / build/install scripts` | Service/provider installation, auto-start, app updates and clean removal | P7 | Install/upgrade/uninstall and upgrade while LogonUI holds provider tested safely |
 
 ### app-linux-rs
 
@@ -174,23 +182,23 @@ Sources: [Linux README](https://github.com/immurok/app-linux-rs/blob/main/README
 
 | Done | Status | ID | Subfolder / area | Feature or deliverable | Implementation order | Completion criterion |
 | --- | --- | --- | --- | --- | --- | --- |
-| [ ] | Not started | LIN-01 | `crates/immurok-common` | Protocol, crypto, paths and authenticated IPC contracts for ESP32 | P6 | Fixtures agree with firmware and other clients |
-| [ ] | Not started | LIN-02 | `crates/immurok-daemon / scripts` | BlueZ BLE discovery/bonding/reconnect and notify helper integration | P6 | Cold start, suspend/resume and bond recovery tested with ESP32 |
-| [ ] | Not started | LIN-03 | `crates daemon transport / device rules` | USB backend and user/service device access | P6 | Both transports work under intended service permissions |
-| [ ] | Not started | LIN-04 | `crates/immurok-daemon / packaging` | Privileged separation, dedicated service user and protected /run sockets | P6 | Wrong UID/socket spoofing denied; service hardening maintained |
-| [ ] | Not started | LIN-05 | `crates/immurok-client / immurok-cli` | Management CLI and TUI dashboard, keys, PAM, logs and firmware pages | P6 | Every advertised page/command handles supported device capabilities |
-| [ ] | Not started | LIN-06 | `crates/immurok-gui` | GTK4/libadwaita management UI and auth dialogs | P6 | Pair/enroll/status/settings and prompt cancellation tested |
-| [ ] | Not started | LIN-07 | `crates/immurok-session-agent` | Bridge authenticated system-service requests to correct desktop session | P6 | Active/user session selection tested; no cross-user credential injection |
-| [ ] | Not started | LIN-08 | `pam / helper / packaging polkit` | sudo and polkit fingerprint approval, hook install/remove/repair and fallback | P6 | Real positive/negative PAM tests; rejected prompt grants nothing |
-| [ ] | Not started | LIN-09 | `daemon screen / pam` | GNOME login/lock and KDE lock/session integration with documented limits | P6 | GNOME/GDM and KDE tested separately; SDDM manual requirements explicit |
-| [ ] | Not started | LIN-10 | `polkit / desktop integrations` | Password-manager system authentication for supported 1Password/Bitwarden/KeePassXC setups | P6 | App-specific setup and Flatpak policy limits documented/tested |
-| [ ] | Not started | LIN-11 | `daemon ssh_agent` | SSH identities and signing with device-held P-256 keys | P6 | OpenSSH/git signing and gate failures tested |
-| [ ] | Not started | LIN-12 | `cli keys / daemon keystore` | SSH/OTP/API creation, listing, deletion and authorized retrieval | P6 | Record/capacity boundaries and masked secret reads tested |
-| [ ] | Not started | LIN-13 | `cli slot / daemon` | Two-host status, owner registration and unbinding user flows | P6 | Real Mac/Linux host switch test passes |
-| [ ] | Not started | LIN-14 | `cli imk / daemon socket` | imk URI/env-file workflows and visible agent command approval | P6 | Approve/reject/timeout, subprocess exit and context binding tested |
-| [ ] | Not started | LIN-15 | `cli fw / daemon ota` | Update discovery/cache, progress and board-aware upgrade policy | P6 | ESP32 trust/size/battery rules used; no CH592 bridge image offered |
-| [ ] | Not started | LIN-16 | `packaging / Makefile` | Debian/Ubuntu, Fedora and Arch builds, service startup and uninstall | P6 | Packages and permission/config migration tested on target distros |
-| [ ] | Not started | LIN-17 | `docs / tests` | Wayland focus, GNOME/KDE/wlroots limitations and diagnostic regression coverage | P6 | Unsupported compositor behavior stated honestly; suite runs on Linux |
+| [ ] | On hold | LIN-01 | `crates/immurok-common` | Protocol, crypto, paths and authenticated IPC contracts for ESP32 | On hold | Fixtures agree with firmware and other clients |
+| [ ] | On hold | LIN-02 | `crates/immurok-daemon / scripts` | BlueZ BLE discovery/bonding/reconnect and notify helper integration | On hold | Cold start, suspend/resume and bond recovery tested with ESP32 |
+| [ ] | On hold | LIN-03 | `crates daemon transport / device rules` | USB backend and user/service device access | On hold | Both transports work under intended service permissions |
+| [ ] | On hold | LIN-04 | `crates/immurok-daemon / packaging` | Privileged separation, dedicated service user and protected /run sockets | On hold | Wrong UID/socket spoofing denied; service hardening maintained |
+| [ ] | On hold | LIN-05 | `crates/immurok-client / immurok-cli` | Management CLI and TUI dashboard, keys, PAM, logs and firmware pages | On hold | Every advertised page/command handles supported device capabilities |
+| [ ] | On hold | LIN-06 | `crates/immurok-gui` | GTK4/libadwaita management UI and auth dialogs | On hold | Pair/enroll/status/settings and prompt cancellation tested |
+| [ ] | On hold | LIN-07 | `crates/immurok-session-agent` | Bridge authenticated system-service requests to correct desktop session | On hold | Active/user session selection tested; no cross-user credential injection |
+| [ ] | On hold | LIN-08 | `pam / helper / packaging polkit` | sudo and polkit fingerprint approval, hook install/remove/repair and fallback | On hold | Real positive/negative PAM tests; rejected prompt grants nothing |
+| [ ] | On hold | LIN-09 | `daemon screen / pam` | GNOME login/lock and KDE lock/session integration with documented limits | On hold | GNOME/GDM and KDE tested separately; SDDM manual requirements explicit |
+| [ ] | On hold | LIN-10 | `polkit / desktop integrations` | Password-manager system authentication for supported 1Password/Bitwarden/KeePassXC setups | On hold | App-specific setup and Flatpak policy limits documented/tested |
+| [ ] | On hold | LIN-11 | `daemon ssh_agent` | SSH identities and signing with device-held P-256 keys | On hold | OpenSSH/git signing and gate failures tested |
+| [ ] | On hold | LIN-12 | `cli keys / daemon keystore` | SSH/OTP/API creation, listing, deletion and authorized retrieval | On hold | Record/capacity boundaries and masked secret reads tested |
+| [ ] | On hold | LIN-13 | `cli slot / daemon` | Two-host status, owner registration and unbinding user flows | On hold | Real Mac/Linux host switch test passes |
+| [ ] | On hold | LIN-14 | `cli imk / daemon socket` | imk URI/env-file workflows and visible agent command approval | On hold | Approve/reject/timeout, subprocess exit and context binding tested |
+| [ ] | On hold | LIN-15 | `cli fw / daemon ota` | Update discovery/cache, progress and board-aware upgrade policy | On hold | ESP32 trust/size/battery rules used; no CH592 bridge image offered |
+| [ ] | On hold | LIN-16 | `packaging / Makefile` | Debian/Ubuntu, Fedora and Arch builds, service startup and uninstall | On hold | Packages and permission/config migration tested on target distros |
+| [ ] | On hold | LIN-17 | `docs / tests` | Wayland focus, GNOME/KDE/wlroots limitations and diagnostic regression coverage | On hold | Unsupported compositor behavior stated honestly; suite runs on Linux |
 
 ### ota
 
@@ -214,12 +222,12 @@ Sources: [Hardware README](https://github.com/immurok/hardware/blob/main/README.
 | --- | --- | --- | --- | --- | --- | --- |
 | [ ] | Not started | HW-01 | `ESP32 + ZW111 wiring` | Confirm pin map and document direct-solder assembly for current board | P0 | Photo/wiring review, continuity and voltage checks recorded before final assembly |
 | [ ] | Not started | HW-02 | `battery / charging` | Verify selected cell protection, polarity and charge-current compatibility | P0 | Board/cell specifications and measured power paths support this assembly |
-| [ ] | Not started | HW-03 | `sensor rail` | Add suitable sensor power switch while keeping touch wake available | P6 | Rail control and leakage measured; UART cannot back-power sensor |
-| [ ] | Not started | HW-04 | `battery measurement` | Add ADC divider/protection and calibrated battery reporting | P6 | Full-charge voltage safe at GPIO; firmware agrees with multimeter |
-| [ ] | Not started | HW-05 | `controls / indicators` | Map physical pair/reset button and LED states without boot-pin conflicts | P6 | Button timing and boot/recovery behavior tested on assembled board |
-| [ ] | Not started | HW-06 | `tamper / power bypass` | Case switch, always-available tamper power path and interrupted-wipe design | P6 | Opening powered/off device produces intended response; current hardware lacks this |
-| [ ] | Not started | HW-07 | `power / radio` | Measure sleep, active, charging and BLE reconnect performance | P6 | Publish measured ESP32 runtime; do not inherit CH592 month-long standby claim |
-| [ ] | Not started | HW-08 | `schematic / pcb / enclosure` | Provide ESP32-specific circuit, board/assembly files and mechanical design | P6 | Editable sources/BOM published; USB data, antenna and sensor access retained |
+| [ ] | Not started | HW-03 | `sensor rail` | Add suitable sensor power switch while keeping touch wake available | P8 | Rail control and leakage measured; UART cannot back-power sensor |
+| [ ] | Not started | HW-04 | `battery measurement` | Add ADC divider/protection and calibrated battery reporting | P8 | Full-charge voltage safe at GPIO; firmware agrees with multimeter |
+| [ ] | Not started | HW-05 | `controls / indicators` | Map physical pair/reset button and LED states without boot-pin conflicts | P8 | Button timing and boot/recovery behavior tested on assembled board |
+| [ ] | Not started | HW-06 | `tamper / power bypass` | Case switch, always-available tamper power path and interrupted-wipe design | P8 | Opening powered/off device produces intended response; current hardware lacks this |
+| [ ] | Not started | HW-07 | `power / radio` | Measure sleep, active, charging and BLE reconnect performance | P8 | Publish measured ESP32 runtime; do not inherit CH592 month-long standby claim |
+| [ ] | Not started | HW-08 | `schematic / pcb / enclosure` | Provide ESP32-specific circuit, board/assembly files and mechanical design | P8 | Editable sources/BOM published; USB data, antenna and sensor access retained |
 
 ### imk-skill
 
@@ -238,15 +246,15 @@ Sources: [Website README](https://github.com/immurok/website/blob/main/README.md
 
 | Done | Status | ID | Subfolder / area | Feature or deliverable | Implementation order | Completion criterion |
 | --- | --- | --- | --- | --- | --- | --- |
-| [ ] | Not started | WEB-01 | `website (not imported)` | Create tinyTouch product/docs/download pages based on verified capabilities | P6 | Website source resides inside combined repo; no upstream sales/certification claims copied |
-| [ ] | Not started | WEB-02 | `website/blog-src / theme` | Hugo blog, technical articles, shared layout and local preview/build | P6 | Build succeeds; ESP32 hardware/security claims reflect actual implementation |
-| [ ] | Not started | WEB-03 | `website/tools / language pages` | Generated product/platform/agent/comparison pages and multilingual content | P6 | Generated output and translations consistent with tested feature matrix |
-| [ ] | Not started | WEB-04 | `website/functions / firmware manifest` | App download routing, release links and board-specific firmware metadata | P6 | Only our tested releases served; no upstream binaries presented as ESP32 compatible |
-| [ ] | Not started | WEB-05 | `website/3d / img` | Device renders/3D viewer and relevant visual assets | P6 | Use our board/enclosure and appropriately licensed assets |
-| [ ] | Not started | WEB-06 | `website tools / metadata` | Sitemap, crawler text, structured data, redirects and 404 behavior | P6 | Build checks pass; metadata contains accurate product facts |
-| [ ] | Not started | WEB-07 | `website deployment` | Own hosting configuration and optional analytics/feedback endpoints | P6 | Deployment reviewed for our account/domain; no upstream secrets or endpoints reused |
-| [ ] | Not started | ORG-01 | `.github/profile (not imported)` | Update project/profile repository links and feature overview | P6 | Profile points to combined repo and verified releases; upstream org identity not impersonated |
-| [ ] | Not started | LEGACY-01 | `archived app-linux (not imported)` | Compare Python BLE/security/daemon/CLI/PAM behavior against maintained Rust app | P6 | Any unique behavior captured under LIN items; no second competing Linux runtime needed |
+| [ ] | Not started | WEB-01 | `website (not imported)` | Create tinyTouch product/docs/download pages based on verified capabilities | P8 | Website source resides inside combined repo; no upstream sales/certification claims copied |
+| [ ] | Not started | WEB-02 | `website/blog-src / theme` | Hugo blog, technical articles, shared layout and local preview/build | P8 | Build succeeds; ESP32 hardware/security claims reflect actual implementation |
+| [ ] | Not started | WEB-03 | `website/tools / language pages` | Generated product/platform/agent/comparison pages and multilingual content | P8 | Generated output and translations consistent with tested feature matrix |
+| [ ] | Not started | WEB-04 | `website/functions / firmware manifest` | App download routing, release links and board-specific firmware metadata | P8 | Only our tested releases served; no upstream binaries presented as ESP32 compatible |
+| [ ] | Not started | WEB-05 | `website/3d / img` | Device renders/3D viewer and relevant visual assets | P8 | Use our board/enclosure and appropriately licensed assets |
+| [ ] | Not started | WEB-06 | `website tools / metadata` | Sitemap, crawler text, structured data, redirects and 404 behavior | P8 | Build checks pass; metadata contains accurate product facts |
+| [ ] | Not started | WEB-07 | `website deployment` | Own hosting configuration and optional analytics/feedback endpoints | P8 | Deployment reviewed for our account/domain; no upstream secrets or endpoints reused |
+| [ ] | Not started | ORG-01 | `.github/profile (not imported)` | Update project/profile repository links and feature overview | P8 | Profile points to combined repo and verified releases; upstream org identity not impersonated |
+| [ ] | On hold | LEGACY-01 | `archived app-linux (not imported)` | Compare Python BLE/security/daemon/CLI/PAM behavior against maintained Rust app | On hold | Any unique behavior captured under LIN items; no second competing Linux runtime needed |
 
 ## Upstream coverage and differences
 
@@ -272,6 +280,8 @@ For every future checked item, append or link evidence here: implementation comm
 | ROOT-01 | Combined repository remote verified; every removed component fork's branch heads were ancestors of combined history before deletion | 2026-10-07 |
 | ROOT-02 | [Folder analysis](esp32-folder-analysis.md), commit `7beb65c` | 2026-10-07 |
 | ROOT-03 | This document and pinned source inventory; IDs, duplicate names, order values and local links validated before publishing | 2026-10-07 |
+| FW-01 | [Build validation](../firmware/ports/esp32s3/BUILD_VALIDATION.md): clean baseline and fork-identity rebuild passed; 664,400-byte ESP32 image validated | 2026-10-07 |
+| FW-36 | First upload stopped at fingerprint AUTH before writing; retry/activation/device regression pending | 2026-10-07 |
 | FW-02 | `make` in `firmware/test`: all ten host executables passed; fake storage tests do not validate ESP32 flash/peripherals | 2026-10-07 |
 | BASE-01–BASE-05 | User-confirmed prototype measurements and operation from earlier setup; original helper/custom firmware, not the new native companion | Earlier setup; recorded 2026-10-07 |
 
