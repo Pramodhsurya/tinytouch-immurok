@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ImmurokCli</RootNamespace>
+    <!-- 生成 imk.exe（终端里就叫 imk） -->
+    <AssemblyName>imk</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- 注意：不要开 InvariantGlobalization —— WPF 文字渲染需真实区域性，否则弹窗时崩溃。 -->
+    <!-- agent 授权用 WPF 弹窗；OutputType 仍为 Exe（控制台子系统），list/get 的 stdout 正常。 -->
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 授权弹窗的 logo，内嵌为程序集资源（用清单流加载，无需 Application/pack URI） -->
+    <EmbeddedResource Include="Assets\immurok-white.png">
+      <LogicalName>ImmurokCli.Assets.immurok-white.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\immurok.png">
+      <LogicalName>ImmurokCli.Assets.immurok.png</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

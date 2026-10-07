@@ -1,0 +1,91 @@
+name: Release
+
+# Cut a release by pushing a tag:  git tag v1.2.3 && git push origin v1.2.3
+on:
+  push:
+    tags:
+      - 'v*'
+  # Manual dry-run (builds both installers; you pick the version).
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g. 1.2.3)'
+        required: true
+
+permissions:
+  contents: write          # needed to create the GitHub Release
+
+jobs:
+  build:
+    # windows-2025 ships everything this build needs, so there is nothing to
+    # install at runtime:
+    #   · Inno Setup 6            (packaging/build-installer.ps1 finds ISCC via the registry)
+    #   · .NET 8 SDK
+    #   · MSVC ARM64 toolchain    (Microsoft.VisualStudio.Component.VC.Tools.ARM64)
+    # That last one is why both architectures can be built on a hosted runner —
+    # the Credential Provider must be compiled natively per architecture, since
+    # Windows will not load an x64 in-process DLL into a native Arm64 LogonUI.
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Toolchain versions
+        shell: pwsh
+        run: |
+          dotnet --version
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          & $vswhere -latest -property catalog_productDisplayVersion
+
+      - name: Derive version
+        id: ver
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            $v = '${{ github.event.inputs.version }}'
+          } else {
+            $v = '${{ github.ref_name }}' -replace '^v', ''   # v1.2.3 -> 1.2.3
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Building version $v"
+
+      # Code signing is not wired up yet — see README. Once an Azure Artifact
+      # Signing account exists, sign here (it uses signtool's dlib extension
+      # rather than a certificate subject, so build-installer.ps1's current
+      # -SignToolPath / -CertSubject hooks will need to change shape).
+      # Signatures MUST be timestamped against http://timestamp.acs.microsoft.com:
+      # Artifact Signing certificates are valid for only 72 hours, so an
+      # un-timestamped signature would go invalid three days after release.
+
+      - name: Build installers (x64 + arm64)
+        shell: pwsh
+        run: .\packaging\build-installer.ps1 -Version '${{ steps.ver.outputs.version }}'
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: immurok-installers
+          path: packaging/out/*.exe
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: packaging/out/*.exe
+          generate_release_notes: true
+          # Tags with a SemVer pre-release suffix (e.g. v1.20.0-beta.1) publish
+          # as a GitHub pre-release; clean tags (v1.20.0) publish as a full release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            > **Unsigned build.** SmartScreen will warn on first run until code
+            > signing is in place. The Credential Provider hooks the Windows sign-in
+            > path — validate in a snapshotted VM and keep password sign-in as a
+            > fallback before deploying to a machine you rely on.
+
+            Requires the [.NET 8 Desktop Runtime (x64)](https://dotnet.microsoft.com/download/dotnet/8.0);
+            the installer checks for it and links the download if missing.
+
+            Pick the package matching your CPU: `x64` for Intel/AMD, `arm64` for
+            Windows on Arm. They are not interchangeable — the x64 package refuses
+            to install on an Arm64 PC.

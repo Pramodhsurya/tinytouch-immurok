@@ -1,0 +1,113 @@
+<Page x:Class="ImmurokClient.Views.DevicePage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+      xmlns:loc="clr-namespace:ImmurokClient.Localization"
+      xmlns:h="clr-namespace:ImmurokClient.Helpers"
+      Title="{loc:Tr nav.device}">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" h:WheelScroll.Enabled="True">
+        <StackPanel Margin="28,24,28,24" MaxWidth="640" HorizontalAlignment="Left">
+            <TextBlock Text="{loc:Tr nav.device}" FontSize="28" FontWeight="Bold" Margin="0,0,0,2" />
+            <TextBlock Text="{loc:Tr device.subtitle}" Opacity="0.6" Margin="0,0,0,20" />
+
+            <!-- 连接状态 -->
+            <ui:Card Margin="0,0,0,14" Padding="18">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Bluetooth24" FontSize="18" Margin="0,0,8,0" />
+                        <TextBlock Text="{loc:Tr device.conn}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock x:Name="ConnText" Text="{loc:Tr common.querying}" Opacity="0.85" />
+                    <TextBlock x:Name="InfoText" Text="" Margin="0,6,0,0" Opacity="0.6" FontSize="12" />
+                </StackPanel>
+            </ui:Card>
+
+            <!-- 配对 -->
+            <ui:Card Margin="0,0,0,14" Padding="18">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Link24" FontSize="18" Margin="0,0,8,0" />
+                        <TextBlock Text="{loc:Tr device.pair}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock x:Name="PairText" Text="{loc:Tr common.querying}" Opacity="0.85" Margin="0,0,0,10" />
+                    <ui:Button x:Name="PairBtn" Content="{loc:Tr device.pair.start}" Icon="{ui:SymbolIcon Link24}" Click="OnPairClick" />
+                    <!-- 配对过程走 PairDialog 分步引导窗；这里只留结果。 -->
+                    <!-- 配对操作的结果单独一行：PairText 是「当前状态」，刷新时会被重写，
+                         把失败原因写在那里等于刷新一次就丢。 -->
+                    <TextBlock x:Name="PairResult" Text="" Margin="0,8,0,0" Opacity="0.85"
+                               FontSize="12" TextWrapping="Wrap" Visibility="Collapsed" />
+                    <TextBlock x:Name="PairHint"
+                               Text="{loc:Tr device.pair.hint}"
+                               Margin="0,8,0,0" Opacity="0.55" FontSize="12" TextWrapping="Wrap" />
+                </StackPanel>
+            </ui:Card>
+
+            <!-- 双主机 -->
+            <ui:Card x:Name="DualHostCard" Margin="0,0,0,14" Padding="18" Visibility="Collapsed">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Desktop24" FontSize="18" Margin="0,0,8,0" />
+                        <TextBlock Text="{loc:Tr device.dual}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock x:Name="DualDesc" Text="{loc:Tr device.dual.desc}"
+                               Opacity="0.6" FontSize="12" Margin="0,0,0,10" TextWrapping="Wrap" />
+
+                    <!-- 槽位行的按钮由 ConfigureSlotButton 按槽位状态决定：
+                         已占用 → 解绑（本机/另一台），平时不可见、鼠标移到本行才淡入
+                         （Opacity 与 IsHitTestVisible 同步切换，避免点到看不见的按钮）；
+                         空槽 + 本机未配对 → 「在此配对」，属于主要动作，始终可见不藏。 -->
+                    <!-- MinHeight 固定行高：空槽没有按钮、被占用的槽有按钮，不定高两行会一高一矮。
+                         按钮 Height=24，连同 Padding 一起收在 32 之内，两行始终等高。 -->
+                    <Border x:Name="Slot1Row" CornerRadius="6" Padding="12,4" Margin="0,0,0,6" MinHeight="32"
+                            Background="#14808080"
+                            MouseEnter="OnSlotRowHover" MouseLeave="OnSlotRowHover">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                <TextBlock Text="{loc:Tr device.slot1}" Width="60" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                <TextBlock x:Name="Slot1State" Text="" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <ui:Button x:Name="Slot1ActionBtn" Grid.Column="1"
+                                       Appearance="Secondary" Padding="10,0" FontSize="12" Height="24"
+                                       Opacity="0" IsHitTestVisible="False"
+                                       Click="OnSlotActionClick" />
+                        </Grid>
+                    </Border>
+                    <Border x:Name="Slot2Row" CornerRadius="6" Padding="12,4" Margin="0" MinHeight="32"
+                            Background="#14808080"
+                            MouseEnter="OnSlotRowHover" MouseLeave="OnSlotRowHover">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                <TextBlock Text="{loc:Tr device.slot2}" Width="60" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                <TextBlock x:Name="Slot2State" Text="" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <ui:Button x:Name="Slot2ActionBtn" Grid.Column="1"
+                                       Appearance="Secondary" Padding="10,0" FontSize="12" Height="24"
+                                       Opacity="0" IsHitTestVisible="False"
+                                       Click="OnSlotActionClick" />
+                        </Grid>
+                    </Border>
+
+                    <!-- 设备不在身边时槽位行不可见（槽位状态要查设备），此时仍需给出「解绑本机」
+                         入口，否则无法改配新设备——所以这个按钮只在离线场景出现。 -->
+                    <ui:Button x:Name="UnbindSelfBtn" Content="{loc:Tr device.unbind.self}" Icon="{ui:SymbolIcon PlugDisconnected24}"
+                               Appearance="Secondary" Click="OnUnbindSelfClick"
+                               HorizontalAlignment="Left" Margin="0,10,0,0" Visibility="Collapsed" />
+                    <!-- 无提示文字时整体收起（SetDualHint）：空 TextBlock 也会占一整行，
+                         否则卡片底部凭空多出一段空白。 -->
+                    <TextBlock x:Name="DualHint" Text="" Margin="0,10,0,0" Opacity="0.7" FontSize="12"
+                               TextWrapping="Wrap" Visibility="Collapsed" />
+                </StackPanel>
+            </ui:Card>
+
+            <ui:Button Content="{loc:Tr common.refresh}" Icon="{ui:SymbolIcon ArrowClockwise24}" Appearance="Secondary" Click="OnRefreshClick" />
+        </StackPanel>
+    </ScrollViewer>
+</Page>

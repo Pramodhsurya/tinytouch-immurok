@@ -1,0 +1,68 @@
+using System;
+using System.IO;
+using System.Text.Json;
+
+namespace ImmurokClient.Services;
+
+/// <summary>
+/// 客户端本地设置（仅界面偏好，不含机密），存于 %AppData%\immurok\client.json。
+/// 目前只有语言选择。
+/// </summary>
+public static class ClientSettings
+{
+    private sealed class Data
+    {
+        public string? Language { get; set; }
+        public bool AutoStartInitialized { get; set; }
+        public bool SecurityBannerCollapsed { get; set; }
+    }
+
+    private static string Dir =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "immurok");
+    private static string FilePath => Path.Combine(Dir, "client.json");
+
+    private static Data _data = Load();
+
+    private static Data Load()
+    {
+        try
+        {
+            if (File.Exists(FilePath))
+                return JsonSerializer.Deserialize<Data>(File.ReadAllText(FilePath)) ?? new Data();
+        }
+        catch { /* 忽略损坏文件 */ }
+        return new Data();
+    }
+
+    private static void Save()
+    {
+        try
+        {
+            Directory.CreateDirectory(Dir);
+            File.WriteAllText(FilePath, JsonSerializer.Serialize(_data,
+                new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch { /* 忽略写入失败 */ }
+    }
+
+    /// <summary>已保存的语言码；未设置返回 null（调用方回退默认英语）。</summary>
+    public static string? Language
+    {
+        get => _data.Language;
+        set { _data.Language = value; Save(); }
+    }
+
+    /// <summary>IPC 加固横幅（全绿时）是否已被用户收起为盾牌。有异常时横幅不可收起，此项不生效。</summary>
+    public static bool SecurityBannerCollapsed
+    {
+        get => _data.SecurityBannerCollapsed;
+        set { _data.SecurityBannerCollapsed = value; Save(); }
+    }
+
+    /// <summary>是否已做过「首次运行默认开启自启」。置位后不再自动改写用户的选择。</summary>
+    public static bool AutoStartInitialized
+    {
+        get => _data.AutoStartInitialized;
+        set { _data.AutoStartInitialized = value; Save(); }
+    }
+}

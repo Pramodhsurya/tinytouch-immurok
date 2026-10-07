@@ -1,0 +1,50 @@
+<Page x:Class="ImmurokClient.Views.FingerprintPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+      xmlns:loc="clr-namespace:ImmurokClient.Localization"
+      xmlns:h="clr-namespace:ImmurokClient.Helpers"
+      xmlns:v="clr-namespace:ImmurokClient.Views"
+      Title="{loc:Tr nav.fingerprint}">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" h:WheelScroll.Enabled="True">
+        <StackPanel Margin="28,24,28,24" MaxWidth="640" HorizontalAlignment="Left">
+            <TextBlock Text="{loc:Tr fp.title}" FontSize="28" FontWeight="Bold" Margin="0,0,0,2" />
+            <TextBlock x:Name="CountText" Text="{loc:Tr common.loading}" Opacity="0.6" Margin="0,0,0,20" />
+
+            <v:PairingBanner x:Name="PairBanner" />
+
+            <!-- 认证指纹 -->
+            <ui:Card Margin="0,0,0,14" Padding="18">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="Fingerprint24" FontSize="18" Margin="0,0,8,0" />
+                        <TextBlock Text="{loc:Tr fp.auth}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="{loc:Tr fp.auth.desc}" Opacity="0.6" FontSize="12" Margin="0,0,0,10" />
+                    <ItemsControl x:Name="SlotPanel" />
+                </StackPanel>
+            </ui:Card>
+
+            <!-- 切换指纹 -->
+            <ui:Card Margin="0,0,0,14" Padding="18">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <ui:SymbolIcon Foreground="{DynamicResource TextFillColorPrimaryBrush}" Symbol="ArrowSwap24" FontSize="18" Margin="0,0,8,0" />
+                        <TextBlock Text="{loc:Tr fp.switch}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="{loc:Tr fp.switch.desc}"
+                               Opacity="0.6" FontSize="12" Margin="0,0,0,10" TextWrapping="Wrap" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="SwitchState" Text="—" Width="140" VerticalAlignment="Center" />
+                        <ui:Button x:Name="SwitchBtn" Content="{loc:Tr fp.switch.enroll}" Click="OnSwitchClick" />
+                    </StackPanel>
+                </StackPanel>
+            </ui:Card>
+
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                <ui:Button Content="{loc:Tr common.refresh}" Icon="{ui:SymbolIcon ArrowClockwise24}" Appearance="Secondary" Click="OnRefreshClick" />
+            </StackPanel>
+            <TextBlock x:Name="StatusText" Margin="0,12,0,0" Opacity="0.8" TextWrapping="Wrap" />
+        </StackPanel>
+    </ScrollViewer>
+</Page>

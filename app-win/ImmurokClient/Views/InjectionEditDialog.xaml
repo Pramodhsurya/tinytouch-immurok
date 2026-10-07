@@ -1,0 +1,85 @@
+<ui:FluentWindow x:Class="ImmurokClient.Views.InjectionEditDialog"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 xmlns:loc="clr-namespace:ImmurokClient.Localization"
+                 Width="460"
+                 SizeToContent="Height"
+                 ResizeMode="NoResize"
+                 ExtendsContentIntoTitleBar="True"
+                 WindowBackdropType="Mica"
+                 ShowInTaskbar="False"
+                 WindowStartupLocation="CenterOwner">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" x:Name="Titlebar" ShowMaximize="False" ShowMinimize="False" />
+
+        <StackPanel Grid.Row="1" Margin="20,8,20,20">
+            <!-- 名称 -->
+            <TextBlock Text="{loc:Tr inject.f.name}" Opacity="0.7" FontSize="12" Margin="0,0,0,4" />
+            <ui:TextBox x:Name="NameBox" PlaceholderText="{loc:Tr inject.f.name.ph}" />
+
+            <!-- 定位目标 -->
+            <TextBlock Text="{loc:Tr inject.f.target}" Opacity="0.7" FontSize="12" Margin="0,14,0,4" />
+            <Border Background="{DynamicResource ControlFillColorDefaultBrush}" CornerRadius="6" Padding="12">
+                <StackPanel>
+                    <TextBlock x:Name="NoCaptureText" Text="{loc:Tr inject.nocapture}" Opacity="0.5" FontSize="12" />
+                    <Grid x:Name="CaptureGrid" Visibility="Collapsed">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <!-- 匹配方式：这条注入项实际拿哪种身份认应用（包族名/签名/路径）。
+                             放在最前面，因为它决定了下面「应用」那一行显示的是什么。 -->
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="{loc:Tr inject.f.match}" Opacity="0.55" FontSize="11" Margin="0,0,10,3" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" x:Name="MatchKindText" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="{loc:Tr inject.f.app}" Opacity="0.55" FontSize="11" Margin="0,0,10,3" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" x:Name="AppText" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="{loc:Tr inject.f.publisher}" Opacity="0.55" FontSize="11" Margin="0,0,10,3" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" x:Name="PublisherText" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="{loc:Tr inject.f.signature}" Opacity="0.55" FontSize="11" Margin="0,0,10,3" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" x:Name="SignatureText" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="{loc:Tr inject.f.fieldid}" Opacity="0.55" FontSize="11" Margin="0,0,10,0" />
+                        <TextBlock Grid.Row="4" Grid.Column="1" x:Name="FieldIdText" FontSize="11" TextTrimming="CharacterEllipsis" />
+                    </Grid>
+
+                    <TextBlock x:Name="WarnText" Foreground="#FFE0A030" FontSize="11" TextWrapping="Wrap"
+                               Margin="0,8,0,0" Visibility="Collapsed" />
+
+                    <ui:Button x:Name="LocateBtn" Content="{loc:Tr inject.capture}"
+                               Appearance="Secondary" Margin="0,10,0,0" Click="OnLocateClick" />
+                </StackPanel>
+            </Border>
+
+            <!-- 专属密码 -->
+            <TextBlock Text="{loc:Tr inject.f.password}" Opacity="0.7" FontSize="12" Margin="0,14,0,4" />
+            <ui:PasswordBox x:Name="PasswordInput" PlaceholderText="{loc:Tr inject.f.password.ph}" />
+
+            <TextBlock x:Name="ErrText" Foreground="#FFE0645C" FontSize="12" TextWrapping="Wrap"
+                       Margin="0,10,0,0" Visibility="Collapsed" />
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+                <ui:Button x:Name="OkBtn" Content="{loc:Tr common.ok}" Appearance="Primary" MinWidth="88"
+                           Margin="0,0,8,0" Click="OnOkClick" />
+                <ui:Button x:Name="CancelBtn" Content="{loc:Tr common.cancel}" Appearance="Secondary" MinWidth="88"
+                           Click="OnCancelClick" />
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</ui:FluentWindow>
