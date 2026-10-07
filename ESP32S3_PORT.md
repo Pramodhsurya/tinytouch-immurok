@@ -2,6 +2,8 @@
 
 Target: retain all immurok app/feature capabilities on Seeed XIAO ESP32-S3 and ZW111, with USB data plus Bluetooth. This is the port target, not a claim of completed feature parity.
 
+See the [folder-by-folder source analysis](docs/esp32-folder-analysis.md) for component responsibilities, reuse decisions, protocol gaps and the first implementation stages.
+
 ## Repositories
 
 All components are included in this single repository, preserving their upstream histories and license files. `components.json` records their source commits and folder paths. The ESP32-S3 port branch is `codex/esp32s3-zw111`.

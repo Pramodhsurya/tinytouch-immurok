@@ -6,6 +6,8 @@ This fork consolidates the immurok firmware, OTA tools, hardware, Mac/Windows/Li
 
 Upstream documentation follows below and describes immurok hardware/features, not completed ESP32 parity. Each component retains its license.
 
+The [folder-by-folder ESP32 analysis](docs/esp32-folder-analysis.md) maps the apps, firmware, hardware and OTA tools to the port, including the compatibility changes required before reuse.
+
 ---
 
 # immurok
