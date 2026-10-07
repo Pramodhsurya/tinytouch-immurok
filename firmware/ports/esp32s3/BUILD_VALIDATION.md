@@ -27,17 +27,17 @@ Before upload, USB enumeration and the existing control protocol confirmed `tiny
 
 The existing private pre-Bluetooth USB recovery backup passed checksum and restricted-permission checks. It is not committed or distributed and is not a fresh backup of the current BLE bond state.
 
-**Upload staged successfully:** after two unsuccessful fingerprint AUTH attempts that wrote no image data, the visible Terminal retry passed the enrolled-finger gate, uploaded the complete image, and received `OK OTA STAGED` / update-ready confirmation. Activation still requires a power cycle and runtime check. Preserve enrollment, bonds and NVS; do not use reset/recovery firmware to bypass authorization.
+**Upload staged successfully:** after two unsuccessful fingerprint AUTH attempts that wrote no image data, the visible Terminal retry passed the enrolled-finger gate, uploaded the complete image, and received `OK OTA STAGED` / update-ready confirmation. After the user power-cycled and reconnected the board, runtime confirmed `esp32-baseline-1`, sensor `ready`, fingerprints `1`, hosts `1`, mode `hid`, OTA `idle`. USB `PING` returned `PONG 6`; BLE status confirmed connected/encrypted/keyboard/helper/ready all `1`. Live fingerprint verification is being checked separately. Preserve enrollment, bonds and NVS; do not use reset/recovery firmware to bypass authorization.
 
-A credited application image, manifest, checksums and ZIP bundle are uploaded as a **draft development release**: [ESP32 baseline 1](https://github.com/Pramodhsurya/tinytouch-immurok/releases/tag/untagged-72615b7f39d482ea9bc0). It remains a draft while device acceptance is pending.
+A credited application image, manifest, checksums and ZIP bundle are uploaded as a **draft development release**: [ESP32 baseline 1](https://github.com/Pramodhsurya/tinytouch-immurok/releases/tag/untagged-72615b7f39d482ea9bc0). It remains a draft while final sensor acceptance is pending.
 
 The update uses the existing application OTA path and preserves the partition layout. Current slots: NVS `0x9000/0x6000`, app0 `0x10000/0x100000`, app1 `0x110000/0x100000`, OTA metadata `0x210000/0x2000`, recovery data `0x212000/0x1000`. USB OTA stages the inactive app and changes the boot selection; it does not write a replacement partition table or NVS.
 
 ## Acceptance still required
 
-- Device reports `esp32-baseline-1` after activation and retains one enrolled finger and one host.
-- Sensor matching and USB control remain operational.
-- BLE pairing/reconnect and battery-powered Mac unlock repeat successfully.
+- Passed: device reports `esp32-baseline-1` after activation and retains one enrolled finger and one host.
+- Passed: sensor reports ready and USB control/PING work. Live enrolled-finger authentication test is pending.
+- Passed: BLE bond, encrypted reconnect and helper readiness. A new battery-powered Mac lock-screen unlock test remains pending.
 - Native immurok-derived Mac integration remains future work: this baseline still uses the tinyTouch protocol.
 
 ## Credits

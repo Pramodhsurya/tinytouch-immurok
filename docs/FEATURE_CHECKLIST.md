@@ -281,7 +281,7 @@ For every future checked item, append or link evidence here: implementation comm
 | ROOT-02 | [Folder analysis](esp32-folder-analysis.md), commit `7beb65c` | 2026-10-07 |
 | ROOT-03 | This document and pinned source inventory; IDs, duplicate names, order values and local links validated before publishing | 2026-10-07 |
 | FW-01 | [Build validation](../firmware/ports/esp32s3/BUILD_VALIDATION.md): clean baseline and fork-identity rebuild passed; 664,400-byte ESP32 image validated | 2026-10-07 |
-| FW-36 | Fingerprint-authorized visible-Terminal retry uploaded and verified the complete image; activation/device regression pending | 2026-10-07 |
+| FW-36 | Upload and activation passed; build esp32-baseline-1, one finger/host retained, USB PING and encrypted BLE/helper reconnect verified; live fingerprint test pending | 2026-10-07 |
 | FW-02 | `make` in `firmware/test`: all ten host executables passed; fake storage tests do not validate ESP32 flash/peripherals | 2026-10-07 |
 | BASE-01–BASE-05 | User-confirmed prototype measurements and operation from earlier setup; original helper/custom firmware, not the new native companion | Earlier setup; recorded 2026-10-07 |
 
