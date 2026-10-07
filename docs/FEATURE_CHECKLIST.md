@@ -157,6 +157,7 @@ Sources: [Mac README](https://github.com/immurok/app-macos/blob/main/README.md),
 | [ ] | Not started | MAC-27 | `packaging / Tests` | Bundle signing, CLI deployment, updates and native regression suite | P6 | Fresh install/upgrade/uninstall verified; tests pass against ESP32 integration |
 | [ ] | Not started | MAC-28 | `packaging / app-macos` | Deliver a standalone tinyTouch.app for this Mac, with its companion CLI and own application identity | P6 | App runs independently of development terminals; login launch, permissions and Keychain migration tested |
 | [ ] | Not started | MAC-29 | `Tests / device acceptance` | Complete the Mac release gate across all supported features, transports and negative cases | P6 | Every supported Mac feature has recorded automated or manual acceptance evidence; remaining hardware limitations explicit |
+| [x] | Completed | MAC-30 | `Package.swift / Tests` | Build imported Mac app/CLI and run existing host-side tests before ESP32 adaptation | P0 | Swift build and all existing test suites pass; does not imply device/native-app compatibility |
 
 ### app-win
 
@@ -280,6 +281,7 @@ For every future checked item, append or link evidence here: implementation comm
 | ROOT-01 | Combined repository remote verified; every removed component fork's branch heads were ancestors of combined history before deletion | 2026-10-07 |
 | ROOT-02 | [Folder analysis](esp32-folder-analysis.md), commit `7beb65c` | 2026-10-07 |
 | ROOT-03 | This document and pinned source inventory; IDs, duplicate names, order values and local links validated before publishing | 2026-10-07 |
+| MAC-30 | [Mac build/test baseline](MAC_BUILD_VALIDATION.md): app and CLI built; 97 existing tests passed with zero failures | 2026-10-07 |
 | FW-01 | [Build validation](../firmware/ports/esp32s3/BUILD_VALIDATION.md): clean baseline and fork-identity rebuild passed; 664,400-byte ESP32 image validated | 2026-10-07 |
 | FW-36 | Upload and activation passed; build esp32-baseline-1, one finger/host retained, USB PING and encrypted BLE/helper reconnect verified; live fingerprint test pending | 2026-10-07 |
 | FW-02 | `make` in `firmware/test`: all ten host executables passed; fake storage tests do not validate ESP32 flash/peripherals | 2026-10-07 |
