@@ -1,0 +1,276 @@
+#!/bin/bash
+#
+# immurok CH592F OTA Build Script (WCH 方式一)
+#
+# Usage:
+#   ./build-ota.sh                 # VER=6 release (default)
+#   ./build-ota.sh debug           # DEBUG=3, HAL_SLEEP=FALSE
+#   ./build-ota.sh release-debug   # DEBUG=3, HAL_SLEEP=TRUE
+#   ./build-ota.sh release         # no debug, HAL_SLEEP=TRUE
+#   ./build-ota.sh clean           # Clean all builds
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+JUMPAPP_DIR="$PROJECT_DIR/ota/jumpapp"
+APP_DIR="$PROJECT_DIR/firmware"
+IAP_DIR="$PROJECT_DIR/ota/iap"
+OUTPUT_DIR="$APP_DIR/build"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+echo_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
+echo_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+echo_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# Parse args
+HW_VER=""
+FW_VARIANT=""
+MODE=""
+for arg in "$@"; do
+    case "$arg" in
+        --ver=*) HW_VER="${arg#--ver=}" ;;
+        VER=*|ver=*) HW_VER="${arg#*=}" ;;
+        # Optional color variant: unset → "IK-1" (general SKU); W/B/G →
+        # "IK-1-W/B/G". See firmware/Profile/devinfoservice.c.
+        --variant=*) FW_VARIANT="${arg#--variant=}" ;;
+        VARIANT=*|variant=*) FW_VARIANT="${arg#*=}" ;;
+        *) MODE="$arg" ;;
+    esac
+done
+MODE="${MODE:-release}"
+HW_VER="${HW_VER:-6}"
+
+# Validate variant if set
+if [ -n "$FW_VARIANT" ]; then
+    case "$FW_VARIANT" in
+        W|B|G) ;;
+        *)
+            echo_error "Unknown variant '$FW_VARIANT' (expected W, B, or G)"
+            exit 1
+            ;;
+    esac
+fi
+
+case "$MODE" in
+    debug|release-debug|release|clean) ;;
+    *)
+        echo "Usage: $0 [VER=N] [debug|release-debug|release|clean]"
+        echo ""
+        echo "  VER=0           Hardware VER0 (original prototype)"
+        echo "  VER=1           Hardware VER1 (Rev.1 board)"
+        echo "  VER=2           Hardware VER2 (Rev.2 board, ZW3021)"
+        echo "  VER=3           Hardware VER3 (Rev.2 board + R599S module)"
+        echo "  VER=5           Hardware VER5 (Rev.3 board)"
+        echo "  VER=6           Hardware VER6 (Rev.3 + 防拆, default, latest)"
+        echo "  debug           DEBUG + no sleep"
+        echo "  release-debug   DEBUG + sleep (for diagnosing sleep issues)"
+        echo "  release         No debug, sleep enabled (production, default)"
+        echo "  clean           Clean all builds"
+        exit 1
+        ;;
+esac
+
+# Clean
+clean_all() {
+    echo_info "Cleaning all builds..."
+    (cd "$JUMPAPP_DIR" && make clean 2>/dev/null || true)
+    (cd "$APP_DIR" && make clean 2>/dev/null || true)
+    (cd "$IAP_DIR" && make clean 2>/dev/null || true)
+    echo_info "Clean complete"
+}
+
+if [ "$MODE" = "clean" ]; then
+    clean_all
+    exit 0
+fi
+
+# Read firmware version from version.h
+FW_VER_MAJOR=$(grep 'FW_VERSION_MAJOR ' "$APP_DIR/APP/include/version.h" | awk '{print $3}')
+FW_VER_MINOR=$(grep 'FW_VERSION_MINOR ' "$APP_DIR/APP/include/version.h" | awk '{print $3}')
+FW_VER_PATCH=$(grep 'FW_VERSION_PATCH ' "$APP_DIR/APP/include/version.h" | awk '{print $3}')
+# Anti-rollback SVN lives in version.h too (FW_SEC_VERSION). It used to be a
+# hard-coded `--sec-version 1` here, so every package since 1.6.0 shipped SVN 1
+# and the device floor never moved: an official 1.8.2 package installs over
+# 1.8.3 and reopens the fixed H1 gate bug (2026-09-20 review, N2). Read it from
+# the header and refuse to package without it.
+FW_SEC_VER=$(grep 'FW_SEC_VERSION ' "$APP_DIR/APP/include/version.h" | awk '{print $3}')
+if ! [[ "$FW_SEC_VER" =~ ^[0-9]+$ ]]; then
+    echo_error "cannot parse FW_SEC_VERSION from $APP_DIR/APP/include/version.h"
+    exit 1
+fi
+GIT_HASH=$(git -C "$PROJECT_DIR" rev-parse --short=4 HEAD 2>/dev/null || echo "0000")
+FW_VERSION="${FW_VER_MAJOR}.${FW_VER_MINOR}.${FW_VER_PATCH}.${GIT_HASH}"
+
+# Mode short suffix for dist/ filenames: release=r, debug=d, release-debug=rd
+case "$MODE" in
+    release)        MODE_SHORT="r" ;;
+    debug)          MODE_SHORT="d" ;;
+    release-debug)  MODE_SHORT="rd" ;;
+esac
+
+SKU_LABEL="${FW_VARIANT:-general}"
+echo -e "${CYAN}=== Building OTA firmware [${MODE}] HW=VER${HW_VER} SKU=${SKU_LABEL} FW=${FW_VERSION} ===${NC}"
+echo ""
+
+# Determine make flags for each component
+case "$MODE" in
+    debug)
+        APP_FLAGS="OTA=1 HW_VER=$HW_VER"
+        IAP_FLAGS="DEBUG=1"
+        ;;
+    release-debug)
+        APP_FLAGS="OTA=1 RELEASE_DEBUG=1 HW_VER=$HW_VER"
+        IAP_FLAGS="DEBUG=1"
+        ;;
+    release)
+        APP_FLAGS="OTA=1 RELEASE=1 HW_VER=$HW_VER"
+        IAP_FLAGS=""
+        ;;
+esac
+
+# Pass variant through (only when set, so default builds get unset FW_VARIANT)
+if [ -n "$FW_VARIANT" ]; then
+    APP_FLAGS="$APP_FLAGS FW_VARIANT=$FW_VARIANT"
+fi
+
+# Clean first
+clean_all
+echo ""
+
+# 1. Build JumpIAP
+echo_info "Building JumpIAP..."
+cd "$JUMPAPP_DIR"
+make
+
+size=$(stat -f%z "$JUMPAPP_DIR/build/immurok_JumpIAP.bin" 2>/dev/null || stat -c%s "$JUMPAPP_DIR/build/immurok_JumpIAP.bin" 2>/dev/null)
+if [ "$size" -gt 4096 ]; then
+    echo_error "JumpIAP too large: $size bytes (max 4096)"
+    exit 1
+fi
+echo_info "JumpIAP size: $size bytes"
+echo ""
+
+# 2. Build Application
+echo_info "Building Application (OTA, $MODE)..."
+cd "$APP_DIR"
+make $APP_FLAGS
+
+size=$(stat -f%z "$APP_DIR/build/immurok_CH592F.bin" 2>/dev/null || stat -c%s "$APP_DIR/build/immurok_CH592F.bin" 2>/dev/null)
+max_size=$((216 * 1024))
+if [ "$size" -gt $max_size ]; then
+    echo_error "Application too large: $size bytes (max $max_size)"
+    exit 1
+fi
+echo_info "Application size: $size bytes ($(( size / 1024 ))KB / 216KB)"
+echo ""
+
+# 3. Build IAP
+echo_info "Building IAP Bootloader..."
+cd "$IAP_DIR"
+make $IAP_FLAGS
+
+size=$(stat -f%z "$IAP_DIR/build/immurok_IAP.bin" 2>/dev/null || stat -c%s "$IAP_DIR/build/immurok_IAP.bin" 2>/dev/null)
+max_size=$((12 * 1024))
+if [ "$size" -gt $max_size ]; then
+    echo_error "IAP too large: $size bytes (max $max_size)"
+    exit 1
+fi
+echo_info "IAP size: $size bytes ($(( size / 1024 ))KB / 12KB)"
+echo ""
+
+# 4. Combine
+echo_info "Combining firmware..."
+mkdir -p "$OUTPUT_DIR"
+output="$OUTPUT_DIR/immurok_OTA_Combined.bin"
+
+dd if=/dev/zero of="$output" bs=1024 count=448 2>/dev/null
+dd if="$JUMPAPP_DIR/build/immurok_JumpIAP.bin" of="$output" bs=1 conv=notrunc 2>/dev/null
+dd if="$APP_DIR/build/immurok_CH592F.bin" of="$output" bs=1 seek=4096 conv=notrunc 2>/dev/null
+dd if="$IAP_DIR/build/immurok_IAP.bin" of="$output" bs=1 seek=446464 conv=notrunc 2>/dev/null
+
+objcopy="${TOOLCHAIN_PATH:-/opt/riscv-wch-gcc}/bin/riscv-wch-elf-objcopy"
+if [ -f "$objcopy" ]; then
+    "$objcopy" -I binary -O ihex "$output" "$OUTPUT_DIR/immurok_OTA_Combined.hex"
+fi
+
+# Save build mode for upload script
+echo "$MODE" > "$OUTPUT_DIR/.ota_build_mode"
+
+# 5. Package .imfw (encrypted + signed)
+PACKAGE_SCRIPT="$SCRIPT_DIR/ota-package.py"
+KEYS_FILE="$SCRIPT_DIR/ota_keys.py"
+APP_BIN="$APP_DIR/build/immurok_CH592F.bin"
+IMFW_OUTPUT="$OUTPUT_DIR/immurok_CH592F.imfw"
+
+if [ -f "$PACKAGE_SCRIPT" ] && [ -f "$KEYS_FILE" ]; then
+    # IMFW_FORMAT: v2 (ECDSA, default for 1.6.0+) or v1 (HMAC, only for the
+    # 1.6.0 bootstrap that <=1.5.x devices must accept). The v2 anti-rollback
+    # SVN comes from version.h (FW_SEC_VERSION); IMFW_SEC_VERSION overrides it
+    # only for special builds (e.g. re-packaging the 1.6.0 bridge).
+    SEC_VERSION="${IMFW_SEC_VERSION:-$FW_SEC_VER}"
+    echo_info "Packaging .imfw (format=${IMFW_FORMAT:-v2}, SVN=$SEC_VERSION, encrypted + signed)..."
+    python3 "$PACKAGE_SCRIPT" "$APP_BIN" -o "$IMFW_OUTPUT" \
+        --format "${IMFW_FORMAT:-v2}" --sec-version "$SEC_VERSION"
+    if [ $? -eq 0 ]; then
+        imfw_size=$(stat -f%z "$IMFW_OUTPUT" 2>/dev/null || stat -c%s "$IMFW_OUTPUT" 2>/dev/null)
+        echo_info ".imfw size: $imfw_size bytes ($(( imfw_size / 1024 ))KB)"
+
+        # Preserve outputs in firmware/dist/ across subsequent builds
+        # (which `make clean` -> rm -rf build/).
+        # Naming (variant-suffixed only when --variant= was passed):
+        #   fw-{ver}-{V}-{mode}.imfw   App-only encrypted+signed OTA package
+        #                              (push to fielded devices via BLE)
+        #   ota-{ver}-{V}-{mode}.bin   Full flash image, raw binary
+        #   ota-{ver}-{V}-{mode}.hex   Full flash image, Intel HEX
+        #                              (JumpIAP + App + IAP, factory wlink)
+        # General-SKU builds (no --variant): the {V} segment is omitted.
+        RELEASE_DIR="$APP_DIR/dist"
+        if [ -n "$FW_VARIANT" ]; then
+            FW_STEM="fw-${FW_VERSION}-${FW_VARIANT}-${MODE_SHORT}"
+            OTA_STEM="ota-${FW_VERSION}-${FW_VARIANT}-${MODE_SHORT}"
+        else
+            FW_STEM="fw-${FW_VERSION}-${MODE_SHORT}"
+            OTA_STEM="ota-${FW_VERSION}-${MODE_SHORT}"
+        fi
+        mkdir -p "$RELEASE_DIR"
+        cp "$IMFW_OUTPUT" "$RELEASE_DIR/${FW_STEM}.imfw"
+        cp "$output" "$RELEASE_DIR/${OTA_STEM}.bin" 2>/dev/null || true
+        if [ -f "$OUTPUT_DIR/immurok_OTA_Combined.hex" ]; then
+            cp "$OUTPUT_DIR/immurok_OTA_Combined.hex" \
+               "$RELEASE_DIR/${OTA_STEM}.hex"
+        fi
+        echo_info "Preserved: ${FW_STEM}.imfw + ${OTA_STEM}.{bin,hex}"
+    else
+        echo_warn ".imfw packaging failed (OTA keys may be missing)"
+    fi
+    echo ""
+else
+    echo_warn "Skipping .imfw packaging (missing ota-package.py or ota_keys.py)"
+    echo_warn "Run: python3 ota/generate_ota_keys.py"
+    echo ""
+fi
+
+echo -e "${CYAN}=== OTA Build Complete [${MODE}] FW=${FW_VERSION} ===${NC}"
+echo ""
+echo "Flash Layout (V1 - WCH 方式一):"
+echo "  0x00000000 - 0x00001000: JumpIAP (4KB)"
+echo "  0x00001000 - 0x00037000: Image A / App (216KB)"
+echo "  0x00037000 - 0x0006D000: Image B / OTA (216KB)"
+echo "  0x0006D000 - 0x00070000: IAP (12KB)"
+echo ""
+echo "Output files:"
+echo "  Combined:  $output"
+if [ -f "$IMFW_OUTPUT" ]; then
+echo "  OTA (.imfw): $IMFW_OUTPUT"
+fi
+echo ""
+echo "To flash: ota/upload-ota.sh"
+echo "To OTA:  python3 ota/ota-update.py $IMFW_OUTPUT"
