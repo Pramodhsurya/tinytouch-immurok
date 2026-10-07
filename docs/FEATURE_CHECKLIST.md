@@ -120,7 +120,7 @@ Sources: [Firmware README](https://github.com/immurok/firmware/blob/main/README.
 | [ ] | Not started | FW-33 | `APP indicators` | Pair/enroll/auth/error/low-battery/reset LED feedback | P8 | Board-specific indicators match documented states |
 | [ ] | Not started | FW-34 | `APP/tamper.c / factory_test.*` | Case-open response, persistent wipe marker and factory-test behavior | P8 | Requires added hardware; cleanup survives interrupted power and respects factory state |
 | [ ] | Not started | FW-35 | `tools/devtest / test` | Port device integration and regression suites to ESP32 | P6 | Read-only tests run routinely; reset/destructive tests isolated with recovery |
-| [ ] | In progress | FW-36 | `ports/esp32s3 / USB OTA` | Deploy and verify our baseline without erasing enrollment or host pairing | P0 | Enrolled-finger upload, activation, retained state, sensor and transport regression verified |
+| [x] | Completed | FW-36 | `ports/esp32s3 / USB OTA` | Deploy and verify our baseline without erasing enrollment or host pairing | P0 | Enrolled-finger upload, activation, retained state, sensor and transport regression verified |
 
 ### app-macos
 
@@ -283,7 +283,7 @@ For every future checked item, append or link evidence here: implementation comm
 | ROOT-03 | This document and pinned source inventory; IDs, duplicate names, order values and local links validated before publishing | 2026-10-07 |
 | MAC-30 | [Mac build/test baseline](MAC_BUILD_VALIDATION.md): app and CLI built; 97 existing tests passed with zero failures | 2026-10-07 |
 | FW-01 | [Build validation](../firmware/ports/esp32s3/BUILD_VALIDATION.md): clean baseline and fork-identity rebuild passed; 664,400-byte ESP32 image validated | 2026-10-07 |
-| FW-36 | Upload and activation passed; build esp32-baseline-1, one finger/host retained, USB PING and encrypted BLE/helper reconnect verified; live fingerprint test pending | 2026-10-07 |
+| FW-36 | Upload/activation, retained one finger/host, USB PING, encrypted BLE/helper reconnect and live fingerprint OK AUTH passed; Mac lock-screen retest remains separate | 2026-10-07 |
 | FW-02 | `make` in `firmware/test`: all ten host executables passed; fake storage tests do not validate ESP32 flash/peripherals | 2026-10-07 |
 | BASE-01–BASE-05 | User-confirmed prototype measurements and operation from earlier setup; original helper/custom firmware, not the new native companion | Earlier setup; recorded 2026-10-07 |
 
