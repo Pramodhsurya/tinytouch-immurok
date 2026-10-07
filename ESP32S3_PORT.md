@@ -4,6 +4,8 @@ Target: retain all immurok app/feature capabilities on Seeed XIAO ESP32-S3 and Z
 
 See the [folder-by-folder source analysis](docs/esp32-folder-analysis.md) for component responsibilities, reuse decisions, protocol gaps and the first implementation stages.
 
+The [feature parity checklist](docs/FEATURE_CHECKLIST.md) is the canonical completion tracker. Follow its implementation-order column and record acceptance evidence before checking an item off.
+
 ## Repositories
 
 All components are included in this single repository, preserving their upstream histories and license files. `components.json` records their source commits and folder paths. The ESP32-S3 port branch is `codex/esp32s3-zw111`.

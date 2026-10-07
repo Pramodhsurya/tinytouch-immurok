@@ -8,6 +8,8 @@ Upstream documentation follows below and describes immurok hardware/features, no
 
 The [folder-by-folder ESP32 analysis](docs/esp32-folder-analysis.md) maps the apps, firmware, hardware and OTA tools to the port, including the compatibility changes required before reuse.
 
+Track implementation in the [feature parity checklist](docs/FEATURE_CHECKLIST.md): one canonical entry per task, grouped by component, with implementation order and completion evidence.
+
 ---
 
 # immurok

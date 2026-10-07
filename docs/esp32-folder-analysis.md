@@ -2,6 +2,8 @@
 
 Reviewed 2026-10-07 against the consolidated source at `b5b448f`. Target: Seeed XIAO ESP32-S3, ZW111, USB data and Bluetooth, initially on this Mac. This is a source review and implementation plan, not completed feature parity or a security audit.
 
+Use the [feature parity checklist](FEATURE_CHECKLIST.md) for implementation order and evidence-backed completion tracking. Its [upstream inventory](upstream-feature-sources.json) also covers the website, organization profile and archived Linux implementation.
+
 ## The idea behind the system
 
 The sensor stores and matches fingerprint templates locally. Firmware controls enrollment, pairing, host selection, authenticated events, and access to device-held keys and secrets. A companion app receives those events and integrates with the operating system: screen unlock, privilege prompts, SSH, password managers, and command approval. The `imk` CLI is a client of that companion app; it is not a separate sensor driver.
@@ -101,7 +103,7 @@ The app normally reads a locally stored password and injects it through macOS AP
 | `ImmurokCredentialProvider` | Native C++ login integration | Reuse platform integration; validate in a recoverable Windows test environment |
 | `packaging`, `tools`, scripts, `docs` | Installer, build and deployment material | Adjust monorepo/release paths and tinyTouch identity |
 
-`ScreenUnlocker` checks the Credential Provider pipe's owner, process and session before supplying credentials; preserve those checks. The shared command enum does not expose every host-slot command present elsewhere. Upstream Windows describes an early preview, so copying its source does not establish complete feature parity. Compilation and login behavior must be verified on Windows.
+`ScreenUnlocker` checks the Credential Provider pipe's owner, process and session before supplying credentials; preserve those checks. Compare client commands with current firmware, rather than treating every stale symbol as a missing feature: slot PIN commands `0x3A`/`0x3B` were retired in favor of fingerprint plus button registration. Upstream Windows describes an early preview, so copying its source does not establish complete feature parity. Compilation and login behavior must be verified on Windows.
 
 ## 4. Linux app
 

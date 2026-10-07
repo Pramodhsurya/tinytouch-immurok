@@ -1,0 +1,83 @@
+{
+  "reviewed_on": "2026-10-07",
+  "method": "GitHub organization inventory, every root README when present, imported implementation and protocol docs; additional website articles and archived Linux source",
+  "repositories": [
+    {
+      "repo": "immurok",
+      "commit": "7595d79047ec7174bb527944199fcad6d8c496b3",
+      "archived": false,
+      "branch": "main",
+      "url": "https://github.com/immurok/immurok"
+    },
+    {
+      "repo": "firmware",
+      "commit": "be6ce984e68689c9cdf4d75355389692ecfd7a18",
+      "archived": false,
+      "branch": "main",
+      "url": "https://github.com/immurok/firmware"
+    },
+    {
+      "repo": "app-macos",
+      "commit": "1c8841e345b7ba2a2d64ca2831ebac6e5e7a654b",
+      "archived": false,
+      "branch": "main",
+      "url": "https://github.com/immurok/app-macos"
+    },
+    {
+      "repo": "app-win",
+      "commit": "e12880db3582b7bb02ca7426675451b08ce96225",
+      "archived": false,
+      "branch": "main",
+      "url": "https://github.com/immurok/app-win"
+    },
+    {
+      "repo": "app-linux-rs",
+      "commit": "1363e73b7c1d8eafa6e9532eca754e814072d7ef",
+      "archived": false,
+      "branch": "main",
+      "url": "https://github.com/immurok/app-linux-rs"
+    },
+    {
+      "repo": "ota",
+      "commit": "a0ef46ef6b178b082672484e2a9123a4f915b3d9",
+      "archived": false,
+      "branch": "main",
+      "url": "https://github.com/immurok/ota"
+    },
+    {
+      "repo": "hardware",
+      "commit": "84896a588262e302fa202020b771b1e055449fe3",
+      "archived": false,
+      "branch": "main",
+      "url": "https://github.com/immurok/hardware"
+    },
+    {
+      "repo": "imk-skill",
+      "commit": "388bdbd5bd0f16fb439ddbb4343f7f59477b8a96",
+      "archived": false,
+      "branch": "main",
+      "url": "https://github.com/immurok/imk-skill"
+    },
+    {
+      "repo": "website",
+      "commit": "ecc8842fd44667fe3e532e305f329e9e9e82e8bd",
+      "archived": false,
+      "branch": "main",
+      "url": "https://github.com/immurok/website"
+    },
+    {
+      "repo": ".github",
+      "commit": "cf6bd8022e0f57edf9d587696273f8eb7cb9c24f",
+      "archived": false,
+      "branch": "main",
+      "url": "https://github.com/immurok/.github"
+    },
+    {
+      "repo": "app-linux",
+      "commit": "ea756e8e22f01b11488ac48cc4d2ebef25bc697c",
+      "archived": true,
+      "branch": "main",
+      "url": "https://github.com/immurok/app-linux"
+    }
+  ]
+}
