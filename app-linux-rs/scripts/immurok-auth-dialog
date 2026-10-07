@@ -1,0 +1,242 @@
+#!/usr/bin/python3
+# Use system python explicitly: PyGObject (gi) ships with the distro's
+# python and venvs (.platformio etc.) typically don't have it. `env python3`
+# would resolve to whatever venv comes first in PATH and fail with
+# ModuleNotFoundError: gi.
+"""
+immurok fingerprint authentication dialog - launched by the daemon when it receives an AUTH or AGENT_APPROVE request
+
+Two modes:
+  Default (no arguments): generic PAM fingerprint dialog (triggered by passive AUTH
+  flows such as gdm-password / login / polkit-1), showing only "Touch fingerprint".
+  --agent --command STR [--timeout 30]: invoked proactively by imk run --agent;
+  shows the wrapped command pill plus a countdown progress bar so the user can
+  clearly understand the authorization scope.
+
+Exit semantics:
+  After authentication completes (fingerprint accepted / BLE failure / timeout),
+  the daemon sends SIGTERM to close the window (exit 0). If the user clicks
+  "Cancel" or closes the window, the dialog exits 1; when the daemon sees a
+  non-zero exit code, it treats the request as REJECT.
+"""
+
+import argparse
+import signal
+import sys
+import time
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, GLib, Gtk, Pango
+
+
+def _truncate(text: str, limit: int = 300) -> str:
+    """Normalize to one line and truncate overlong commands so the pill does not overflow the window"""
+    text = text.replace("\n", " ").replace("\r", " ").strip()
+    if len(text) > limit:
+        return text[:limit] + "…"
+    return text
+
+
+class AuthDialog(Adw.Application):
+    def __init__(self, *, agent_mode: bool, command: str, timeout: int) -> None:
+        super().__init__(application_id="com.immurok.auth-dialog")
+        self.agent_mode = agent_mode
+        self.command = command
+        self.timeout_total = max(1, timeout)
+        self._countdown_remaining = self.timeout_total
+        self._tick_source = None
+        self._t_start = 0.0
+        self._progress = None
+        self._count_label = None
+
+    def do_activate(self) -> None:
+        win = Adw.Window(application=self, title="immurok")
+        win.set_default_size(560 if self.agent_mode else 340, -1)
+        win.set_resizable(False)
+        win.connect("close-request", lambda _: self._on_cancel())
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        content.set_margin_top(28)
+        content.set_margin_bottom(12)
+        content.set_margin_start(28)
+        content.set_margin_end(28)
+        # FILL (not CENTER) so the agent-mode command card can use the full
+        # window width; icon/labels still render centered within it.
+        content.set_halign(Gtk.Align.FILL)
+
+        # Icon: use a key in agent mode, fingerprint in normal mode
+        icon_name = "dialog-password-symbolic" if self.agent_mode else "fingerprint-symbolic"
+        icon = Gtk.Image.new_from_icon_name(icon_name)
+        icon.set_pixel_size(56)
+        if self.agent_mode:
+            icon.add_css_class("accent")
+        else:
+            icon.add_css_class("dim-label")
+        content.append(icon)
+
+        # Title
+        title_text = "Agent authorization request" if self.agent_mode else "Fingerprint authentication"
+        title = Gtk.Label(label=title_text)
+        title.add_css_class("title-2")
+        content.append(title)
+
+        # Prompt text
+        body_text = (
+            "The agent is requesting permission to run a command. Touch fingerprint to approve:"
+            if self.agent_mode
+            else "Touch the fingerprint sensor to authenticate"
+        )
+        body = Gtk.Label(label=body_text)
+        body.add_css_class("body")
+        body.add_css_class("dim-label")
+        body.set_wrap(True)
+        body.set_max_width_chars(40)
+        content.append(body)
+
+        # In agent mode: command pill (card-styled box with monospace label).
+        # Wraps up to 5 lines so long commands stay readable; only past that
+        # does the last line ellipsize (on top of the 300-char hard truncate).
+        if self.agent_mode and self.command:
+            frame = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+            frame.add_css_class("card")
+            frame.set_halign(Gtk.Align.FILL)
+            frame.set_hexpand(True)
+
+            inner = Gtk.Label(label=_truncate(self.command))
+            inner.set_selectable(True)
+            inner.set_wrap(True)
+            inner.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            inner.set_lines(5)
+            inner.set_ellipsize(Pango.EllipsizeMode.END)
+            inner.set_max_width_chars(60)
+            inner.set_xalign(0.0)
+            inner.set_hexpand(True)
+            inner.add_css_class("monospace")
+            inner.set_margin_top(8)
+            inner.set_margin_bottom(8)
+            inner.set_margin_start(14)
+            inner.set_margin_end(14)
+            frame.append(inner)
+            content.append(frame)
+
+        # Spinner (always running)
+        spinner = Gtk.Spinner(spinning=True)
+        spinner.set_size_request(24, 24)
+        spinner.set_halign(Gtk.Align.CENTER)
+        spinner.set_margin_top(4)
+        content.append(spinner)
+
+        outer.append(content)
+
+        # Agent mode: countdown progress bar and number
+        if self.agent_mode:
+            count_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            count_box.set_margin_start(28)
+            count_box.set_margin_end(28)
+            count_box.set_margin_top(4)
+            count_box.set_margin_bottom(8)
+
+            self._progress = Gtk.ProgressBar()
+            self._progress.set_fraction(1.0)
+            self._progress.set_hexpand(True)
+            self._progress.set_valign(Gtk.Align.CENTER)
+            count_box.append(self._progress)
+
+            self._count_label = Gtk.Label(label=f"{self.timeout_total}s")
+            self._count_label.add_css_class("caption")
+            self._count_label.add_css_class("dim-label")
+            self._count_label.set_width_chars(4)
+            self._count_label.set_xalign(1.0)
+            count_box.append(self._count_label)
+
+            outer.append(count_box)
+
+            self._t_start = time.monotonic()
+            # Refresh every 250 ms: smooth progress bar, number changes by whole seconds
+            self._tick_source = GLib.timeout_add(250, self._on_tick)
+
+        outer.append(Gtk.Separator())
+
+        # Cancel button
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        btn_box.set_margin_top(12)
+        btn_box.set_margin_bottom(12)
+        btn_box.set_margin_start(12)
+        btn_box.set_margin_end(12)
+        btn_box.set_halign(Gtk.Align.END)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.add_css_class("pill")
+        if self.agent_mode:
+            cancel_btn.add_css_class("destructive-action")
+        cancel_btn.connect("clicked", lambda _: self._on_cancel())
+        btn_box.append(cancel_btn)
+
+        outer.append(btn_box)
+
+        win.set_content(outer)
+        win.present()
+
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self._on_term)
+
+    def _on_tick(self) -> bool:
+        elapsed = time.monotonic() - self._t_start
+        remaining = max(0.0, self.timeout_total - elapsed)
+        fraction = remaining / self.timeout_total
+        if self._progress is not None:
+            self._progress.set_fraction(fraction)
+        whole = int(remaining + 0.5)
+        if whole != self._countdown_remaining:
+            self._countdown_remaining = whole
+            if self._count_label is not None:
+                self._count_label.set_label(f"{whole}s")
+        if remaining <= 0:
+            # Progress reached zero; keep the window open until the daemon sends SIGTERM or the user cancels.
+            # Do not exit proactively, to avoid clock drift between the dialog and the daemon fingerprint gate
+            # causing the awkward case where the result window closes while the user is still touching the sensor.
+            return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_CONTINUE
+
+    def _on_cancel(self) -> bool:
+        if self._tick_source is not None:
+            GLib.source_remove(self._tick_source)
+            self._tick_source = None
+        self.quit()
+        sys.exit(1)
+
+    def _on_term(self) -> bool:
+        if self._tick_source is not None:
+            GLib.source_remove(self._tick_source)
+            self._tick_source = None
+        self.quit()
+        return GLib.SOURCE_REMOVE
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="immurok auth dialog")
+    p.add_argument("--agent", action="store_true",
+                   help="agent approval mode (show command + countdown)")
+    p.add_argument("--command", default="",
+                   help="wrapped command string (agent mode only)")
+    p.add_argument("--timeout", type=int, default=30,
+                   help="countdown seconds (default 30)")
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    app = AuthDialog(
+        agent_mode=args.agent,
+        command=args.command,
+        timeout=args.timeout,
+    )
+    app.run([])
+
+
+if __name__ == "__main__":
+    main()

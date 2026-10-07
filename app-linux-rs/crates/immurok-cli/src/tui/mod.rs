@@ -1,0 +1,327 @@
+//! TUI panel — interactive ratatui-based terminal UI.
+
+pub mod app;
+pub mod widgets;
+
+use std::io;
+use std::time::{Duration, Instant};
+
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use crossterm::ExecutableCommand;
+use ratatui::prelude::*;
+
+use app::{App, KeyTab, PamRequest, Tab, PAM_SERVICES};
+
+/// Run the TUI.
+pub fn run() -> io::Result<()> {
+    enable_raw_mode()?;
+    io::stdout().execute(EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut app = App::new();
+    // Paint the empty frame BEFORE the first refresh. refresh() is synchronous
+    // and can spend seconds inside BLE round-trips, and we have already
+    // switched to the alternate screen — so refreshing first leaves the user
+    // staring at a black terminal for as long as the device takes to answer.
+    terminal.draw(|f| widgets::draw(f, &app))?;
+    app.refresh();
+    app.spawn_fw_silent_check();
+
+    let tick_rate = Duration::from_millis(200);
+    let poll_interval = Duration::from_secs(2);
+    let mut last_poll = Instant::now();
+
+    let mut pam_request: Option<PamRequest> = None;
+
+    loop {
+        terminal.draw(|f| widgets::draw(f, &app))?;
+
+        if event::poll(tick_rate)? {
+            if let Event::Key(key) = event::read()? {
+                let fw_updating = app.fw_updating();
+                // Ctrl-C → quit (blocked during a firmware push)
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                    if fw_updating {
+                        app.set_msg("Firmware update in progress — please wait.", app::MessageStyle::Yellow);
+                        continue;
+                    }
+                    break;
+                }
+
+                match app.mode {
+                    app::Mode::Normal => match key.code {
+                        // ── Global keys ──────────────────────
+                        KeyCode::Char('q') => {
+                            if fw_updating {
+                                app.set_msg(
+                                    "Firmware update in progress — please wait.",
+                                    app::MessageStyle::Yellow,
+                                );
+                            } else {
+                                break;
+                            }
+                        }
+                        KeyCode::Char('?') => app.toggle_help(),
+                        KeyCode::Char('1') => app.set_tab(Tab::Dashboard),
+                        KeyCode::Char('2') => app.set_tab(Tab::Keys),
+                        KeyCode::Char('3') => app.set_tab(Tab::Pam),
+                        KeyCode::Char('4') => app.set_tab(Tab::Logs),
+                        KeyCode::Char('5') => app.fw_enter(),
+
+                        // ── Per-tab keys ─────────────────────
+                        code => match app.tab {
+                            Tab::Dashboard => match code {
+                                KeyCode::Char('p') => app.action_pair(),
+                                // Goes through Mode::HostConfirm, the same
+                                // y/n gate as `H` → `u` — it used to unpair
+                                // on this single keystroke.
+                                KeyCode::Char('u') => app.request_unpair_self(),
+                                // Enrolls into the lowest empty slot —
+                                // no manual slot picking.
+                                KeyCode::Char('e') | KeyCode::Char('E') => app.auto_enroll(),
+                                KeyCode::Char('d') => app.enter_delete_select(),
+                                KeyCode::Char('v') => app.action_verify(),
+                                KeyCode::Char('s') => app.action_toggle_sudo(),
+                                KeyCode::Char('o') => app.action_toggle_polkit(),
+                                KeyCode::Char('k') => app.action_toggle_screen(),
+                                KeyCode::Char('L') => app.action_toggle_lock(),
+                                KeyCode::Char('h') => app.action_toggle_ssh(),
+                                KeyCode::Char('i') => app.action_info(),
+                                KeyCode::Char('H') => app.enter_host_menu(),
+                                KeyCode::Char('U') => app.fw_enter(),
+                                KeyCode::Esc => {
+                                    // Cancel in-flight enrollment if any
+                                    if app.enroll_active {
+                                        app.action_enroll_cancel();
+                                    }
+                                }
+                                _ => {}
+                            },
+
+                            Tab::Keys => match code {
+                                KeyCode::Esc => app.set_tab(Tab::Dashboard),
+                                KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
+                                    app.keys_next_tab()
+                                }
+                                KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+                                    app.keys_set_tab(app.key_tab.prev())
+                                }
+                                KeyCode::Char('S') => app.keys_set_tab(KeyTab::Ssh),
+                                KeyCode::Char('O') => app.keys_set_tab(KeyTab::Otp),
+                                KeyCode::Char('A') => app.keys_set_tab(KeyTab::Api),
+                                KeyCode::Up | KeyCode::Char('k') => app.keys_cursor_up(),
+                                KeyCode::Down | KeyCode::Char('j') => app.keys_cursor_down(),
+                                KeyCode::Char('r') => {
+                                    app.refresh_keys();
+                                    app.set_msg_dim("Key cache reloaded.");
+                                }
+                                // `a` add (per-category flow); `g` kept as a
+                                // muscle-memory alias from the old SSH-only UI.
+                                KeyCode::Char('a') | KeyCode::Char('g') => app.enter_key_add(),
+                                KeyCode::Char('d') => app.enter_key_delete_confirm(),
+                                KeyCode::Char('o') => app.action_key_otp(),
+                                KeyCode::Char('c') => app.action_key_show_pubkey(),
+                                KeyCode::Char('s') => app.action_key_show_api(),
+                                _ => {}
+                            },
+
+                            Tab::Pam => match code {
+                                KeyCode::Esc => app.set_tab(Tab::Dashboard),
+                                KeyCode::Up | KeyCode::Char('k') => app.pam_cursor_up(),
+                                KeyCode::Down | KeyCode::Char('j') => app.pam_cursor_down(),
+                                KeyCode::Char('i') => {
+                                    if app.guard_paired() {
+                                        pam_request = app.request_pam_action(true);
+                                    }
+                                }
+                                KeyCode::Char('r') => {
+                                    if app.guard_paired() {
+                                        pam_request = app.request_pam_action(false);
+                                    }
+                                }
+                                KeyCode::Char('R') => {
+                                    if app.guard_paired() {
+                                        if let Some(req) = app.request_pam_repair() {
+                                            pam_request = Some(req);
+                                        } else {
+                                            app.set_msg(
+                                                "PAM already configured — nothing to repair.",
+                                                app::MessageStyle::Green,
+                                            );
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            },
+
+                            Tab::Logs => match code {
+                                KeyCode::Esc => app.set_tab(Tab::Dashboard),
+                                KeyCode::Up | KeyCode::Char('k') => app.log_scroll_up(),
+                                KeyCode::Down | KeyCode::Char('j') => app.log_scroll_down(),
+                                KeyCode::PageUp => app.log_page_up(),
+                                KeyCode::PageDown => app.log_page_down(),
+                                KeyCode::Home => app.log_jump_top(),
+                                KeyCode::End => app.log_jump_bottom(),
+                                _ => {}
+                            },
+
+                            Tab::Firmware => match code {
+                                KeyCode::Esc => {
+                                    if !fw_updating {
+                                        app.set_tab(Tab::Dashboard);
+                                    }
+                                }
+                                KeyCode::Char('r') => app.fw_recheck(),
+                                KeyCode::Enter => app.fw_start_update(),
+                                _ => {}
+                            },
+                        },
+                    },
+
+                    app::Mode::Help => match key.code {
+                        KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                            app.toggle_help();
+                        }
+                        _ => {}
+                    },
+
+                    app::Mode::DeleteSelect => match key.code {
+                        KeyCode::Esc => app.cancel_select(),
+                        KeyCode::Char(c) if c.is_ascii_digit() => {
+                            let slot = c as u8 - b'0';
+                            if slot <= immurok_common::protocol::SWITCH_FINGER_SLOT {
+                                app.action_delete(slot);
+                            }
+                        }
+                        _ => {}
+                    },
+
+                    app::Mode::EnrollKindSelect => match key.code {
+                        KeyCode::Esc => app.cancel_enroll_kind(),
+                        KeyCode::Char(c) => app.enroll_kind_pick(c),
+                        _ => {}
+                    },
+
+                    app::Mode::KeyInput => match key.code {
+                        KeyCode::Esc => app.input_cancel(),
+                        KeyCode::Enter => app.input_submit_key(),
+                        KeyCode::Backspace => app.input_pop_char(),
+                        KeyCode::Char(c) => app.input_push_char(c),
+                        _ => {}
+                    },
+
+                    app::Mode::KeyDeleteConfirm => match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                            app.confirm_key_delete();
+                        }
+                        KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                            app.cancel_key_delete();
+                        }
+                        _ => {}
+                    },
+
+                    app::Mode::HostMenu => match key.code {
+                        KeyCode::Esc => app.cancel_host_action(),
+                        KeyCode::Char(c) => app.host_menu_pick(c),
+                        _ => {}
+                    },
+
+                    // Deliberately does NOT accept Enter (unlike
+                    // KeyDeleteConfirm above) — the heaviest item reachable
+                    // from here wipes every SSH private key on the device,
+                    // which exists nowhere else, so it requires an explicit y.
+                    app::Mode::HostConfirm => match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => app.confirm_host_action(),
+                        KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                            app.cancel_host_action()
+                        }
+                        _ => {}
+                    },
+                }
+            }
+        }
+
+        // Run a PAM action if requested (needs to leave alt-screen for pkexec)
+        if let Some(req) = pam_request.take() {
+            disable_raw_mode()?;
+            io::stdout().execute(LeaveAlternateScreen)?;
+            let ok = run_pam_helper(req.action, &req.services);
+            enable_raw_mode()?;
+            io::stdout().execute(EnterAlternateScreen)?;
+            terminal.clear()?;
+            app.after_pam_action(&req, ok);
+            app.refresh();
+        }
+
+        let needs_refresh = app.drain_actions();
+        if needs_refresh || (last_poll.elapsed() >= poll_interval && !app.busy) {
+            app.refresh();
+            last_poll = Instant::now();
+        }
+    }
+
+    // Cancel any in-progress enrollment before exit
+    if app.busy {
+        let _ = super::socket_client::DaemonClient::connect()
+            .and_then(|mut c| c.send("FP:ENROLL_CANCEL"));
+    }
+
+    // Reap journalctl child (if Logs panel was open).
+    app.shutdown();
+
+    disable_raw_mode()?;
+    io::stdout().execute(LeaveAlternateScreen)?;
+
+    Ok(())
+}
+
+/// Run the PAM helper via pkexec for one or more services. Returns true on success.
+fn run_pam_helper(action: &str, services: &[&str]) -> bool {
+    use immurok_client::pam::{find_helper, run_helper, PamError};
+    let Some(helper) = find_helper() else {
+        eprintln!("Error: immurok-pam-helper not found in PATH or next to this binary.");
+        return false;
+    };
+    let svc_list = services.join(" ");
+    println!("Running: pkexec {} {} {}", helper.display(), action, svc_list);
+    let verb = if action == "add" { "install" } else { "remove" };
+    match run_helper(action, services) {
+        Ok(report) => {
+            for l in &report.lines {
+                println!("{l}");
+            }
+            println!("\x1b[32mPAM {} for '{}' succeeded.\x1b[0m", verb, svc_list);
+            true
+        }
+        Err(PamError::HelperFailed { code, lines }) => {
+            for l in &lines {
+                println!("{l}");
+            }
+            if code == 0 {
+                eprintln!("\x1b[31mPAM {} for '{}' failed (see ERROR lines above).\x1b[0m", verb, svc_list);
+            } else {
+                eprintln!("\x1b[31mPAM helper failed (exit code: {})\x1b[0m", code);
+            }
+            false
+        }
+        Err(PamError::AuthCancelled) => {
+            eprintln!("\x1b[31mPAM helper failed (exit code: 126)\x1b[0m");
+            false
+        }
+        Err(PamError::NoPolkitAgent) => {
+            eprintln!("\x1b[31mPAM helper failed (exit code: 127)\x1b[0m");
+            false
+        }
+        Err(e) => {
+            eprintln!("Failed to run pkexec: {}", e);
+            false
+        }
+    }
+}
+
+// Silence unused-import warning if PAM_SERVICES isn't referenced here.
+const _: usize = PAM_SERVICES.len();
