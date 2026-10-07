@@ -1,0 +1,107 @@
+name: Release
+
+# Cut a release by pushing a tag:  git tag v1.2.3 && git push origin v1.2.3
+on:
+  push:
+    tags:
+      - 'v*'
+  # Manual dry-run (builds + signs + notarizes, but you pick the version).
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g. 1.2.3)'
+        required: true
+
+permissions:
+  contents: write          # needed to create the GitHub Release
+
+jobs:
+  build:
+    # macos-26 (Tahoe) carries Xcode 26 / Swift 6.3, matching the local dev
+    # toolchain. Older images (macos-14 = Xcode 15/16, Swift 6.0) over-eagerly
+    # reject `Task { @MainActor in self?… }` nested in a [weak self] closure
+    # ("reference to captured var 'self' in concurrently-executing code") that
+    # Swift 6.2+ compiles cleanly.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Toolchain versions
+        run: swift --version && xcodebuild -version
+
+      - name: Derive version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"   # v1.2.3 -> 1.2.3
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Building version $V"
+
+      - name: Import signing certificates
+        env:
+          DEVID_APP_CERT_P12_BASE64: ${{ secrets.DEVID_APP_CERT_P12_BASE64 }}
+          DEVID_APP_CERT_PASSWORD: ${{ secrets.DEVID_APP_CERT_PASSWORD }}
+          DEVID_INSTALLER_CERT_P12_BASE64: ${{ secrets.DEVID_INSTALLER_CERT_P12_BASE64 }}
+          DEVID_INSTALLER_CERT_PASSWORD: ${{ secrets.DEVID_INSTALLER_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          echo "$DEVID_APP_CERT_P12_BASE64" | base64 -d > "$RUNNER_TEMP/app.p12"
+          security import "$RUNNER_TEMP/app.p12" -k "$KEYCHAIN" \
+            -P "$DEVID_APP_CERT_PASSWORD" -T /usr/bin/codesign
+
+          echo "$DEVID_INSTALLER_CERT_P12_BASE64" | base64 -d > "$RUNNER_TEMP/installer.p12"
+          security import "$RUNNER_TEMP/installer.p12" -k "$KEYCHAIN" \
+            -P "$DEVID_INSTALLER_CERT_PASSWORD" -T /usr/bin/productbuild -T /usr/bin/productsign
+
+          # Allow codesign/productsign to use the keys without an interactive prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # Put our keychain first in the search list so the identities resolve.
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          rm -f "$RUNNER_TEMP/app.p12" "$RUNNER_TEMP/installer.p12"
+
+      - name: Write App Store Connect API key
+        env:
+          AC_API_KEY_P8_BASE64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
+        run: |
+          echo "$AC_API_KEY_P8_BASE64" | base64 -d > "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Build, sign, notarize pkg
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+        run: |
+          export AC_API_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          chmod +x packaging/build-pkg.sh
+          packaging/build-pkg.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: immurok-pkg
+          path: dist/*.pkg
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*.pkg
+          generate_release_notes: true
+          # Tags with a SemVer pre-release suffix (e.g. v1.20.0-beta.1) publish
+          # as a GitHub pre-release; clean tags (v1.20.0) publish as a full release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
