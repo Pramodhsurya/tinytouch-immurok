@@ -1,0 +1,7401 @@
+
+/********************************** (C) COPYRIGHT *******************************
+ * File Name          : hidkbd.c
+ * Author             : WCH
+ * Version            : V1.0
+ * Date               : 2018/12/10
+ * Description        : ��������Ӧ�ó��򣬳�ʼ���㲥���Ӳ�����Ȼ��㲥��ֱ�����������󣬶�ʱ�ϴ���ֵ
+ *********************************************************************************
+ * Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
+ * Attention: This software (modified or not) and binary are used for 
+ * microcontroller manufactured by Nanjing Qinheng Microelectronics.
+ *******************************************************************************/
+
+/*********************************************************************
+ * INCLUDES
+ */
+#include "CONFIG.h"
+#include "devinfoservice.h"
+#include "battservice.h"
+#include "hidkbdservice.h"
+#include "hiddev.h"
+#include "hidkbd.h"
+#include "immurokservice.h"
+#include "fingerprint.h"
+#include "immurok_security.h"
+#include "immurok_slots.h"
+#include "immurok_tick.h"
+#include "fp_policy.h"
+#include "pair_policy.h"
+#include "immurok_scratch.h"
+#include "immurok_keystore.h"
+#include "slot_meta.h"
+#include "immurok_snv.h"
+#include "immurok_log.h"
+#include "otaprofile.h"
+#include "ota.h"
+#include "../LIB/uECC.h"
+#include "hardware_pins.h"
+#include "version.h"
+#if HAS_TAMPER_DETECT
+#include "tamper.h"
+#include "factory_test.h"
+#endif
+#include "qc_test.h"
+
+/* 「广播保持关闭」判定：开盖保持（VER6 防拆）或 QC 已收尾（绿/红灯保持态）。
+ * 曾经只包在 #if HAS_FACTORY_TEST 里 —— VER5 没有防拆，HAS_FACTORY_TEST=0，
+ * g_qc_finished 的门被整个编译掉：QC 收尾 HidEmu_QcBleOff 之后 GAPROLE_WAITING
+ * 会无条件重开广播，设备绿灯闪着却还在发 BLE。QC 门必须独立于防拆存在。 */
+#if HAS_FACTORY_TEST
+#define ADV_HOLD_OFF()  (g_factory_case_open || g_qc_finished)
+#elif HAS_QC_TEST
+#define ADV_HOLD_OFF()  (g_qc_finished)
+#else
+#define ADV_HOLD_OFF()  0
+#endif
+#if HAS_VBAT_ADC
+#include "CH59x_adc.h"
+#endif
+
+/*********************************************************************
+ * MACROS
+ */
+// HID keyboard input report length
+#define HID_KEYBOARD_IN_RPT_LEN              8
+
+// HID LED output report length
+#define HID_LED_OUT_RPT_LEN                  1
+
+/*********************************************************************
+ * CONSTANTS
+ */
+// Initial delay after connection before the first param update request.
+// Phase 1 asks only for extended supervision timeout (latency=0), which macOS
+// accepts even during service discovery — 1s lets the link settle first.
+#define START_PARAM_UPDATE_EVT_DELAY         1600
+
+// Phase 1 retry (latency=0, timeout extension only) — 5s. macOS rarely
+// rejects this form of request, so retry quickly if it's ignored.
+#define PARAM_UPDATE_PHASE1_RETRY            8000
+
+// Phase 2 retry (full params with slave latency) — 30s. macOS rejects high
+// latency during early service discovery; long retry avoids spamming.
+#define PARAM_UPDATE_RETRY_DELAY             48000
+
+// Param update delay
+#define START_PHY_UPDATE_DELAY               1600
+
+// HID idle timeout in msec; set to zero to disable timeout
+#define DEFAULT_HID_IDLE_TIMEOUT             60000
+
+// DEFAULT_DESIRED_* (the params we request) and LONG_OP_* / PARAM_OK_*
+// (the thresholds we judge the granted params against) all live in hidkbd.h —
+// hiddev.c's param negotiation callback needs the same values and the two
+// files must not drift apart.
+
+// Default passcode
+#define DEFAULT_PASSCODE                     0
+
+// Default GAP pairing mode
+#define DEFAULT_PAIRING_MODE                 GAPBOND_PAIRING_MODE_WAIT_FOR_REQ
+
+// Default MITM mode (TRUE to require passcode or OOB when pairing)
+#define DEFAULT_MITM_MODE                    FALSE
+
+// Default bonding mode, TRUE to bond
+#define DEFAULT_BONDING_MODE                 TRUE
+
+// Default GAP bonding I/O capabilities
+#define DEFAULT_IO_CAPABILITIES              GAPBOND_IO_CAP_NO_INPUT_NO_OUTPUT
+
+// Battery level is critical when it is less than this %
+#define DEFAULT_BATT_CRITICAL_LEVEL          6
+
+// Pin definitions from hardware_pins.h: PIN_BTN, PIN_TOUCH
+
+// Button scan interval (in 625us units, 160 = 100ms)
+#define BUTTON_SCAN_INTERVAL    160
+
+// Fingerprint power off delay (in 625us units)
+// 500ms: idle-watchdog fallback. The state machine actively extends this
+// timer on every iteration (FP_SEARCH_EVT, FP_AUTH_EVT, etc.) and powers off
+// explicitly on finger lift, so this only fires when no other path will.
+#define FP_POWER_OFF_DELAY        800     // 500ms (was 10s warm-hold)
+// 25s watchdog when a gate command is pending but FP is NOT preheated.
+// Cleared by FP_POWER_OFF_EVT if user never touches; matches App's 30s timeout.
+#define FP_GATE_PENDING_TIMEOUT  40000    // 25s gate-pending watchdog
+// 10s OTA inactivity timeout. When s_ota_active is set, FP_POWER_OFF_EVT is
+// repurposed as the OTA watchdog (FP itself is off during OTA, so the FP
+// idle path is unused). Each OTA cmd refreshes the timer; firing without a
+// cmd for 10s aborts OTA mode and restores the device to idle state. Covers
+// the ota-update.py Ctrl+C case: client disconnects mid-OTA, daemon never
+// sends an abort, BLE link stays up — without this the device would blink
+// fast-blue forever until BLE supervision actually drops.
+#define OTA_IDLE_TIMEOUT_TICKS   16000    // 10s
+
+// Advertising interval (units of 0.625ms)
+#define ADV_FAST_INT             160    // 100ms - fast reconnection after disconnect
+
+// FAST → DEEP_SLEEP delay: 60s in 0.625ms units = 60000 / 0.625 = 96000
+#define SLOW_ADV_DELAY           96000
+
+// Advertising phase state machine (two-stage since 1.8.2: the 500ms SLOW
+// phase that used to sit between FAST and DEEP_SLEEP for 60min is gone —
+// after 60s of fast advertising the radio goes straight off).
+#define ADV_PHASE_OFF         0   // Not advertising (connected / unconfigured)
+#define ADV_PHASE_FAST        1   // 100ms ADV, 60s, LED 0.5s/0.5s
+#define ADV_PHASE_DEEP_SLEEP  2   // no ADV, LED off — BTN/TOUCH wakes back to FAST
+#define ADV_PHASE_LOW_BATT    3   // 低电深睡：无广播、LED 全关，BTN/TOUCH 唤醒后只测
+                                  // 电量（够则恢复、不够回睡），ANTI_OPEN 仍能唤醒擦除。
+                                  // 用户设计 2026-09-20：尽量延长掉电时间，保住防拆能力。
+
+// 低电模式阈值（占位，待真机实测「指纹模块 30mA 尖峰把电压拉到多低」后定死）。
+// 进 8% / 退 12%，滞回防抖。进入后砍广播/LED/周期维护，靠触摸或按键主动唤醒
+// 测电量恢复，不做周期充电检测。
+#define LOW_BATT_ENTER_PCT    8    // 进入低电深睡：电量 <=8%（约 3420mV VBAT）
+#define LOW_BATT_EXIT_PCT     12   // 退出低电（滞回）：电量 >=12%（约 3520mV VBAT）
+
+/*********************************************************************
+ * TYPEDEFS
+ */
+
+/*********************************************************************
+ * GLOBAL VARIABLES
+ */
+
+// Task ID (non-static: main loop checks GPIO flags and fires events)
+uint8_t hidEmuTaskId = INVALID_TASK_ID;
+
+// Fingerprint enrollment state
+static uint8_t s_enroll_active = 0;
+static uint16_t s_enroll_page_id = 0;   // User finger ID (0 to FP_USER_MAX-1)
+static uint8_t s_enroll_step = 0;       // 0=init, 1=get_image, 2=gen_char, 3=wait_lift, 4=merge, 5=store
+static uint8_t s_enroll_substate = 0;   // 0=send command, 1=poll response
+static uint32_t s_enroll_substate_start = 0;
+static uint32_t s_enroll_start = 0;     // Timeout tracking
+static uint8_t s_enroll_capture = 0;    // Current capture count (0 to FP_ENROLL_CAPTURES-1)
+static uint8_t s_enroll_overlap_retries = 0;  // (mode 1) consecutive 0x28 overlap rejects for current slice
+// Set when ENROLL_START was unlocked by an FP gate verify (existing finger
+// re-enroll). The verify finger is guaranteed still on the sensor when the
+// enroll state machine starts, so step 0 must wait for a lift before capture
+// 1 — relying on the flaky post-search 0x29 probe (50ms) instead would let a
+// timeout misdetect "no finger" and silently capture the held verify finger
+// as slice 1 (no green-blink wait shown, and slice 2 then overlaps → red).
+static uint8_t s_enroll_from_gate = 0;
+
+static uint8_t s_gate_preheat = 0;        // FP gate preheat: module powered, waiting for touch
+static uint8_t s_gate_fail_count = 0;      // FP match failure count in current gate session
+#define FP_GATE_MAX_RETRIES  3             // Max fingerprint attempts before gate failure
+// Firmware-side defense-in-depth: even with sensor ScoreLevel=5 (set in
+// fp_init), require MatchScore above this floor before trusting an ack=0x00
+// from SEARCH. R559S returns scores in roughly 0..400 range; a legitimate
+// match at level 5 typically scores 200+, a thin-feature false accept on a
+// short tap scores ~50-100. Bumped 100→150 after a user report (2026-05-19)
+// of false-accept passing the 100 floor on the lock-screen path while
+// gate-mode rejected the same finger — strongly suggests ScoreLevel write
+// silently failed on that boot and the chip stayed at default 3, where
+// false-match scores can land in 100-150 range. fp_set_score_level now also
+// verifies the write; the bumped MIN_SCORE is belt-and-suspenders.
+#define FP_MIN_MATCH_SCORE   150
+static uint32_t s_fp_power_on_tick = 0;  // RTC tick when fp_power_on() called
+
+// Factory reset: deferred bond erase + system reset (after OK response sent)
+static uint8_t s_factory_reset_pending = 0;
+
+// Set when the short-button-press touch-reset path should follow up with a
+// battery measurement once the FP module finishes powering off. Battery ADC
+// reads are more accurate after VBAT-MCU has settled (FP off), so we defer
+// rather than measure inline with the press.
+static uint8_t s_pending_batt_check = 0;
+
+// Use PSAutoIdentify (0x32) for single-command fingerprint search.
+// Comment out to use manual 3-step search (GET_IMAGE+GEN_CHAR+SEARCH).
+// #define FP_USE_AUTO_IDENTIFY
+
+// Fingerprint search state machine
+static uint8_t s_search_active = 0;
+// WAIT_LIFT debounce: count consecutive GET_IMAGE ack=0x02 ("no finger")
+// before declaring lift. R599S can briefly report 0x02 mid-press while the
+// sensor's image-capture circuit re-arms — acting on a single 0x02 fires
+// fp_power_off while the finger is still on, leaving DETECT latched.
+// 2 consecutive (~40ms apart) is enough to filter the spurious blip.
+#define FP_WAIT_LIFT_CONFIRM_NEEDED  2
+static uint8_t s_lift_confirm = 0;
+// WAIT_LIFT (case 3) was originally only entered after a successful match,
+// where the user typically lifts within a second or two. The 1.4.5 change
+// reuses it for no-match (so the user sees a persistent red LED while the
+// long-press lock window counts down, and a quick lift before 1s cancels
+// the lock). Long unregistered holds (10s+) on the same path were the
+// 1.4.0 fix's "100% reproducible" DETECT-latch failure mode — to keep
+// that mitigated, this flag triggers an early bail to fp_async_off_start
+// once the lock window has comfortably passed.
+static uint8_t s_wait_lift_no_match = 0;
+#define FP_WAIT_LIFT_NOMATCH_SOFT_TMO_MS  2000
+// Async substate for manual 3-step search: 0=need-send, 1=awaiting-response.
+// Each case of the state machine issues its UART command in substate 0 and
+// polls the ring-buffer parser in substate 1. Reset on state transition.
+static uint8_t  s_search_substate = 0;
+static uint32_t s_search_substate_start = 0;
+// Poll interval while awaiting an FP response (625us units; 8 = 5ms).
+// Short enough to catch short responses promptly, long enough that the main
+// loop yields repeatedly to TMOS/BLE.
+#define FP_SEARCH_POLL_TICKS        8
+
+// Per-state response timeouts (ms). These must match the REAL R599S latency,
+// not the nominal values in the old `fp_recv_ack(..., X)` calls. The old
+// busy-polling loop's `timeout_ms * 6000` iterations plus periodic
+// TMOS_SystemProcess() stretched every advertised wait to 3-6× its nominal
+// value, which is how the old code gave R599S enough time. Our tick-based
+// timeout is precise wall-clock, so sizes must be chosen empirically:
+//   GET_IMAGE  — first cold-wake ack seen at ~286ms on c0c574e
+//   GEN_CHAR   — feature extraction on R599S, measured at 300-500ms
+//   SEARCH     — library scan over ≤5 templates, 100-300ms
+// Single long poll; do NOT re-send on timeout (resending resets the sensor).
+#define FP_STATE_GET_IMAGE_TMO_MS   400
+#define FP_STATE_GEN_CHAR_TMO_MS    600
+#define FP_STATE_SEARCH_TMO_MS      500
+// WAIT_LIFT polls GET_IMAGE looking for ack=0x02 (no finger). On a fresh
+// sensor 20ms is plenty; but after extended polling with finger held, the
+// R599S response time creeps up — we've seen it miss a 20ms window. Each
+// missed window triggers a re-send whose uart_flush() wipes any in-flight
+// ack bytes, so the loop never converges. 200ms gives the sensor enough
+// slack while still keeping lift-to-power-off latency under a quarter
+// second in the common case.
+#define FP_STATE_WAIT_LIFT_TMO_MS   200
+
+// Enrollment uses the same non-blocking UART parser as fingerprint search.
+// Do not call fp_recv_ack() from FP_ENROLL_EVT: it pumps TMOS_SystemProcess()
+// while already inside a TMOS event, and repeated enroll captures can overflow
+// the tiny CH592F stack / trip WWDG.
+#define FP_ENROLL_POLL_TICKS        FP_SEARCH_POLL_TICKS
+#define FP_ENROLL_GET_IMAGE_TMO_MS  400
+#define FP_ENROLL_GEN_CHAR_TMO_MS   1000
+#define FP_ENROLL_WAIT_LIFT_TMO_MS  300
+#define FP_ENROLL_REG_MODEL_TMO_MS  1000
+#define FP_ENROLL_STORE_TMO_MS      1000
+#ifndef FP_USE_AUTO_IDENTIFY
+// Manual 3-step: each state does send+recv in one call to avoid UART FIFO overflow
+static uint8_t s_search_state = 0;   // 0=GET_IMAGE, 1=GEN_CHAR, 2=SEARCH
+#endif
+static uint32_t s_search_start_time = 0;
+static uint8_t s_wait_finger_lift = 0;  // Block new search until finger lifted
+// Long-press lock: 1 between TOUCH rising edge and either LOCK_HOLD_EVT firing
+// or the user lifting before 2s elapse. Cleared by the LED task's lock
+// handler (after the notify or the touch-released no-op) and on disconnect.
+static uint8_t s_lock_pending = 0;
+
+// Async PS_Sleep retry state (driven by FP_SLEEP_RETRY_EVT in LED task).
+static uint32_t s_sleep_retry_start_tick = 0;
+static uint32_t s_sleep_retry_send_tick  = 0;
+// 0 = need send (fresh CMD_SLEEP with flush)
+// 1 = polling parser (re-send every 1s)
+// 2 = post power-cycle, waiting for sensor 0x55 ready
+static uint8_t  s_sleep_retry_substate   = 0;
+static uint8_t  s_sleep_retry_active     = 0;
+static uint8_t  s_sleep_retry_send_count = 0;  // sends in current power cycle
+static uint8_t  s_sleep_retry_cycle_count = 0; // power cycles so far
+static uint32_t s_sleep_retry_cycle_tick = 0;  // tick when current cycle started
+
+// Overall search budget. Single attempt worst case is GET_IMAGE(400) +
+// GEN_CHAR(600) + SEARCH(500) = 1500ms, so a 2000ms budget leaves room for
+// one retry or a slow sensor variant.
+#define FP_SEARCH_TIMEOUT_MS    2000
+
+// Fingerprint notify retry state (HID wake + ACK mechanism)
+static uint8_t s_fp_notify_pending = 0;     // Has pending notification awaiting ACK
+static uint32_t s_fp_notify_start_time = 0; // Start time for 15s timeout
+static uint8_t s_fp_notify_data[64];        // Cached notification data (0x21 + page_id + pwd)
+static uint8_t s_fp_notify_len = 0;         // Length of cached data
+
+// Fingerprint-gated write state machine
+static uint8_t s_pending_cmd = 0;           // Pending command waiting for FP verification
+static uint8_t s_pending_payload[64];       // Cached payload for pending command
+static uint8_t s_pending_payload_len = 0;   // Length of cached payload
+static uint32_t s_pending_cmd_start = 0;    // TMOS tick when gate started
+// Deferred delete: separate from s_pending_cmd to avoid race with concurrent FP match
+static uint8_t s_deferred_delete_id = 0xFF; // 0xFF = no deferred delete
+#define FP_GATE_TIMEOUT_MS  25000           // 25s overall gate timeout (App has 30s)
+// FP gate cooldown is split by command category so that one type of recent
+// FP verify doesn't unintentionally free up a different sensitive operation.
+//   AUTH:     AUTH_REQUEST (PAM/sudo) — must NOT ride a keystore cooldown
+//   KEYSTORE: KEY_READ/WRITE/DELETE/COMMIT/SIGN/GEN/OTP_GET — bulk ops
+//   ADMIN:    ENROLL_START/DELETE_FP/FACTORY_RESET — privileged FP mgmt
+typedef enum { FP_CAT_AUTH = 0, FP_CAT_KEYSTORE = 1, FP_CAT_ADMIN = 2 } fp_gate_cat_t;
+static uint32_t s_fp_gate_last[3] = {0, 0, 0};
+#define FP_GATE_COOLDOWN_MS 10000           // 10s idle timeout — rolling, refreshed on each pass
+static fp_gate_cat_t fp_gate_cat_for_cmd(uint8_t cmd);  // forward decl (used at FP pass-through)
+
+#if DEBUG
+/* M12（2026-09-19 审计）栈水位探针，只在 DEBUG / release-debug 构建里存在。
+ *
+ * -fstack-usage：immurok_keystore_totp 256 + sha1_final 112 + sha1_update 48
+ * + sha1_transform 384 = 800B，只这一段就超过 512B 主栈，还没算 GATT 回调之上
+ * BLE 库自己的帧。现在靠 work_buf（.stack_guard）吸收溢出才没炸。
+ *
+ * RAM 布局（高→低）：.stack 512B | 80B 空隙 | immurok_keystore_work_buf 4096B。
+ * 调用前把「当前 sp 以下、直到 work_buf 顶部往下 1KB」整段刷成 0xA5，调用后
+ * 从低处向上找第一个被改写的字节，就是这次调用的最深 sp。此刻命令串行、
+ * 没有 keystore 块操作在飞，work_buf 顶部是空闲的。
+ *
+ * 确认方法：release-debug 固件 + USB CDC 控制台（/dev/cu.usbmodem*），
+ * `imk get imk://otp/<name>` 一次，看 "STACK[otp]" 那行：max depth > 512
+ * 即已溢出主栈，> 592 即已写进 work_buf。 */
+extern uint32_t _eusrstack;
+extern uint32_t _susrstack;
+#define STACK_PROBE_GUARD_BYTES 1024
+static uint8_t *s_stack_probe_lo;
+static uint8_t  s_stack_probe_painted;
+static void stack_probe_begin(void)
+{
+    uint8_t *sp;
+    __asm__ volatile("mv %0, sp" : "=r"(sp));
+    s_stack_probe_lo = immurok_keystore_work_buf + sizeof(immurok_keystore_work_buf)
+                       - STACK_PROBE_GUARD_BYTES;
+    s_stack_probe_painted = (sp - 32 > s_stack_probe_lo);
+    if(s_stack_probe_painted)
+        memset(s_stack_probe_lo, 0xA5, (size_t)((sp - 32) - s_stack_probe_lo));
+    PRINT("STACK probe: entry depth %u\n", (unsigned)((uint8_t *)&_eusrstack - sp));
+}
+static void stack_probe_report(const char *tag)
+{
+    if(!s_stack_probe_painted) {
+        // 进入时 sp 已经低于涂色区起点（work_buf 顶部往下 1KB）：本身就是
+        // 灾难性溢出，读数没有意义，直接说明。
+        PRINT("STACK[%s]: OVERFLOW-AT-ENTRY (sp already below probe window)\n", tag);
+        return;
+    }
+    uint8_t *p   = s_stack_probe_lo;
+    uint8_t *top = (uint8_t *)&_eusrstack;
+    while(p < top && *p == 0xA5) p++;
+    unsigned gap = (unsigned)((uint8_t *)&_susrstack
+                              - (immurok_keystore_work_buf + sizeof(immurok_keystore_work_buf)));
+    PRINT("STACK[%s]: max depth %u (stack 512 + gap %u; beyond that is work_buf)\n",
+          tag, (unsigned)(top - p), gap);
+}
+#define STACK_PROBE_BEGIN()      stack_probe_begin()
+#define STACK_PROBE_REPORT(tag)  stack_probe_report(tag)
+#else
+#define STACK_PROBE_BEGIN()      do {} while(0)
+#define STACK_PROBE_REPORT(tag)  do {} while(0)
+#endif
+
+
+// Cached fingerprint bitmap (updated at init/enroll/delete, used by GET_STATUS)
+// Extern: set from main.c after fp_init, avoids blocking in GATT callback
+uint16_t g_cached_fp_bitmap = 0;
+
+// Convert raw physical bitmap to user-visible bitmap
+// Single-slot: bitmap bit = finger enrolled
+static uint16_t fp_user_bitmap(void)
+{
+    return g_cached_fp_bitmap & ((1 << FP_USER_MAX) - 1);
+}
+
+// Apply BLE bond-manager pairing mode based on whether the device is already
+// claimed (has a stored ECDH shared_key). Once claimed, refuse new BLE bond
+// requests so a thief who carries the device away from host A can't bond it
+// to host B. Combined with GATT_PERMIT_ENCRYPT_WRITE on the immurok command
+// + OTA characteristics, only the originally bonded peer (with stored LTK)
+// can drive the device — a fresh BLE central can't write commands at all.
+//
+// Called: once from init (after immurok_security_init), and from
+// EEPROM_SAVE_EVT after PAIR_CONFIRM saves the new shared_key. After
+// FACTORY_RESET we reboot, so init re-applies the (now-unpaired) state.
+/* 把 SNV 里的 bond 主记录逐条打出来（地址、类型、标志、待删标记、序号）。
+ * 2026-09-05 真机：Linux 对端 own 解绑时 ERASE_SINGLEBOND 后 bond_count 2->2，
+ * 公有地址也擦不掉；要看记录里到底存了什么才能定位。只在有日志的构建里有用。 */
+static void bond_dump(const char *tag)
+{
+    gapBondRec_t rec;
+    uint8_t i;
+    for(i = 0; i < BLE_SNV_NUM; i++) {
+        if(tmos_snv_read(mainRecordNvID(i), sizeof(rec), &rec) != SUCCESS) {
+            PRINT("b%d %s: -\n", i, tag);
+            continue;
+        }
+        PRINT("b%d %s: t%d %02X%02X%02X%02X%02X%02X f=%X d=%d s=%u\n",
+              i, tag, rec.publicAddrType,
+              rec.publicAddr[5], rec.publicAddr[4], rec.publicAddr[3],
+              rec.publicAddr[2], rec.publicAddr[1], rec.publicAddr[0],
+              rec.stateFlags, rec.bondsToDelete, (unsigned)rec.bondSeq);
+    }
+}
+
+/* 按 (类型, 地址) 精确擦一条 SNV bond，返回 bond 数是否真的减了。
+ * 三个调用点（own 解绑 / other 解绑 / 空槽回收）共用。
+ *
+ * 2026-09-05 真机：记录里的地址就是链路地址（Mac/Linux 都是公有地址、
+ * 类型 0），参数一字不差却 2->2、bondsToDelete 也不变，BOND_UPDATE 也
+ * 无效。库里有 GAPBondMgr_LinkTerm / ResolveAddr，与 TI 同源：对端**正
+ * 连着**时只做标记，链路终止事件里才真删。own 解绑原来擦完 50ms 就复位，
+ * 终止事件从没被处理 → bond 永远留着。所以 own 路径必须：擦 → 主动断链
+ * → 等 TMOS 处理完终止 → 再复位（见 FP_POWER_OFF_EVT 里的两段式）。 */
+static bool bond_erase_peer(uint8_t type, const uint8_t *addr, const char *tag)
+{
+    uint8_t eb[7];
+    uint8_t bcBefore = 0, bcAfter = 0;
+    eb[0] = type;
+    tmos_memcpy(&eb[1], addr, 6);
+    GAPBondMgr_GetParameter(GAPBOND_BOND_COUNT, &bcBefore);
+    GAPBondMgr_SetParameter(GAPBOND_ERASE_SINGLEBOND, sizeof(eb), eb);
+    GAPBondMgr_GetParameter(GAPBOND_BOND_COUNT, &bcAfter);
+    PRINT("%s: bonds %d->%d\n", tag, bcBefore, bcAfter);
+    return bcAfter < bcBefore;
+}
+
+/* 空槽收到新连接时回收该槽上一位对端残留的 SNV bond。
+ *
+ * 场景：主机 B 在槽 2 只做了 BLE bond、没做 app 配对就走了。SLOT_STATUS
+ * 只报 app 配对，app 两边都看不见这条 bond，也没有入口能清它；SNV 却已
+ * 被 A + B 占满。之后新主机 C 来槽 2 bond：ERASE_AUTO 已关（见 init），
+ * 第三条会直接失败——C 永远配不上。一个槽只该有一条合法 bond，所以
+ * 空槽来了不同对端、且 SNV 已满，就按 slot_meta 记的旧对端精确擦掉。
+ *
+ * 只在 SNV 满时动手，把误伤面压到最小：B 在 BLE bond 与 app 配对之间
+ * RPA 轮换重连（bond 数 2、地址变了）会被当作「不同对端」擦掉自己的
+ * bond——若 SDK 能按 IRK 解析 RPA，B 重新 bond 一次即可（槽仍是
+ * WAIT_FOR_REQ）；若不能，擦除是空操作，与改前一样。两种情况都不碰
+ * 另一台主机的记录。
+ *
+ * 必须在 slot_meta_set_peer() 之前调用——它会把旧地址覆盖掉。 */
+static void reclaim_stale_slot_bond(uint8_t slot, uint8_t newType,
+                                    const uint8_t *newAddr)
+{
+    uint8_t oldType, oldAddr[6];
+    if(immurok_security_slot_occupied(slot)) return;          /* 已配对槽不动 */
+    if(slot_meta_get_peer(slot, &oldType, oldAddr) != 0) return; /* 无记录 */
+    if(oldType == newType && tmos_memcmp(oldAddr, newAddr, 6)) return; /* 同一对端 */
+
+    uint8_t bc = 0;
+    GAPBondMgr_GetParameter(GAPBOND_BOND_COUNT, &bc);
+    if(bc < BLE_SNV_NUM) return;                               /* 还有位子，不必回收 */
+
+    bond_erase_peer(oldType, oldAddr, "reclaim");
+}
+
+static void apply_ble_pairing_mode(void)
+{
+    /* 按**活动槽**决定，不是按整机。
+     *
+     * 已配对的槽拒绝新 bond（防盗贼把设备另配到自己机器上）；空槽放行，
+     * 因为第二台主机必须先能 bond 才谈得上后面的 ECDH。要让设备停在空槽
+     * 本身就得按切换指纹，那已经是一道生物特征门，真正的授权在 PAIR_INIT
+     * 的指纹 + 按键两道门上。
+     *
+     * 曾经这里是「整机已配对 && PIN 窗口没开 → NO_PAIRING」。PIN 链路
+     * 2026-08-03 移除后改成现在这样。 */
+    uint8_t mode = immurok_security_active_slot_paired()
+        ? GAPBOND_PAIRING_MODE_NO_PAIRING
+        : GAPBOND_PAIRING_MODE_WAIT_FOR_REQ;
+    GAPBondMgr_SetParameter(GAPBOND_PERI_PAIRING_MODE, sizeof(uint8_t), &mode);
+    PRINT("BLE pairing mode: %s\n",
+          mode == GAPBOND_PAIRING_MODE_NO_PAIRING ? "NO_PAIRING" : "WAIT_FOR_REQ");
+}
+
+// GPIO interrupt flags (set in ISR, consumed in TMOS event loop)
+volatile uint8_t g_touch_irq_flag = 0;
+volatile uint8_t g_btn_irq_flag = 0;
+#if HAS_TAMPER_DETECT
+volatile uint8_t g_tamper_irq_flag = 0;
+#endif
+
+// BLE connection state (set/cleared in GAP state callback)
+static uint8_t s_ble_connected = 0;
+
+// M9：对端地址在链路加密后才落盘 0x6300。连接建立时先暂存到这里，
+// PEER_RECORD_EVT 轮询 linkDB，加密了才写（合法主机有 LTK 会加密；
+// 陌生连接不加密，超时即丢弃，永不写 flash → 不磨损、不覆盖合法地址）。
+static uint8_t  s_peer_pending = 0;
+static uint8_t  s_peer_retries = 0;
+static uint8_t  s_peer_type = 0;
+static uint8_t  s_peer_addr[6];
+#define PEER_RECORD_FIRST_DELAY  800   // 500ms（625us ticks）：等首次加密
+#define PEER_RECORD_POLL         800   // 500ms 轮询一次
+#define PEER_RECORD_MAX_RETRIES  16    // ~8s 未加密即判定非合法主机，丢弃
+extern uint8_t linkDB_State(uint16_t connectionHandle, uint8_t state);
+// App/daemon GATT subscription state (set by first GATT cmd, cleared on CCCD disable / disconnect)
+static uint8_t s_app_connected = 0;
+// Touch-reset: power cycle FP module just to send sleep and reset touch GPIO
+static uint8_t s_touch_reset = 0;
+// Touch-reset 内部重试次数。fp_power_off() 返回 slept=false 表示 R599S 没进
+// wake-on-touch standby —— 恢复流程本身失败了，直接放手就等于把传感器留在
+// 死状态（触摸中断不再触发）。重试一次完整的 power-cycle + PS_Sleep。
+static uint8_t s_touch_reset_retry = 0;
+#define FP_TOUCH_RESET_MAX_RETRY 2
+
+// PAIR_INIT received, waiting for the user to physically press the button to
+// confirm. ECDH key generation does NOT start until the button is pressed or
+// a 30s timeout fires (whichever comes first). Set by the GATT handler,
+// cleared by the button handler / timeout / disconnect / factory reset.
+static uint8_t s_pair_wait_button = 0;
+
+// 按键当前按住（BUTTON_SCAN_EVT 每次扫描直接镜像 GPIO 电平）。长按计时
+// （1s 黄灯警告 → 3s 出厂重置）期间指纹触摸必须整体屏蔽：触摸认证分支
+// 会用绿/蓝/红把黄/红警告灯盖掉，还可能顺带发解锁通知——两者都不该发生。
+static uint8_t s_btn_hold_active = 0;
+
+// Advertising phase tracking
+static uint8_t s_adv_phase = ADV_PHASE_OFF;
+
+// OTA IAP state
+static OTA_IAP_CMD_t s_ota_iap_data;
+static uint32_t s_ota_erase_addr = 0;
+static uint32_t s_ota_erase_blocks = 0;
+static uint32_t s_ota_erase_count = 0;
+static uint8_t s_ota_verify_status = 0;
+uint8_t s_ota_active = 0;  // OTA mode: suppress all non-OTA functionality (non-static: extern'd by hiddev.c)
+static uint8_t s_ota_reboot_pending = 0;  // Deferred reboot after OTA verification
+static volatile uint8_t s_ota_verify_pending = 0;  // Deferred ECDSA verify (heavy → runs in OTA_FLASH_ERASE_EVT, not the GATT callback)
+static volatile uint8_t s_ota_verifying = 0;       // Set during the ~1-2s verify; gates re-entrant OTA cmds from the keepalive pump
+
+// OTA secure context (for encrypted .imfw upgrades)
+#include "ota_keys.h"
+static ota_secure_ctx_t s_ota_sec = {0};
+
+// uECC keepalive during the OTA ECDSA verify. Pumps the BLE link layer via
+// TMOS_SystemProcess() (reentrancy-guarded, same pattern as keystore's kick).
+// s_ota_verifying gates OTA_IAP_DataDeal so a re-entrant OTA command dispatched
+// by the pump cannot corrupt the non-reentrant sha256 / uECC static state.
+extern void uECC_set_watchdog_cb(void (*cb)(void));
+// uECC keepalive during the OTA ECDSA verify: feed the WDT ONLY. Do NOT pump
+// TMOS_SystemProcess() from inside uECC_verify — that nests an event dispatch
+// on top of uECC_verify's deep call frame and overflows the 512B stack
+// (observed: device resets mid-verify, before ECDSA completes; IAP then boots
+// the old image). No link keep-alive is needed here anyway: the device reboots
+// right after a successful verify.
+//
+// This applies to uECC_verify ONLY. The pairing/keystore path deliberately
+// does pump TMOS from its callback (keystore_watchdog_kick) and that is what
+// keeps the link up through ECDH — measured on VER=6/1.6.2: make_key 1783ms
+// and shared_secret 1918ms both completed with the link alive at a 2000ms
+// supervision timeout. uECC_verify's double-scalar loop simply runs deeper.
+static void ota_verify_watchdog_kick(void)
+{
+    WWDG_SetCounter(0);
+}
+
+// Reverse 32 bytes in place. uECC is built with NATIVE_LITTLE_ENDIAN=1 (Makefile)
+// so it reads keys/hash/signature as little-endian, but the .imfw stores them
+// big-endian (standard; how the signer/python produces them). Byte-reverse each
+// 32-byte field before uECC_verify — same LE bridge as keystore sign (hash_le).
+static void ota_rev32(uint8_t *b)
+{
+    for(int k = 0; k < 16; k++) { uint8_t t = b[k]; b[k] = b[31 - k]; b[31 - k] = t; }
+}
+
+// Read the persisted monotonic SVN floor from DataFlash. Returns 0 when the
+// page is uninitialized (erased / wrong magic) — i.e. accept any SVN >= 0 and
+// let the first install establish the floor.
+static uint16_t ota_svn_floor_read(void)
+{
+    uint32_t v[2] __attribute__((aligned(4))) = {0, 0};
+    uint32_t saved = __risc_v_disable_irq();   // EEPROM_READ fault-into-IAP guard
+    EEPROM_READ(OTA_SVN_FLOOR_ADDR, v, sizeof(v));
+    __risc_v_enable_irq(saved);
+    if(v[0] != OTA_SVN_FLOOR_MAGIC)
+        return 0;
+    return (uint16_t)v[1];
+}
+
+// Advance the SVN floor to `svn` if it is higher. Own 256B page-erase, so the
+// OTA ImageFlag (0x6000) and tamper flag (0x6F00) in the same block are
+// untouched. Monotonic: never lowers the floor.
+static void ota_svn_floor_bump(uint16_t svn)
+{
+    if(svn <= ota_svn_floor_read())
+        return;
+    uint32_t v[2] __attribute__((aligned(4))) = { OTA_SVN_FLOOR_MAGIC, svn };
+    WWDG_SetCounter(0);
+    EEPROM_ERASE(OTA_SVN_FLOOR_ADDR, EEPROM_PAGE_SIZE);
+    EEPROM_WRITE(OTA_SVN_FLOOR_ADDR, v, sizeof(v));
+}
+
+/*********************************************************************
+ * RGB LED Indicator (VER2 board)
+ */
+#if HAS_RGB_LED
+static uint8_t s_led_task_id;
+
+/* s_led_task_id EVENT BIT ALLOCATION — keep this table in sync.
+ *
+ * This task's event space is SEPARATE from hidEmuTaskId's (hidkbd.h), so the
+ * same numeric value in both is fine. What is NOT fine is two events sharing a
+ * bit within this task: LED_ProcessEvent tests bits in source order and each
+ * handler consumes its bit with `return events ^ ...`, so the later handler
+ * simply never runs. PAIR_BTN_TIMEOUT_EVT sat on LED_ACCESS_OFF_EVT's 0x0020
+ * that way until 1.6.3 and was dead the whole time.
+ *
+ *   0x0001  LED_BLINK_EVT
+ *   0x0002  LED_OFF_EVT
+ *   0x0004  LOCK_HOLD_EVT
+ *   0x0008  FP_SLEEP_RETRY_EVT
+ *   0x0010  EEPROM_SAVE_EVT
+ *   0x0020  LED_ACCESS_OFF_EVT
+ *   0x0040  KEYSTORE_COMMIT_EVT
+ *   0x0080  PARAM_NOTIFY_EVT
+ *   0x0100  PAIR_BTN_TIMEOUT_EVT
+ *   0x0200..0x4000 free   (0x8000 reserved by SYS_EVENT_MSG)
+ */
+#define LED_BLINK_EVT       0x0001
+#define LED_OFF_EVT         0x0002
+#define CASE_OPEN_POLL_EVT  0x0200   // factory hold: poll ANTI_OPEN for case closed
+#define CASE_OPEN_POLL_TICKS 320     // 200ms
+// LOCK_HOLD_EVT: scheduled on TOUCH rising edge; fires LOCK_HOLD_TICKS later.
+// If touch is still active and the timer wasn't cancelled, sends a long-press
+// lock notification to the App. Independent of the FP search state machine —
+// match success and lock request can both fire in the same press cycle.
+//
+// 1s timer (not 2s): BLE slave latency = 20 × interval up to 60ms means the
+// notification queues for up to ~1200ms after GATT_Notification before macOS
+// actually receives it. Total user-perceived "press → lock" lands at ~2s.
+#define LOCK_HOLD_EVT       0x0004
+#define LOCK_HOLD_TICKS     1600    // 1s @ 625us/tick
+// EEPROM_SAVE_EVT: deferred ECDH pairing data save. EEPROM_READ called
+// inline immediately after pair_compute_secret crashes the chip — see
+// immurok_security_pair_save_pending. Scheduled by the EXEC handler 200ms
+// after sending the PAIR_CONFIRM response.
+#define EEPROM_SAVE_EVT     0x0010
+// KEYSTORE_COMMIT_EVT: deferred SSH keystore commit after KEY_GENERATE.
+// Same hazard as EEPROM_SAVE_EVT — calling EEPROM_ERASE/WRITE inline right
+// after uECC_make_key on the same call stack faults into the IAP bootloader,
+// causing a silent reboot and a BLE supervision timeout (~6s). The EXEC
+// handler stages the new entry and schedules this event 200ms later; this
+// handler does the flash commit + sends the response in a fresh TMOS context.
+#define KEYSTORE_COMMIT_EVT 0x0040
+// PAIR_BTN_TIMEOUT_EVT: 30s window after PAIR_INIT for the user to physically
+// press the device button to confirm pairing. Started in the PAIR_INIT GATT
+// handler, cleared on button press / long-press cancel / disconnect.
+//
+// Was 0x0020 until 1.6.3 — the same bit as LED_ACCESS_OFF_EVT, on the same
+// task. LED_ProcessEvent tests LED_ACCESS_OFF_EVT first and consumes the bit,
+// so this handler was unreachable: the 30s timeout never fired, the white
+// pairing blink never stopped, s_pair_wait_button was never cleared and the
+// [0x34,0x00] timeout notification was never sent (the App's 45s outer
+// timeout masked it). A bulk keystore read during a pairing wait also
+// cancelled the pairing timeout, and vice versa.
+#define PAIR_BTN_TIMEOUT_EVT    0x0100
+#define PAIR_BTN_TIMEOUT_TICKS  48000   // 30s @ 625us/tick
+
+// PARAM_NOTIFY_EVT: re-report the current connection params to the App shortly
+// after it enables notifications.
+//
+// Connection params are negotiated in the first ~2s after link establishment,
+// but the daemon typically subscribes tens of seconds later (36s in one
+// measured trace). Every 0xF0 param notification emitted before that is
+// dropped with "TX DROPPED: CCC notify not enabled", so the App log never
+// contains the params that were actually negotiated — precisely the data
+// needed to diagnose a central that imposes its own. Replaying the cached
+// values once on subscribe closes that hole with no protocol change; the App
+// already parses 0xF0.
+//
+// Deferred via TMOS rather than sent inline from the CCC write callback, so
+// the notification is not injected in the middle of the ATT transaction that
+// enabled it.
+#define PARAM_NOTIFY_EVT        0x0080
+#define PARAM_NOTIFY_DELAY      160     // 100ms @ 625us/tick
+
+// FP_SLEEP_RETRY_EVT: async PS_Sleep + VCC-cut state machine.
+//
+// Design notes — there are two race-prone scenarios when the finger is still
+// on the sensor at WAIT_LIFT timeout:
+//   (1) sensor takes >150ms to ack PS_Sleep — the ack arrives between our
+//       attempts, so each retry's uart_flush() wipes it before we see it.
+//   (2) sensor refuses PS_Sleep while finger is on; we need to re-send
+//       AFTER the user lifts so the sensor processes it from a fresh state.
+// Both fail with a "send once, poll forever" model: (1) needs to not flush,
+// (2) needs to re-send. So: first send uses flush (clear stale WAIT_LIFT
+// bytes), subsequent re-sends every 1s use fp_send_cmd_noflush so any late
+// ack from an earlier send still wins. Polls every 50ms. 5-min cap is a
+// safety net for a truly broken sensor.
+#define FP_SLEEP_RETRY_EVT          0x0008
+// LED_ACCESS_OFF_EVT: deferred yellow-LED off for the keystore-read access
+// indicator. Each qualifying GATT cmd (KEY_COUNT/READ/GETPUB/RESULT) drives
+// R+G high inline AND restarts this task with ~100ms delay. Subsequent
+// commands within the window keep restarting it, so during a batch read
+// the LED stays continuously on; the trailing 100ms after the last
+// response is what makes a single command visible.
+#define LED_ACCESS_OFF_EVT          0x0020
+#define LED_ACCESS_HOLD_TICKS       800   // 500ms (× 625µs) — bridges multi-chunk KEY_RESULT BLE round-trips so a single batch reads as one solid yellow rather than two flickers
+#define FP_SLEEP_POLL_TICKS         80      // 50ms parser poll
+#define FP_SLEEP_RESEND_MS          1000    // re-send PS_Sleep every 1s (no flush)
+// Hardware reset escalation: after this many sends in a single power cycle
+// without ack, power-cycle the sensor (VCC off → on → wait ready → retry).
+// The user-observed pattern was 2 retries → sensor still stuck → eventual
+// 5-min hard cap with unsafe VCC cut. With 3 sends per cycle (initial +
+// 2 re-sends ≈ 2s) and 3 cycles, recovery typically lands within ~7s.
+#define FP_SLEEP_SENDS_PER_CYCLE    3
+#define FP_SLEEP_MAX_CYCLES         3
+#define FP_SLEEP_POWER_READY_TMO_MS 300     // wait for 0x55 after fp_power_on
+#define FP_SLEEP_RETRY_TOTAL_MS     300000  // 5min — broken-sensor escape hatch
+#define LED_BLINK_TICKS     800     // 500ms (default on & off)
+#define LED_FLASH_TICKS     320     // 200ms
+#define LED_SOLID_2S_TICKS  3200    // 2s
+
+// Advertising phase LED patterns (on/off in 625us units)
+// FAST: LED_BLINK_TICKS (0.5s/0.5s); DEEP_SLEEP: LED fully off, no constants needed
+// FAST uses default LED_BLINK_TICKS (500ms / 500ms) via led_blink_start()
+
+static uint8_t s_led_color = 0;   // 'R', 'G', 'B', or 0
+static uint8_t s_led_blink = 0;
+static uint8_t s_led_toggle = 0;
+static uint16_t s_led_on_ticks = LED_BLINK_TICKS;   // on duration
+static uint16_t s_led_off_ticks = LED_BLINK_TICKS;  // off duration
+// Busy flag: set during ECC/ECDH computation to reject concurrent commands.
+// Defined here (not with other long-op state below) because the LED task's
+// KEYSTORE_COMMIT_EVT handler clears it after the deferred flash commit.
+static volatile uint8_t s_long_op_busy = 0;
+
+// FP search/auth visual indicator: green normally, yellow (R+G) when battery
+// is below LOW_BATT_PCT — gives the user a visible "charge me" hint on every
+// touch without changing the success (blue) / failure (red) outcomes.
+#define FP_LOW_BATT_PCT 15
+static uint8_t fp_indicator_color(void)
+{
+#if HAS_VBAT_ADC
+    uint8_t lvl = 100;
+    Batt_GetParameter(BATT_PARAM_LEVEL, &lvl);
+    return (lvl < FP_LOW_BATT_PCT) ? 'Y' : 'G';
+#else
+    return 'G';
+#endif
+}
+
+static void led_all_off(void)
+{
+    LED_RED_Off(); LED_GREEN_Off(); LED_BLUE_Off();
+}
+
+static void led_on(uint8_t c)
+{
+    led_all_off();
+    if(c == 'R') LED_RED_On();
+    else if(c == 'G') LED_GREEN_On();
+    else if(c == 'B') LED_BLUE_On();
+    else if(c == 'Y') { LED_RED_On(); LED_GREEN_On(); }
+    else if(c == 'W') { LED_RED_On(); LED_GREEN_On(); LED_BLUE_On(); }
+}
+
+static void led_stop(void)
+{
+    tmos_stop_task(s_led_task_id, LED_BLINK_EVT);
+    tmos_stop_task(s_led_task_id, LED_OFF_EVT);
+    led_all_off();
+    s_led_blink = 0;
+    s_led_color = 0;
+}
+
+// Solid on; auto-off after `ticks` (0 = stay on until next led_* call)
+static void led_solid(uint8_t c, uint16_t ticks)
+{
+    led_stop();
+    s_led_color = c;
+    led_on(c);
+    if(ticks) tmos_start_task(s_led_task_id, LED_OFF_EVT, ticks);
+}
+
+// Blink with custom on/off durations (625us units)
+static void led_blink_start_ex(uint8_t c, uint16_t on_ticks, uint16_t off_ticks)
+{
+    led_stop();
+    s_led_color = c;
+    s_led_blink = 1;
+    s_led_toggle = 1;
+    s_led_on_ticks = on_ticks;
+    s_led_off_ticks = off_ticks;
+    led_on(c);
+    tmos_start_task(s_led_task_id, LED_BLINK_EVT, on_ticks);
+}
+
+// Default symmetric blink (~1 Hz, 500ms on / 500ms off)
+// Skips restart if already blinking the same color to avoid uneven timing.
+static void led_blink_start(uint8_t c)
+{
+    if(s_led_blink && s_led_color == c) return;
+    led_blink_start_ex(c, LED_BLINK_TICKS, LED_BLINK_TICKS);
+}
+
+/* 广播期的 LED 颜色按当前槽位取：槽 1 蓝、槽 2 白。
+ *
+ * 设备没有显示屏，主机也未必连着（空槽时根本没有主机），这是用户判断
+ * 「现在在哪个槽」的唯一手段 —— 尤其在切到未配对的槽 2 之后，除了灯
+ * 没有任何其它反馈。 */
+static uint8_t adv_led_color(void)
+{
+    return (immurok_security_active_slot() == IMMUROK_SLOT_2) ? 'W' : 'B';
+}
+
+// Kick the async PS_Sleep + VCC-cut state machine. Use instead of fp_power_off
+// when the finger may still be on the sensor (sleep would NACK or hang).
+// Cancels the idle FP_POWER_OFF_EVT timer too — otherwise it would fire
+// later and call the synchronous fp_power_off, which blocks 4s and cuts
+// VCC unconditionally. That's exactly the failure mode this path avoids.
+static void fp_async_off_start(void)
+{
+    if(!fp_is_powered() || s_sleep_retry_active) return;
+    tmos_stop_task(hidEmuTaskId, FP_POWER_OFF_EVT);
+    s_sleep_retry_active = 1;
+    s_sleep_retry_substate = 0;
+    s_sleep_retry_send_count = 0;
+    s_sleep_retry_cycle_count = 0;
+    s_sleep_retry_start_tick = TMOS_GetSystemClock();
+    s_sleep_retry_cycle_tick = s_sleep_retry_start_tick;
+    tmos_set_event(s_led_task_id, FP_SLEEP_RETRY_EVT);
+}
+
+// Forward decls — ota_abort_to_idle and ota_kick_timeout are defined later
+// (after hidEmuConnHandle is in scope) but referenced from FP_POWER_OFF_EVT
+// handler and the disconnect cleanup path.
+static void ota_kick_timeout(void);
+static void ota_abort_to_idle(void);
+
+static uint16_t LED_ProcessEvent(uint8_t task_id, uint16_t events)
+{
+    if(events & LED_BLINK_EVT)
+    {
+        if(s_led_blink)
+        {
+            s_led_toggle ^= 1;
+            if(s_led_toggle) {
+                led_on(s_led_color);
+                tmos_start_task(s_led_task_id, LED_BLINK_EVT, s_led_on_ticks);
+            } else {
+                led_all_off();
+                tmos_start_task(s_led_task_id, LED_BLINK_EVT, s_led_off_ticks);
+            }
+        }
+        return events ^ LED_BLINK_EVT;
+    }
+    if(events & LED_OFF_EVT)
+    {
+        led_all_off();
+        s_led_color = 0;
+        // 定时闪一下（led_solid(c, ticks)）之后恢复广播闪烁。led_solid 开头的
+        // led_stop() 会把闪烁状态清掉，熄灯后若没人恢复，设备明明还在广播、
+        // 灯却是灭的：短按的蓝灯确认、false-touch 的红灯、切换指纹搜索的
+        // 各种提示都会这样。用户看到灯灭以为广播停了，再触摸时
+        // adv_restart_fast_cycle() 因 phase 已是 FAST 静默返回，灯也不回来
+        // （2026-09-19 slot 2 串口对出）。逐个分支补太散，统一在这里兜底：
+        // 只在「未连接 + FAST 广播中 + 没有别的流程占着灯」时恢复。
+        if(!s_ble_connected && s_adv_phase == ADV_PHASE_FAST && !ADV_HOLD_OFF()
+           && !s_search_active && !s_enroll_active && !s_pair_wait_button)
+        {
+            led_blink_start(adv_led_color());
+        }
+        return events ^ LED_OFF_EVT;
+    }
+#if HAS_FACTORY_TEST
+    if(events & CASE_OPEN_POLL_EVT)
+    {
+        if(g_factory_case_open)
+        {
+            if(!ANTI_OPEN_ReadPin())
+                factory_case_open_exit();
+            else
+                tmos_start_task(s_led_task_id, CASE_OPEN_POLL_EVT, CASE_OPEN_POLL_TICKS);
+        }
+        return events ^ CASE_OPEN_POLL_EVT;
+    }
+#endif
+    if(events & LED_ACCESS_OFF_EVT)
+    {
+        // Bulk-read access indicator's trailing-edge off. Touches only R+G
+        // so it doesn't interfere with whatever the BLINK state machine has
+        // assigned to BLUE (advertising etc.).
+        LED_RED_Off();
+        LED_GREEN_Off();
+        return events ^ LED_ACCESS_OFF_EVT;
+    }
+    if(events & FP_SLEEP_RETRY_EVT)
+    {
+        // Async PS_Sleep + VCC cut. Used after WAIT_LIFT timeout, where the
+        // finger may still be on the sensor and a synchronous fp_power_off
+        // would block ~4s (fp_recv_ack busy-loop calibration).
+        //
+        // Substates:
+        //   0 = need send (fresh CMD_SLEEP with flush)
+        //   1 = polling for ack + periodic re-send every 1s
+        //   2 = post power-cycle, polling for sensor 0x55 ready
+        //
+        // Escalation: if sensor is silent after FP_SLEEP_SENDS_PER_CYCLE
+        // sends (~2s wall time), fp_finish_off → fp_power_on → wait 0x55 →
+        // back to substate 0 for fresh send. Repeats up to
+        // FP_SLEEP_MAX_CYCLES before giving up.
+        extern int fp_send_cmd(uint8_t cmd, const uint8_t *data, uint16_t len);
+        extern int fp_send_cmd_noflush(uint8_t cmd, const uint8_t *data, uint16_t len);
+        extern int uart_rx_pop(void);
+        extern void uart_flush(void);
+        if(!s_sleep_retry_active) {
+            return events ^ FP_SLEEP_RETRY_EVT;
+        }
+        if(!fp_is_powered() && s_sleep_retry_substate != 2) {
+            // Someone else cut VCC out from under us — bail.
+            s_sleep_retry_active = 0;
+            s_sleep_retry_substate = 0;
+            return events ^ FP_SLEEP_RETRY_EVT;
+        }
+
+        // Substate 2: post power-cycle, waiting for sensor's boot 0x55.
+        if(s_sleep_retry_substate == 2) {
+            int b;
+            int got_ready = 0;
+            while ((b = uart_rx_pop()) >= 0) {
+                if ((uint8_t)b == 0x55) { got_ready = 1; break; }
+            }
+            uint32_t wait_ms = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_sleep_retry_cycle_tick);
+            if(got_ready) {
+                PRINT("Sleep cycle %d: sensor ready in %ums\n",
+                      s_sleep_retry_cycle_count, (unsigned)wait_ms);
+                uart_flush();
+                s_sleep_retry_substate = 0;
+                s_sleep_retry_send_count = 0;
+                tmos_start_task(s_led_task_id, FP_SLEEP_RETRY_EVT, 1);
+                return events ^ FP_SLEEP_RETRY_EVT;
+            }
+            if(wait_ms < FP_SLEEP_POWER_READY_TMO_MS) {
+                tmos_start_task(s_led_task_id, FP_SLEEP_RETRY_EVT, FP_SLEEP_POLL_TICKS);
+                return events ^ FP_SLEEP_RETRY_EVT;
+            }
+            // No 0x55 received within timeout — proceed anyway. Old sensors
+            // may not emit 0x55 reliably on warm boot; CMD_SLEEP attempt
+            // will tell us if it's responsive.
+            PRINT("Sleep cycle %d: no 0x55 in %ums, proceeding\n",
+                  s_sleep_retry_cycle_count, (unsigned)wait_ms);
+            uart_flush();
+            s_sleep_retry_substate = 0;
+            s_sleep_retry_send_count = 0;
+            tmos_start_task(s_led_task_id, FP_SLEEP_RETRY_EVT, 1);
+            return events ^ FP_SLEEP_RETRY_EVT;
+        }
+
+        if(s_sleep_retry_substate == 0) {
+            // First send of this cycle: flush stale residue, fresh PS_Sleep.
+            PRINT("Sleep retry: cycle %d first send\n", s_sleep_retry_cycle_count);
+            fp_parser_reset();
+            fp_send_cmd(0x33, NULL, 0);  // CMD_SLEEP, with flush
+            s_sleep_retry_substate = 1;
+            s_sleep_retry_send_count = 1;
+            s_sleep_retry_send_tick = TMOS_GetSystemClock();
+            tmos_start_task(s_led_task_id, FP_SLEEP_RETRY_EVT, FP_SLEEP_POLL_TICKS);
+            return events ^ FP_SLEEP_RETRY_EVT;
+        }
+        // substate == 1: poll parser; re-send PS_Sleep every 1s (no flush)
+        uint8_t ack;
+        int ret = fp_try_parse_packet(&ack, NULL, NULL);
+        WWDG_SetCounter(0);
+        uint32_t since_send = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_sleep_retry_send_tick);
+        if(ret == FP_OK && ack == 0x00) {
+            PRINT("R599S sleep OK (cycle %d, %ums after last send), cutting VCC\n",
+                  s_sleep_retry_cycle_count, (unsigned)since_send);
+            fp_finish_off();
+            s_sleep_retry_active = 0;
+            s_sleep_retry_substate = 0;
+            // Sensor only acks PS_Sleep after the finger lifts (it stays
+            // silent while touched). Receiving the ack here is the most
+            // reliable lift signal we have — release the touch gate so
+            // the next press can start a fresh search. The TOUCH_SCAN_EVT
+            // touch=0 branch wouldn't fire on its own without a new IRQ.
+            s_wait_finger_lift = 0;
+            return events ^ FP_SLEEP_RETRY_EVT;
+        }
+        if(ret == FP_OK) {
+            // Non-zero ack — sensor refused. Log; the next noflush re-send
+            // will let the sensor retry from its current state (post-lift).
+            PRINT("Sleep retry: NACK ack=0x%02X (%ums)\n", ack, (unsigned)since_send);
+        } else if(ret == FP_ERR_FAIL) {
+            PRINT("Sleep retry: parse fail (%ums)\n", (unsigned)since_send);
+        }
+
+        // Hard cap: 5min for truly stuck sensor.
+        uint32_t total_elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_sleep_retry_start_tick);
+        if(total_elapsed > FP_SLEEP_RETRY_TOTAL_MS) {
+            PRINT("Sleep retry timed out (%ums total), forcing VCC cut\n",
+                  (unsigned)total_elapsed);
+            fp_finish_off();
+            s_sleep_retry_active = 0;
+            s_sleep_retry_substate = 0;
+            return events ^ FP_SLEEP_RETRY_EVT;
+        }
+
+        // Re-send PS_Sleep every 1s without flushing — preserves a late ack
+        // from a prior send. If the user just lifted, this re-send will be
+        // accepted by the now-idle sensor.
+        if(since_send >= FP_SLEEP_RESEND_MS) {
+            if(s_sleep_retry_send_count < FP_SLEEP_SENDS_PER_CYCLE) {
+                PRINT("Sleep retry: re-send (no flush, %ums since prev, count %d)\n",
+                      (unsigned)since_send, s_sleep_retry_send_count);
+                fp_send_cmd_noflush(0x33, NULL, 0);
+                s_sleep_retry_send_count++;
+                s_sleep_retry_send_tick = TMOS_GetSystemClock();
+            } else {
+                // Sensor is stuck. Power-cycle and retry.
+                if(s_sleep_retry_cycle_count + 1 >= FP_SLEEP_MAX_CYCLES) {
+                    PRINT("Sleep retry: %d cycles exhausted, forcing VCC cut\n",
+                          s_sleep_retry_cycle_count + 1);
+                    fp_finish_off();
+                    s_sleep_retry_active = 0;
+                    s_sleep_retry_substate = 0;
+                    return events ^ FP_SLEEP_RETRY_EVT;
+                }
+                s_sleep_retry_cycle_count++;
+                PRINT("Sleep retry: %d sends silent, power-cycling sensor (cycle %d)\n",
+                      FP_SLEEP_SENDS_PER_CYCLE, s_sleep_retry_cycle_count);
+                fp_finish_off();
+                // Brief settle then re-power. fp_power_on does the GPIO +
+                // UART setup; sensor takes ~150-200ms to boot and emit 0x55.
+                fp_power_on();
+                s_sleep_retry_substate = 2;
+                s_sleep_retry_cycle_tick = TMOS_GetSystemClock();
+                tmos_start_task(s_led_task_id, FP_SLEEP_RETRY_EVT, FP_SLEEP_POLL_TICKS);
+                return events ^ FP_SLEEP_RETRY_EVT;
+            }
+        }
+        tmos_start_task(s_led_task_id, FP_SLEEP_RETRY_EVT, FP_SLEEP_POLL_TICKS);
+        return events ^ FP_SLEEP_RETRY_EVT;
+    }
+
+    if(events & EEPROM_SAVE_EVT)
+    {
+        // Deferred save of pairing data. Runs in fresh TMOS context after
+        // the ECC compute call stack has fully unwound — calling
+        // EEPROM_READ inline right after compute_secret crashes the chip.
+        if(immurok_security_pair_save_pending) {
+            immurok_security_pair_save_pending = 0;
+            int ret = immurok_security_pair_save();
+            PRINT_V("Deferred EEPROM save: ret=%d\n", ret);
+            // Pair just claimed the device — flip pairing mode to NO_PAIRING
+            // so a fresh BLE central can no longer bond. Existing peer's LTK
+            // (saved at the BLE bonding step that preceded ECDH) survives.
+            if(ret == 0) {
+                apply_ble_pairing_mode();
+            }
+        }
+        return events ^ EEPROM_SAVE_EVT;
+    }
+
+    if(events & KEYSTORE_COMMIT_EVT)
+    {
+        // Deferred SSH keystore commit — runs in fresh TMOS context so the
+        // ECC call stack from KEY_GENERATE is fully unwound before any
+        // EEPROM_ERASE/WRITE. See note on KEYSTORE_COMMIT_EVT define above.
+        // Gate on (pending_cmd == KEY_GENERATE && busy): only the EXEC
+        // handler's stage path schedules this event, and disconnect
+        // cleanup clears both flags + the timer, so this is a robust
+        // "stage done, awaiting commit" signal.
+        if(s_pending_cmd == IMMUROK_CMD_KEY_GENERATE && s_long_op_busy) {
+            uint8_t new_idx = s_pending_payload[17];
+            int ret = immurok_keystore_commit(KEYSTORE_CAT_SSH, 0xFF);
+            if(ret == 0) {
+                uint8_t rsp3[3] = { IMMUROK_RSP_OK, 64, new_idx };
+                PRINT_V("KEY_GENERATE commit done: idx=%d\n", new_idx);
+                ImmurokService_SendResponse(rsp3, 3);
+            } else {
+                uint8_t rspErr[1] = { SEC_ERR_INTERNAL };
+                PRINT("KEY_GENERATE commit failed\n");
+                ImmurokService_SendResponse(rspErr, 1);
+            }
+            // Now release the long-op lock that the EXEC handler held
+            // through stage→commit so concurrent KEY_SIGN/KEY_GENERATE
+            // wouldn't race the partially-staged buffer.
+            s_pending_cmd = 0;
+            s_long_op_busy = 0;
+#if HAS_RGB_LED
+            led_stop();
+#endif
+        }
+        return events ^ KEYSTORE_COMMIT_EVT;
+    }
+
+    if(events & PARAM_NOTIFY_EVT)
+    {
+        // App just subscribed — replay the connection params it missed.
+        PRINT_V("Param replay to App: interval=%d, latency=%d, timeout=%dms\n",
+              s_conn_interval, s_conn_latency, s_conn_timeout * 10);
+        ImmurokNotify_ConnParams();
+        return events ^ PARAM_NOTIFY_EVT;
+    }
+
+    if(events & PAIR_BTN_TIMEOUT_EVT)
+    {
+        // 30s elapsed without the user pressing the button — abort pairing.
+        if(s_pair_wait_button)
+        {
+            s_pair_wait_button = 0;
+            led_stop();
+            if(s_app_connected)
+            {
+                uint8_t notif[2] = { IMMUROK_NTF_PAIR_BUTTON, 0x00 };  // timeout
+                ImmurokService_SendResponse(notif, 2);
+            }
+            PRINT("Pair button timeout (30s)\n");
+        }
+        return events ^ PAIR_BTN_TIMEOUT_EVT;
+    }
+
+    if(events & LOCK_HOLD_EVT)
+    {
+        // Fires LOCK_HOLD_TICKS after TOUCH rising edge. We do NOT gate on
+        // TOUCH_ReadPin()
+        // here: R599S resets its DETECT line during/after match, so the GPIO
+        // reads LOW even when the finger is still on the sensor. Instead the
+        // schedule is treated as "armed", and reliable-lift signals clear
+        // s_lock_pending elsewhere (WAIT_LIFT lift detected, GET_IMAGE ack=0x02
+        // standby, fp_power_off paths). When the timer fires with pending=1,
+        // the user has not lifted — fire the lock notify regardless of FP
+        // match outcome (App arbitrates based on screen state).
+        //
+        // Suppress during a gated command (KEY_SIGN/DELETE_FP/KEY_GENERATE/
+        // ENROLL etc.), AUTH_REQUEST, or active fingerprint enrollment:
+        // the user is holding *for* one of those flows; firing LOCK_REQUEST
+        // in parallel pops a "lock screen?" dialog over the active sudo /
+        // unlock / enroll guidance and is always wrong.
+        {
+            uint8_t in_gate = (s_pending_cmd != 0
+                               || immurok_security_has_pending_auth()
+                               || s_enroll_active);
+            if(s_lock_pending && s_app_connected && !in_gate)
+            {
+                uint8_t buf[1] = { IMMUROK_CMD_LOCK_REQUEST };
+                ImmurokService_SendResponse(buf, 1);
+                led_solid('W', LED_FLASH_TICKS);  // brief white flash as feedback
+                PRINT("Long-press lock request sent\n");
+            }
+            else if(s_lock_pending && !in_gate)
+            {
+                // Non-gate but app not subscribed — clear the persistent
+                // blue (match) / red (no-match) indicator the search
+                // result handler armed; otherwise the LED stays stuck.
+                PRINT("Long-press lock suppressed (no app)\n");
+                led_stop();
+            }
+            else if(s_lock_pending)
+            {
+                // Gate/auth in flight — LED is owned by the gate handler
+                // (green/yellow blink); do not touch it.
+                PRINT("Long-press lock suppressed (gate/auth pending)\n");
+            }
+        }
+        s_lock_pending = 0;
+        return events ^ LOCK_HOLD_EVT;
+    }
+    return 0;
+}
+#endif // HAS_RGB_LED
+
+/*********************************************************************
+ * LOCAL FUNCTIONS
+ */
+
+// Reset fingerprint power-off timer (call after any FP operation while module
+// is powered). State machine iterations refresh this on every step; once the
+// last step stops calling it, the 500ms fallback fires and powers FP off.
+// Note: gate-pending watchdog uses a separate longer arm in fp_gate_enter().
+static void fp_reset_power_timer(void)
+{
+    tmos_stop_task(hidEmuTaskId, FP_POWER_OFF_EVT);
+    tmos_start_task(hidEmuTaskId, FP_POWER_OFF_EVT, FP_POWER_OFF_DELAY);
+}
+
+// Ensure fingerprint module is ready for operation
+static int fp_ensure_ready(void)
+{
+    int ret = fp_wake();
+    if (ret == FP_OK) {
+        fp_reset_power_timer();
+    }
+    return ret;
+}
+
+// Restart fast advertising cycle (FAST 60s → DEEP_SLEEP).
+// Called when user touches sensor or presses button during DEEP_SLEEP phase
+// (re-enables ADVERT_ENABLED that DEEP_SLEEP set to FALSE), and by the
+// factory case-open resume path.
+static void adv_restart_fast_cycle(void)
+{
+    if(s_adv_phase == ADV_PHASE_FAST) return;  // already fast
+    PRINT("ADV: restart fast cycle (was phase %d)\n", s_adv_phase);
+    s_adv_phase = ADV_PHASE_FAST;
+    tmos_stop_task(hidEmuTaskId, SLOW_ADV_EVT);
+    GAP_SetParamValue(TGAP_DISC_ADV_INT_MIN, ADV_FAST_INT);
+    GAP_SetParamValue(TGAP_DISC_ADV_INT_MAX, ADV_FAST_INT);
+    GAP_SetParamValue(TGAP_LIM_ADV_TIMEOUT, 0);  // no timeout (we manage via SLOW_ADV_EVT)
+    uint8_t adv_enable = TRUE;
+    GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &adv_enable);
+    tmos_start_task(hidEmuTaskId, SLOW_ADV_EVT, SLOW_ADV_DELAY);
+#if HAS_RGB_LED
+    led_blink_start(adv_led_color());
+#endif
+}
+
+// ── 低电模式（2026-09-20 用户设计）─────────────────────────────────────
+// 电量 <= LOW_BATT_ENTER_PCT 时进 ADV_PHASE_LOW_BATT：停广播、LED 全关、停周期
+// 广播维护，靠 BLE 库 Sleep（µA 级）。触摸/按键/ANTI_OPEN 三个 GPIOB 中断仍能
+// 唤醒（唤醒源现成，与 touch/button 同机制）。目的：把设备完全掉电的时间尽量
+// 拉长，保住「开盖即擦」的能力，而不是靠充电被动恢复。
+static uint16_t hidEmuConnHandle;        // 前向声明（定义带初始化在下方）
+static uint8_t s_low_batt_pending = 0;   // 连接中低电：断开后 LINK_TERMINATED 进低电
+
+static uint8_t read_batt_pct(void)
+{
+    uint8_t lvl = 100;
+    Batt_GetParameter(BATT_PARAM_LEVEL, &lvl);
+    return lvl;
+}
+
+// 进入低电深睡：和 DEEP_SLEEP 一样停广播+关灯，但标记独立相位，唤醒逻辑不同。
+static void enter_low_batt_sleep(void)
+{
+    PRINT("LOW_BATT: entering low-battery deep sleep (radio off, led off)\n");
+    s_adv_phase = ADV_PHASE_LOW_BATT;
+    tmos_stop_task(hidEmuTaskId, SLOW_ADV_EVT);
+    uint8_t adv_off = FALSE;
+    GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &adv_off);
+#if HAS_RGB_LED
+    led_stop();
+#endif
+}
+
+// 连接中周期电量检查（由 hiddev 的 BATT_PERIODIC 调）。低于进入阈值就主动断开，
+// 断开后 LINK_TERMINATED 走低电分支进 ADV_PHASE_LOW_BATT。app 侧据低电量提示充电。
+void HidEmu_CheckLowBatt(void)
+{
+    if(s_adv_phase == ADV_PHASE_LOW_BATT) return;   // 已在低电模式
+    if(g_qc_running) return;                        // QC 期间不打断
+    if(s_ota_active) return;                        // OTA 进行中不断开（断=中止升级）
+    if(read_batt_pct() > LOW_BATT_ENTER_PCT) return;
+
+    if(s_ble_connected)
+    {
+        PRINT("LOW_BATT: connected + low battery, disconnecting to enter low-batt sleep\n");
+        s_low_batt_pending = 1;
+        GAPRole_TerminateLink(hidEmuConnHandle);
+        // 进低电在 LINK_TERMINATED 里做（等断开事件处理完）
+    }
+    else
+    {
+        enter_low_batt_sleep();
+    }
+}
+
+// 低电模式下被 touch/button 唤醒：测一次电量，够则恢复正常，不够回睡。
+// 返回 1 = 已恢复正常（调用方继续正常流程）；0 = 仍在低电，调用方应早退。
+static uint8_t low_batt_wake_check(void)
+{
+    if(s_adv_phase != ADV_PHASE_LOW_BATT) return 1;   // 不在低电，正常流程
+    Batt_MeasLevel();                                 // 强制新测（可能刚充过电）
+    uint8_t pct = read_batt_pct();
+    if(pct >= LOW_BATT_EXIT_PCT)
+    {
+        PRINT("LOW_BATT: woken, battery %d%% >= exit, resuming\n", pct);
+        s_adv_phase = ADV_PHASE_DEEP_SLEEP;   // 让 adv_restart_fast_cycle 生效
+        adv_restart_fast_cycle();
+        return 1;
+    }
+    PRINT("LOW_BATT: woken, battery %d%% < exit, back to sleep\n", pct);
+    return 0;   // 仍低电，调用方早退，回睡
+}
+
+/*********************************************************************
+ * EXTERNAL VARIABLES
+ */
+
+/*********************************************************************
+ * EXTERNAL FUNCTIONS
+ */
+
+/*********************************************************************
+ * LOCAL FUNCTION PROTOTYPES
+ */
+static void HidEmu_ImmurokCommandCB(uint16_t connHandle, uint8_t *pData, uint8_t len);
+static void HidEmu_ImmurokCccChangeCB(uint8_t enabled);
+static void hidEmuSendCtrlKey(void);
+
+// OTA callback functions
+static void OTA_IAPReadDataComplete(uint8_t paramID);
+static void OTA_IAPWriteData(uint8_t paramID, uint8_t *pData, uint8_t len);
+static void OTA_IAP_DataDeal(void);
+static void OTA_IAP_SendStatus(uint8_t status);
+
+
+/*********************************************************************
+ * LOCAL VARIABLES
+ */
+
+// GAP Profile - Name attribute for SCAN RSP data
+static uint8_t scanRspData[] = {
+    0x0D,                           // length of this data (12 + 1)
+    GAP_ADTYPE_LOCAL_NAME_COMPLETE, // AD Type = Complete local name
+    'i', 'm', 'm', 'u', 'r', 'o', 'k', ' ', 'I', 'K', '-', '1',
+    // connection interval range
+    0x05, // length of this data
+    GAP_ADTYPE_SLAVE_CONN_INTERVAL_RANGE,
+    LO_UINT16(DEFAULT_DESIRED_MIN_CONN_INTERVAL), // 24 × 1.25ms = 30ms
+    HI_UINT16(DEFAULT_DESIRED_MIN_CONN_INTERVAL),
+    LO_UINT16(DEFAULT_DESIRED_MAX_CONN_INTERVAL), // 48 × 1.25ms = 60ms
+    HI_UINT16(DEFAULT_DESIRED_MAX_CONN_INTERVAL),
+
+    // service UUIDs
+    0x05, // length of this data
+    GAP_ADTYPE_16BIT_MORE,
+    LO_UINT16(HID_SERV_UUID),
+    HI_UINT16(HID_SERV_UUID),
+    LO_UINT16(BATT_SERV_UUID),
+    HI_UINT16(BATT_SERV_UUID),
+
+    // Tx power level
+    0x02, // length of this data
+    GAP_ADTYPE_POWER_LEVEL,
+    0 // 0dBm
+};
+
+// Advertising data
+static uint8_t advertData[] = {
+    // flags
+    0x02, // length of this data
+    GAP_ADTYPE_FLAGS,
+    GAP_ADTYPE_FLAGS_GENERAL | GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED,
+
+    // appearance
+    0x03, // length of this data
+    GAP_ADTYPE_APPEARANCE,
+    LO_UINT16(GAP_APPEARE_HID_KEYBOARD),
+    HI_UINT16(GAP_APPEARE_HID_KEYBOARD),
+
+    // manufacturer data: CID 0xFFFF(测试保留值) + type 0x01 + flags
+    // flags bit0 = qc_done（QC 板据此只连未质检设备）
+    0x05, // length of this data
+    GAP_ADTYPE_MANUFACTURER_SPECIFIC,
+    0xFF, 0xFF,   // company id
+    0x01,         // immurok 内部 type
+    0x00};        // flags，开机由 qc_done_read() 刷新
+
+#define ADV_QC_FLAGS_IDX  (sizeof(advertData) - 1)
+
+// Device name attribute value（GAP Device Name 特征）。槽 2 带 "(2)" 后缀，
+// 让用户在系统蓝牙列表里分得清是哪个身份；广播/扫描响应里的名字不变
+// （scanRspData），两台主机扫到的都还是 "immurok IK-1"。
+static CONST uint8_t attDeviceName[GAP_DEVICE_NAME_LEN] = "immurok IK-1";
+static CONST uint8_t attDeviceName2[GAP_DEVICE_NAME_LEN] = "immurok IK-1 (2)";
+
+// HID Dev configuration
+static hidDevCfg_t hidEmuCfg = {
+    DEFAULT_HID_IDLE_TIMEOUT, // Idle timeout
+    HID_FEATURE_FLAGS         // HID feature flags
+};
+
+static uint16_t hidEmuConnHandle = GAP_CONNHANDLE_INIT;
+
+// Param update retry counter
+uint8_t s_param_update_retries = 0;
+// Whether our desired latency has been accepted (extern'd by hiddev.c)
+uint8_t s_latency_accepted = 0;
+// Current supervision timeout in units of 10ms (extern'd by hiddev.c, updated on every param change)
+uint16_t s_conn_timeout = 0;
+// Current interval (units of 1.25ms) and peripheral latency, cached alongside
+// s_conn_timeout so the params can be re-reported to the App after it
+// subscribes. Extern'd by hiddev.c.
+uint16_t s_conn_interval = 0;
+uint16_t s_conn_latency = 0;
+// One param replay per connection (see HidEmu_ImmurokCccChangeCB). Cleared on
+// disconnect so each new connection replays once.
+static uint8_t s_param_replay_done = 0;
+
+// Emit the current connection params to the App:
+//   [0xF0][interval_hi][interval_lo][latency][timeout_hi][timeout_lo]
+// Called from hiddev.c whenever the params change, and again from
+// PARAM_NOTIFY_EVT once the App subscribes (see that event's comment — the
+// change-time notifications are usually dropped because nobody is listening
+// yet). Silently no-ops via ImmurokService_SendResponse when CCC is off.
+void ImmurokNotify_ConnParams(void)
+{
+    static uint8_t paramNotif[6];  // static: GATT callback stack is only 512B
+    paramNotif[0] = 0xF0;  // PARAM_UPDATE tag
+    paramNotif[1] = (uint8_t)(s_conn_interval >> 8);
+    paramNotif[2] = (uint8_t)(s_conn_interval & 0xFF);
+    paramNotif[3] = (uint8_t)s_conn_latency;
+    paramNotif[4] = (uint8_t)(s_conn_timeout >> 8);
+    paramNotif[5] = (uint8_t)(s_conn_timeout & 0xFF);
+    ImmurokService_SendResponse(paramNotif, 6);
+}
+// Sticky: set once Phase 2 (slave latency + timeout ≥ 2s) has been accepted.
+// Signals discovery is done, so degradation recovery can skip Phase 1 and
+// request full params directly. Cleared on disconnect. Extern'd by hiddev.c.
+uint8_t s_post_discovery = 0;
+// Post-override param re-request (see hidkbd.h). _count bounds how many times
+// we may fight the central per connection; _armed lets the
+// START_PARAM_UPDATE_EVT handler bypass its "params are already good enough"
+// early return for one attempt. Both cleared on disconnect. Extern'd by hiddev.c.
+uint8_t s_post_override_retry_count = 0;
+uint8_t s_post_override_retry_armed = 0;
+// Long op param wait state (reset on disconnect)
+static uint8_t s_long_op_param_requested = 0;
+static uint32_t s_long_op_wait_start = 0;
+static uint8_t s_long_op_req_count = 0;  // 本轮长 ECC 门已发的 param 请求数(限 ban)
+// s_long_op_busy / s_keygen_commit_pending / s_keygen_new_idx are defined
+// near the LED task so its KEYSTORE_COMMIT_EVT handler can see them.
+
+/*********************************************************************
+ * LOCAL FUNCTIONS
+ */
+
+static void    hidEmu_ProcessTMOSMsg(tmos_event_hdr_t *pMsg);
+static void    hidEmuSendKbdReport(uint8_t keycode);
+static uint8_t hidEmuRcvReport(uint8_t len, uint8_t *pData);
+static uint8_t hidEmuRptCB(uint8_t id, uint8_t type, uint16_t uuid,
+                           uint8_t oper, uint16_t *pLen, uint8_t *pData);
+static void    hidEmuEvtCB(uint8_t evt);
+static void    hidEmuStateCB(gapRole_States_t newState, gapRoleEvent_t *pEvent);
+
+/*********************************************************************
+ * PROFILE CALLBACKS
+ */
+
+static hidDevCB_t hidEmuHidCBs = {
+    hidEmuRptCB,
+    hidEmuEvtCB,
+    NULL,
+    hidEmuStateCB};
+
+/*********************************************************************
+ * PUBLIC FUNCTIONS
+ */
+
+/*********************************************************************
+ * BATTERY ADC CALLBACKS (VER1/VER2/VER3/VER5 — anything with HAS_VBAT_ADC)
+ */
+#if HAS_VBAT_ADC
+
+// Reentrancy guard for nested TMOS_SystemProcess() during VBAT settle.
+static volatile uint8_t s_in_vbat_tmos_kick = 0;
+
+// Last VBAT measurement raw values — exposed via GET_BATT_RAW for calibration.
+// Updated by battCalcCB at every periodic measurement.
+static uint16_t s_last_batt_mv = 0;
+static uint16_t s_last_batt_adc = 0;
+
+// First-measurement-after-boot flag: C7 may need 6.7τ to charge from its
+// pre-init state. Subsequent measurements skip the wait because C7 stays
+// charged via R2/R3 (PA14 left in IN_Floating between cycles — see
+// battTeardownCB rationale).
+static bool s_vbat_first_meas = true;
+
+// Yield-aware delay: the RC divider needs 5τ to settle (250ms VER2/3, 375ms
+// VER5), longer than several BLE connection intervals (30–50ms). A straight
+// DelayMs() busy-loop would starve the TMOS event queue and risk supervision
+// timeout. Chunk the wait into ≈15ms slices and pump TMOS between slices so
+// LL and ATT keep running.
+static void vbat_settle_delay(uint32_t ms)
+{
+    const uint32_t slice = 15;  // ≈ half a connection interval
+    while (ms)
+    {
+        uint32_t chunk = ms > slice ? slice : ms;
+        DelayMs(chunk);
+        ms -= chunk;
+        if (!s_in_vbat_tmos_kick)
+        {
+            s_in_vbat_tmos_kick = 1;
+            WWDG_SetCounter(0);
+            TMOS_SystemProcess();
+            s_in_vbat_tmos_kick = 0;
+        }
+    }
+}
+
+static void battSetupCB(void)
+{
+    // PA14 stays in IN_Floating from boot to teardown. C7 (100nF) is
+    // permanently charged via the R2/R3 divider, so no settle wait is needed
+    // on subsequent measurements — only the first one after power-on pays the
+    // cost (handled by `s_vbat_first_meas`).
+    GPIOA_ModeCfg(PIN_VBAT, GPIO_ModeIN_Floating);
+    if (s_vbat_first_meas) {
+        // First-ever measurement: C7 may not yet be charged (depending on
+        // pre-init state). Wait 6.7τ once to fill it.
+        vbat_settle_delay(VBAT_SETTLE_MS);
+        s_vbat_first_meas = false;
+    }
+    ADC_ExtSingleChSampInit(SampleFreq_3_2, ADC_PGA_0);
+    ADC_ChannelCfg(VBAT_ADC_CH);
+}
+
+static void battTeardownCB(void)
+{
+    ADC_DisablePower();
+    // PA14 stays IN_Floating between measurements so C7 keeps its charge and
+    // the next measurement needs no 500ms settle. The floating-pin leak this
+    // used to cause (a Schmitt input doesn't oscillate at VBAT/4, but its
+    // first stage still conducts ~30µA of shoot-through — measured 2026-09-21)
+    // is handled in main(): the pin's digital input buffer is switched off
+    // via GPIOA_PinCfg(PIN_VBAT, DISABLE), leaving only the analog path.
+}
+
+// Li-ion discharge curve: voltage (mV) → percentage
+static uint8_t battCalcCB(uint16_t adc)
+{
+    // PGA_0 (1x), Vref≈1.05V, full-scale≈2.1V → 4096 counts
+    // raw_mv = adc * (2100 * VBAT_DIV_RATIO) / 4096
+    uint32_t raw_mv = (uint32_t)adc * (2100 * VBAT_DIV_RATIO) / 4096;
+
+    // Bench calibration vs. lab DMM (resources/batt.csv, 2026-05-11 HW Rev.3).
+    // Raw chain (CH59x Vref + 1% divider) reads ~10 mV low and has a tiny
+    // -0.27% gain error. Linear least-squares fit: real = 0.997297 * raw + 20.224.
+    // Integer-shift form below tracks the fit to ±5 mV over 3300-4200 mV.
+    //   real_mv = (raw_mv * 1021 + 512) / 1024 + 20
+    uint32_t mv = (raw_mv * 1021U + 512U) / 1024U + 20U;
+
+    s_last_batt_adc = adc;
+    s_last_batt_mv = (mv > 0xFFFF) ? 0xFFFF : (uint16_t)mv;
+
+    // Top anchor is 4150 mV (not 4200) to absorb measurement headroom: charger
+    // float voltage tolerance (±1-2%), CH59x Vref tolerance (±2-3%), 1% resistor
+    // tolerance, and remaining C7 settling undershoot (~5 mV at 6.7τ). Real
+    // batteries that actually charge to 4.15-4.20 V will read 100% reliably
+    // instead of capping at ~96%.
+    static const uint16_t curve_mv[]  = {4150, 4100, 4000, 3900, 3800, 3700, 3600, 3500, 3300, 3000};
+    static const uint8_t  curve_pct[] = { 100,   90,   80,   60,   40,   30,   20,   10,    5,    0};
+    #define CURVE_LEN 10
+
+    if(mv >= curve_mv[0]) return 100;
+    if(mv <= curve_mv[CURVE_LEN - 1]) return 0;
+
+    for(int i = 0; i < CURVE_LEN - 1; i++)
+    {
+        if(mv >= curve_mv[i + 1])
+        {
+            uint32_t dv = curve_mv[i] - curve_mv[i + 1];
+            uint32_t dp = curve_pct[i] - curve_pct[i + 1];
+            return curve_pct[i + 1] + (uint8_t)((mv - curve_mv[i + 1]) * dp / dv);
+        }
+    }
+    return 0;
+}
+
+#endif // HAS_VBAT_ADC
+
+/*********************************************************************
+ * @fn      HidEmu_Init
+ *
+ * @brief   Initialization function for the HidEmuKbd App Task.
+ *          This is called during initialization and should contain
+ *          any application specific initialization (ie. hardware
+ *          initialization/setup, table initialization, power up
+ *          notificaiton ... ).
+ *
+ * @param   task_id - the ID assigned by TMOS.  This ID should be
+ *                    used to send messages and set timers.
+ *
+ * @return  none
+ */
+void HidEmu_Init()
+{
+    hidEmuTaskId = TMOS_ProcessEventRegister(HidEmu_ProcessEvent);
+
+    // Initialize button GPIO (pull-up, active low)
+    BTN_SetMode(GPIO_ModeIN_PU);
+
+    // Initialize touch detection GPIO (active high). Idle = IN_PD;
+    // fp_power_on() toggles to Floating for R599S during active sensor use.
+    TOUCH_SetMode(GPIO_ModeIN_PD);
+
+    // Configure GPIO interrupts for fast wake detection
+    // Touch: rising edge (finger down), Button: falling edge (press)
+    TOUCH_SetITMode(GPIO_ITMode_RiseEdge);
+    BTN_SetITMode(GPIO_ITMode_FallEdge);
+    PFIC_EnableIRQ(BTN_TOUCH_IRQn);
+#if HAS_TAMPER_DETECT
+    // ANTI_OPEN tamper: FLOATING input — the external high-impedance divider
+    // (R16 series + R15 pulldown) sets the level: open≈3V (Q2 drives ~VBAT), closed
+    // 0V. Do NOT use IN_PD here: the ~20kΩ internal pulldown swamps the high-Z
+    // signal (measured PB10=0.231V on open while Q2-out=4.01V) so the pin never
+    // crosses VIH and no rising edge fires. Wake + IRQ on rising edge.
+    ANTI_OPEN_SetMode(GPIO_ModeIN_Floating);
+    ANTI_OPEN_SetITMode(GPIO_ITMode_RiseEdge);
+    PRINT_V("Tamper detect enabled (ANTI_OPEN rising edge)\n");
+#endif
+    PRINT_V("GPIO interrupts enabled\n");
+
+#if HAS_RGB_LED
+    // 只注册任务，先不起闪 —— adv_led_color() 要读活跃槽，而它由
+    // immurok_security_init() 里的 load_active_slot() 填充。在此之前
+    // s_active_slot 还是静态初值 SLOT_1，起闪会永远是蓝色。
+    s_led_task_id = TMOS_ProcessEventRegister(LED_ProcessEvent);
+#endif
+
+    // Initialize security module
+    immurok_security_init();
+
+#if HAS_RGB_LED
+    // 活跃槽已就绪，现在颜色才是对的：槽 1 蓝闪 / 槽 2 白闪
+    led_blink_start(adv_led_color());
+#endif
+
+    // Initialize keystore module
+    immurok_keystore_init();
+
+#if HAS_TAMPER_DETECT
+    // (a) Resume an interrupted tamper wipe: if case_opened is still set, a
+    // previous wipe lost power mid-way — finish it now (never returns). This
+    // is unconditional: factory_reset already cleared `paired`, so gating on
+    // tamper_should_wipe() here would leave the second half undone.
+    if(tamper_is_flagged()) {
+        PRINT("TAMPER: case_opened set at boot, resuming wipe\n");
+        tamper_run_cleanup();
+    }
+    // (b) Static level. Opening the case with SW2 off powers the board up via
+    // Q2/D1, so PB10 is already high when we boot and no rising edge ever
+    // fires. Sample twice 5ms apart to ride out the VSUPPLY ramp through D1.
+    // Unpaired devices (assembly / flashing with the lid off) are ignored by
+    // tamper_should_wipe(), so no production-line exception is needed here.
+    if(ANTI_OPEN_ReadPin()) {
+        DelayMs(5);
+        if(ANTI_OPEN_ReadPin()) {
+            if(tamper_should_wipe()) {
+                PRINT("TAMPER: case open at boot, paired -> wipe\n");
+                tamper_run_cleanup();
+            }
+            factory_case_open_enter();   // unpaired: hold, no advertising
+        }
+    }
+#endif
+
+    // Setup the GAP Peripheral Role Profile
+    {
+        uint8_t initial_advertising_enable = TRUE;
+#if HAS_FACTORY_TEST
+        if(g_factory_case_open) initial_advertising_enable = FALSE;
+#endif
+
+        // Set the GAP Role Parameters
+        GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advertising_enable);
+
+        advertData[ADV_QC_FLAGS_IDX] = qc_done_read() ? 0x01 : 0x00;
+        GAPRole_SetParameter(GAPROLE_ADVERT_DATA, sizeof(advertData), advertData);
+        GAPRole_SetParameter(GAPROLE_SCAN_RSP_DATA, sizeof(scanRspData), scanRspData);
+    }
+
+    // Set the GAP Characteristics
+    // 按标记页直接读活动槽（immurok_slots_active），不依赖 security init 顺序。
+    GGS_SetParameter(GGS_DEVICE_NAME_ATT, GAP_DEVICE_NAME_LEN,
+                     (void *)((immurok_slots_active() == IMMUROK_SLOT_2) ? attDeviceName2
+                                                                       : attDeviceName));
+
+    // Setup the GAP Bond Manager
+    {
+        uint32_t passkey = DEFAULT_PASSCODE;
+        uint8_t  mitm = DEFAULT_MITM_MODE;
+        uint8_t  ioCap = DEFAULT_IO_CAPABILITIES;
+        uint8_t  bonding = DEFAULT_BONDING_MODE;
+        GAPBondMgr_SetParameter(GAPBOND_PERI_DEFAULT_PASSCODE, sizeof(uint32_t), &passkey);
+        GAPBondMgr_SetParameter(GAPBOND_PERI_MITM_PROTECTION, sizeof(uint8_t), &mitm);
+        GAPBondMgr_SetParameter(GAPBOND_PERI_IO_CAPABILITIES, sizeof(uint8_t), &ioCap);
+        GAPBondMgr_SetParameter(GAPBOND_PERI_BONDING_ENABLED, sizeof(uint8_t), &bonding);
+        // SNV 按槽分区（immurok_snv.h），库只看得到活动槽的区，另一台主机
+        // 的 bond 物理上不在这里。下面这段是分区前的顾虑，逻辑保留：
+        // SNV 满（BLE_SNV_NUM=2，稳态 A+B 占满）时 SDK 默认 ERASE_AUTO=1
+        // 是「全擦」：第三条 bond 进来会把还在用的主机一起清掉——那台
+        // 主机手里的 LTK 设备侧没了，重连加密失败；它的槽又是 NO_PAIRING
+        // 不许重新 bond，只剩 factory reset。关掉：满了就让新 bond 失败，
+        // 失败可见、在用主机不受伤。残留 bond 的回收见
+        // reclaim_stale_slot_bond()。
+        uint8_t eraseAuto = 0;
+        GAPBondMgr_SetParameter(GAPBOND_ERASE_AUTO, sizeof(uint8_t), &eraseAuto);
+        // Pairing mode is set by apply_ble_pairing_mode() based on whether
+        // the device already has a saved ECDH shared_key — once claimed, new
+        // BLE bond requests are refused so a thief can't bond it elsewhere.
+        apply_ble_pairing_mode();
+    }
+    {
+        // Preferred connection parameters (advertised to central)
+        gapPeriConnectParams_t ConnectParams;
+        ConnectParams.intervalMin = DEFAULT_DESIRED_MIN_CONN_INTERVAL;  // 24 × 1.25ms = 30ms
+        ConnectParams.intervalMax = DEFAULT_DESIRED_MAX_CONN_INTERVAL;  // 48 × 1.25ms = 60ms
+        ConnectParams.latency = DEFAULT_DESIRED_SLAVE_LATENCY;          // 20
+        ConnectParams.timeout = DEFAULT_DESIRED_CONN_TIMEOUT;           // 600 × 10ms = 6000ms
+        GGS_SetParameter(GGS_PERI_CONN_PARAM_ATT, sizeof(gapPeriConnectParams_t), &ConnectParams);
+    }
+    {
+        // GAP Appearance 特征与广播数据保持一致（0x03C1 HID Keyboard）。
+        // 不设置的话 GATT 读出来是栈默认 0x0000 Unknown，与 ADV 里声明的
+        // appearance 自相矛盾。
+        uint16_t appearance = GAP_APPEARE_HID_KEYBOARD;
+        GGS_SetParameter(GGS_APPEARANCE_ATT, sizeof(uint16_t), &appearance);
+    }
+    // Setup Battery Characteristic Values
+    {
+        uint8_t critical = DEFAULT_BATT_CRITICAL_LEVEL;
+        Batt_SetParameter(BATT_PARAM_CRITICAL_LEVEL, sizeof(uint8_t), &critical);
+
+#if HAS_VBAT_ADC
+        // Register ADC battery measurement callbacks
+        Batt_Setup(VBAT_ADC_CH, 0, 0, battSetupCB, battTeardownCB, battCalcCB);
+        // Initial battery measurement at boot
+        Batt_MeasLevel();
+#else
+        // No battery ADC — fixed 20%
+        uint8_t fixedLevel = 20;
+        Batt_SetParameter(BATT_PARAM_LEVEL, sizeof(uint8_t), &fixedLevel);
+#endif
+    }
+
+    // Set serial number from chip MAC address
+    {
+        __attribute__((aligned(4))) uint8_t mac[6];
+        GetMACAddress(mac);
+        char sn[13];
+        for(int i = 0; i < 6; i++) {
+            uint8_t hi = mac[i] >> 4;
+            uint8_t lo = mac[i] & 0x0F;
+            sn[i * 2]     = hi < 10 ? '0' + hi : 'A' + hi - 10;
+            sn[i * 2 + 1] = lo < 10 ? '0' + lo : 'A' + lo - 10;
+        }
+        sn[12] = '\0';
+        DevInfo_SetParameter(DEVINFO_SERIAL_NUMBER, 12, sn);
+        PRINT("Serial: %s\n", sn);
+    }
+
+    // Set up HID keyboard service
+    Hid_AddService();
+
+    // Set up immurok custom service
+    ImmurokService_AddService();
+
+    // Register immurok command + CCCD callbacks
+    static immurokServiceCBs_t immurokCBs = {
+        .pfnCommandCB = HidEmu_ImmurokCommandCB,
+        .pfnCccChangeCB = HidEmu_ImmurokCccChangeCB
+    };
+    ImmurokService_RegisterAppCBs(&immurokCBs);
+
+    // Set up OTA service
+    OTAProfile_AddService(OTAPROFILE_SERVICE);
+
+    // Register OTA callbacks
+    static OTAProfileCBs_t otaCBs = {
+        .pfnOTAProfileRead = OTA_IAPReadDataComplete,
+        .pfnOTAProfileWrite = OTA_IAPWriteData
+    };
+    OTAProfile_RegisterAppCBs(&otaCBs);
+
+    // Register for HID Dev callback
+    HidDev_Register(&hidEmuCfg, &hidEmuHidCBs);
+
+    // Set initial advertising interval (fast for first connection)
+    GAP_SetParamValue(TGAP_DISC_ADV_INT_MIN, ADV_FAST_INT);
+    GAP_SetParamValue(TGAP_DISC_ADV_INT_MAX, ADV_FAST_INT);
+
+    // Setup a delayed profile startup
+    tmos_set_event(hidEmuTaskId, START_DEVICE_EVT);
+}
+
+#if HAS_TAMPER_DETECT
+/*********************************************************************
+ * @fn      tamper_should_wipe
+ *
+ * @brief   Tamper policy gate. Any slot paired -> wipe. Uses is_paired()
+ *          (either slot), not active_slot_paired(): a device parked on an
+ *          empty slot still holds the other slot's keys and fingerprints.
+ *          Keystore entries only exist alongside a pairing, so an unpaired
+ *          device has nothing to protect and tamper is ignored.
+ */
+int tamper_should_wipe(void)
+{
+    uint8_t s1 = immurok_security_slot_occupied(IMMUROK_SLOT_1) ? 1 : 0;
+    uint8_t s2 = immurok_security_slot_occupied(IMMUROK_SLOT_2) ? 1 : 0;
+    PRINT("TAMPER: should_wipe? slot1=%d slot2=%d\n", s1, s2);
+    return s1 || s2;
+}
+
+/*********************************************************************
+ * @fn      tamper_run_cleanup
+ *
+ * @brief   Wipe everything, then halt blinking red until power cycle.
+ *          Never returns. Mirrors the FACTORY_RESET wipe order:
+ *          keys -> bonds -> fingerprints.
+ */
+__attribute__((noreturn)) void tamper_run_cleanup(void)
+{
+    PRINT("TAMPER: cleanup start\n");
+
+    // Solid red = wiping in progress; other LEDs off.
+    LED_GREEN_Off();
+    LED_BLUE_Off();
+    LED_RED_On();
+
+    // Transaction begin: mark case_opened so an interrupted wipe resumes on boot.
+    tamper_set_flag();
+    WWDG_SetCounter(0);
+
+    // 1) keys: pairing key + keystore (SSH/OTP/API)
+    immurok_security_factory_reset();
+    WWDG_SetCounter(0);
+
+    // 2) BLE bonds. ERASE_ALLBONDS 只擦库挂载的活动槽的区；另一个槽的
+    //    LTK 在它自己的区里，必须裸擦（immurok_snv.h 义务 1）。
+    HidDev_SetParameter(HIDDEV_ERASE_ALLBONDS, 0, NULL);
+    DelayMs(50);
+    immurok_snv_erase_all();
+    WWDG_SetCounter(0);
+
+    // 3) fingerprint templates (power on FP, clear, power off)
+    if(fp_wake() == FP_OK) {
+        fp_clear_all();
+        fp_power_off();
+    }
+    WWDG_SetCounter(0);
+
+    // Transaction end: clear the flag.
+    tamper_clear_flag();
+    PRINT("TAMPER: wipe done, BLE off, blinking red, waiting for power cycle\n");
+
+    // Stop advertising (best-effort; do not block on it).
+    {
+        uint8_t adv_off = FALSE;
+        GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &adv_off);
+    }
+
+    // Halt: blink red forever, feed WDT. Never returns; user must power-cycle.
+    // Feed WDT after each 250ms delay (max interval 250ms << ~559ms WWDG timeout).
+    // Feeding only once per 500ms cycle is too tight; a WDT reset here would
+    // silently reboot into normal operation with the case still open.
+    while(1) {
+        LED_RED_On();
+        DelayMs(250);
+        WWDG_SetCounter(0);
+        LED_RED_Off();
+        DelayMs(250);
+        WWDG_SetCounter(0);
+    }
+}
+#endif
+
+#if HAS_FACTORY_TEST
+/*********************************************************************
+ * Factory self-test glue (state lives in factory_test.c)
+ */
+void HidEmu_CaseOpenHold(void)
+{
+    uint8_t off = FALSE;
+    tmos_stop_task(hidEmuTaskId, SLOW_ADV_EVT);
+    GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &off);
+    s_adv_phase = ADV_PHASE_OFF;
+    if(s_ble_connected) GAPRole_TerminateLink(hidEmuConnHandle);   // hold = no host
+#if HAS_RGB_LED
+    led_blink_start_ex('R', 1600, 1600);   // red 1s on / 1s off
+#endif
+    tmos_start_task(s_led_task_id, CASE_OPEN_POLL_EVT, CASE_OPEN_POLL_TICKS);
+}
+
+void HidEmu_CaseOpenResume(void)
+{
+    tmos_stop_task(s_led_task_id, CASE_OPEN_POLL_EVT);
+#if HAS_RGB_LED
+    led_stop();   // so adv_restart_fast_cycle's led_blink_start takes effect
+#endif
+    adv_restart_fast_cycle();
+}
+
+#endif // HAS_FACTORY_TEST
+
+uint16_t HidEmu_LastBattMv(void)
+{
+#if HAS_VBAT_ADC
+    return s_last_batt_mv;
+#else
+    return 3700;
+#endif
+}
+
+int HidEmu_IsConnected(void)
+{
+    return s_ble_connected ? 1 : 0;
+}
+
+// 刷新广播 manufacturer data 里的 qc_done 位（QC_CLEAR 后立即生效）
+void HidEmu_QcAdvFlagUpdate(uint8_t qc_done)
+{
+    advertData[ADV_QC_FLAGS_IDX] = qc_done ? 0x01 : 0x00;
+    GAPRole_SetParameter(GAPROLE_ADVERT_DATA, sizeof(advertData), advertData);
+}
+
+// QC 失败停机前：断链 + 停广播（"蓝牙关闭"）。
+void HidEmu_QcBleOff(void)
+{
+    uint8_t off = FALSE;
+    if(s_ble_connected) GAPRole_TerminateLink(hidEmuConnHandle);
+    GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &off);
+    s_adv_phase = ADV_PHASE_OFF;
+    tmos_stop_task(hidEmuTaskId, SLOW_ADV_EVT);
+}
+
+/* 长操作（ECDH / 签名）显式要参数：用户动作，允许重新开放一轮请求
+ * （计数清零后再受上限约束），即便之前已放弃或被拒绝。 */
+static void param_update_kick(void)
+{
+    s_param_update_retries = 0;
+    tmos_set_event(hidEmuTaskId, START_PARAM_UPDATE_EVT);
+}
+
+/*********************************************************************
+ * @fn      HidEmu_ProcessEvent
+ *
+ * @brief   HidEmuKbd Application Task event processor.  This function
+ *          is called to process all events for the task.  Events
+ *          include timers, messages and any other user defined events.
+ *
+ * @param   task_id  - The TMOS assigned task ID.
+ * @param   events - events to process.  This is a bit map and can
+ *                   contain more than one event.
+ *
+ * @return  events not processed
+ */
+
+uint16_t HidEmu_ProcessEvent(uint8_t task_id, uint16_t events)
+{
+    if(events & SYS_EVENT_MSG)
+    {
+        uint8_t *pMsg;
+
+        if((pMsg = tmos_msg_receive(hidEmuTaskId)) != NULL)
+        {
+            hidEmu_ProcessTMOSMsg((tmos_event_hdr_t *)pMsg);
+
+            // Release the TMOS message
+            tmos_msg_deallocate(pMsg);
+        }
+
+        // return unprocessed events
+        return (events ^ SYS_EVENT_MSG);
+    }
+
+    if(events & START_DEVICE_EVT)
+    {
+        // GPIO interrupts + main loop flag check handle detection.
+        // No periodic polling needed - events fired from Main_Circulation.
+        //
+        // Boot advertising must be put on the FAST→DEEP_SLEEP clock here.
+        // The stack's own timeout never fires for us: our ADV flags say
+        // GENERAL discoverable, and CH59xBLE_LIB.h documents
+        // TGAP_GEN_DISC_ADV_MIN default 0 = "turns off the timeout"
+        // (TGAP_LIM_ADV_TIMEOUT only applies to LIMITED mode). So the
+        // "Advertising timeout → start fast cycle" path in the WAITING
+        // handler was unreachable after a cold boot with no host around:
+        // phase stayed OFF, the 60s timer was never armed, and the device
+        // advertised (and blinked) forever. Seen on serial 2026-09-19.
+        if(!ADV_HOLD_OFF() && s_adv_phase == ADV_PHASE_OFF && !s_ble_connected)
+        {
+            s_adv_phase = ADV_PHASE_FAST;
+            tmos_start_task(hidEmuTaskId, SLOW_ADV_EVT, SLOW_ADV_DELAY);
+        }
+        return (events ^ START_DEVICE_EVT);
+    }
+
+    if(events & START_PARAM_UPDATE_EVT)
+    {
+        if(s_ota_active)
+        {
+            return (events ^ START_PARAM_UPDATE_EVT);
+        }
+        // Fully done: current params are both latency-accepted AND timeout-adequate.
+        // Must check both — macOS periodic resets can push (short timeout,
+        // latency>0) which keeps s_latency_accepted=1 but still needs re-request.
+        if(s_latency_accepted && s_conn_timeout >= PARAM_OK_CONN_TIMEOUT
+           && !s_post_override_retry_armed)
+        {
+            return (events ^ START_PARAM_UPDATE_EVT);
+        }
+        // Initial connection uses two-phase update so FP auth survives from
+        // the moment we connect:
+        //   Phase 1 (timeout < 2s, pre-discovery): request latency=0, timeout=6s
+        //     — macOS accepts this even during service discovery, lifting
+        //     supervision timeout from its 720ms default.
+        //   Phase 2 (timeout ≥ 2s, latency=0): request latency=N, timeout=6s
+        //     for power savings — macOS only accepts this after discovery.
+        // After first Phase 2 acceptance (s_post_discovery=1), macOS periodic
+        // resets can be recovered in one round trip — skip Phase 1.
+        uint16_t req_latency;
+        uint32_t retry_delay;
+        if(!s_post_discovery && s_conn_timeout < PARAM_OK_CONN_TIMEOUT)
+        {
+            req_latency = 0;
+            retry_delay = PARAM_UPDATE_PHASE1_RETRY;
+        }
+        else
+        {
+            req_latency = DEFAULT_DESIRED_SLAVE_LATENCY;
+            retry_delay = PARAM_UPDATE_RETRY_DELAY;
+        }
+        if(!s_post_override_retry_armed)
+        {
+            // 常规轮询受上限约束；post-override 支路自带 POST_OVERRIDE_RETRY_MAX。
+            uint8_t max = (req_latency == 0) ? PARAM_UPDATE_PHASE1_MAX
+                                             : PARAM_UPDATE_PHASE2_MAX;
+            if(s_param_update_retries >= max)
+            {
+                PRINT("Param update: giving up (%d)\n", s_param_update_retries);
+                return (events ^ START_PARAM_UPDATE_EVT);
+            }
+            s_param_update_retries++;
+        }
+        PRINT("Requesting param update (attempt %d): interval=%d-%d, latency=%d, timeout=%d\n",
+              s_param_update_retries,
+              DEFAULT_DESIRED_MIN_CONN_INTERVAL, DEFAULT_DESIRED_MAX_CONN_INTERVAL,
+              req_latency, DEFAULT_DESIRED_CONN_TIMEOUT);
+        GAPRole_PeripheralConnParamUpdateReq(hidEmuConnHandle,
+                                             DEFAULT_DESIRED_MIN_CONN_INTERVAL,
+                                             DEFAULT_DESIRED_MAX_CONN_INTERVAL,
+                                             req_latency,
+                                             DEFAULT_DESIRED_CONN_TIMEOUT,
+                                             hidEmuTaskId);
+
+        if(s_post_override_retry_armed)
+        {
+            // This was a post-override attempt. Do not schedule the periodic
+            // retry on top of it — the only thing that may queue another one is
+            // hiddev.c observing a fresh override, and that path is bounded by
+            // POST_OVERRIDE_RETRY_MAX. Result shows up as the next
+            // "Params updated" line (or silence, if the central ignores us).
+            s_post_override_retry_armed = 0;
+            PRINT("Post-override retry %d/%d sent\n",
+                  s_post_override_retry_count, POST_OVERRIDE_RETRY_MAX);
+            return (events ^ START_PARAM_UPDATE_EVT);
+        }
+        tmos_start_task(hidEmuTaskId, START_PARAM_UPDATE_EVT, retry_delay);
+
+        return (events ^ START_PARAM_UPDATE_EVT);
+    }
+
+    if(events & PEER_RECORD_EVT)
+    {
+        // M9：链路加密后才把对端地址落盘。合法主机用已存 LTK 重连会加密；
+        // 陌生连接（无 LTK，NO_PAIRING 拒新配对）永不加密，超时丢弃，不写 flash。
+        if(s_peer_pending)
+        {
+            if(linkDB_State(hidEmuConnHandle, LINK_ENCRYPTED))
+            {
+                uint8_t slot = immurok_security_active_slot();
+                reclaim_stale_slot_bond(slot, s_peer_type, s_peer_addr);
+                slot_meta_set_peer(slot, s_peer_type, s_peer_addr);
+                s_peer_pending = 0;
+                PRINT("PEER_RECORD: link encrypted, peer saved\n");
+            }
+            else if(++s_peer_retries < PEER_RECORD_MAX_RETRIES)
+            {
+                tmos_start_task(hidEmuTaskId, PEER_RECORD_EVT, PEER_RECORD_POLL);
+            }
+            else
+            {
+                s_peer_pending = 0;   // 未加密超时：非合法主机，不记录
+                PRINT("PEER_RECORD: never encrypted, peer dropped\n");
+            }
+        }
+        return (events ^ PEER_RECORD_EVT);
+    }
+
+    if(events & SLOW_ADV_EVT)
+    {
+        if(ADV_HOLD_OFF()) return (events ^ SLOW_ADV_EVT);   // hold/qc-done: stay off
+        if(s_adv_phase == ADV_PHASE_FAST)
+        {
+            // 60s 无主机后要停广播。此刻顺便判电量：低于进入阈值就进低电深睡
+            // （ADV_PHASE_LOW_BATT），否则进普通 DEEP_SLEEP。
+            // 先做一次新鲜测量再判——不靠可能陈旧的缓存（连接期停测后缓存会老化）；
+            // FP 上电时跳过（vbat_settle 的 TMOS 让路会饿死 UART1 撞坏 R559S）。
+            if(!fp_is_powered()) Batt_MeasLevel();
+            if(read_batt_pct() <= LOW_BATT_ENTER_PCT)
+            {
+                enter_low_batt_sleep();
+            }
+            else
+            {
+                // FAST → DEEP_SLEEP: stop advertising entirely, turn LED off.
+                // Only BTN press or fingerprint touch can wake us back to FAST
+                // (via adv_restart_fast_cycle which re-enables ADVERT_ENABLED).
+                // FP sensor is already in wait-for-interrupt standby from the
+                // last fp_power_off() — DEEP_SLEEP must not touch FP power.
+                PRINT("ADV: fast→deep-sleep (radio off, led off)\n");
+                s_adv_phase = ADV_PHASE_DEEP_SLEEP;
+                uint8_t adv_enable = FALSE;
+                GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &adv_enable);
+#if HAS_RGB_LED
+                led_stop();
+#endif
+            }
+        }
+        // ADV_PHASE_DEEP_SLEEP: no more timers, stay until BTN/TOUCH wake
+        return (events ^ SLOW_ADV_EVT);
+    }
+
+    if(events & START_REPORT_EVT)
+    {
+        // No longer used for auto-send
+        return (events ^ START_REPORT_EVT);
+    }
+
+    if(events & BUTTON_SCAN_EVT)
+    {
+        if(s_ota_active) return (events ^ BUTTON_SCAN_EVT);
+
+        if(s_adv_phase == ADV_PHASE_LOW_BATT)
+        {
+            // 低电模式：按键只用来唤醒测电量（够则恢复、不够回睡），不当功能键。
+            low_batt_wake_check();
+            return (events ^ BUTTON_SCAN_EVT);
+        }
+
+        uint8_t btn = (BTN_ReadPin() == 0);  // Active low
+        s_btn_hold_active = btn;  // 镜像给 TOUCH_SCAN_EVT 的触摸屏蔽用
+        static uint8_t lastBtn = 0;
+        static uint32_t pressStart = 0;
+        // 0=idle/no-warning, 1=≥1s yellow warning, 2=≥3s red triggered (reboot pending)
+        static uint8_t btnStage = 0;
+
+        if(btn && !lastBtn)
+        {
+            // Press start
+            pressStart = TMOS_GetSystemClock();
+            btnStage = 0;
+            // Restart fast advertising if in deep-sleep phase
+#if HAS_FACTORY_TEST
+            if(g_factory_case_open) { /* hold: no adv restart */ } else
+#endif
+            if(s_adv_phase == ADV_PHASE_DEEP_SLEEP) {
+                adv_restart_fast_cycle();
+            }
+            // Fast polling while pressed (stage transitions)
+            tmos_start_task(hidEmuTaskId, BUTTON_SCAN_EVT, BUTTON_SCAN_INTERVAL);
+        }
+        else if(btn && lastBtn && pressStart && btnStage < 2)
+        {
+            uint32_t elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - pressStart);
+#if HAS_RGB_LED
+            if(btnStage == 0 && elapsed >= 1000) {
+                // Enter warning zone — yellow solid until release or 3s
+                led_solid('Y', 0);
+                btnStage = 1;
+            }
+#endif
+            if(elapsed >= 3000)
+            {
+                btnStage = 2;
+                PRINT("*** FACTORY RESET (long press) ***\n");
+#if HAS_RGB_LED
+                led_solid('R', 0);
+#endif
+
+                // Order requested: keys → bonds → fingerprints, then reboot.
+                PRINT("Stage 1: clearing keys (password + ECDH + keystore)\n");
+                immurok_security_factory_reset();
+
+                PRINT("Stage 2: clearing BLE bonds\n");
+                HidDev_SetParameter(HIDDEV_ERASE_ALLBONDS, 0, NULL);
+                DelayMs(50);  // let GAP process the link drop
+                immurok_snv_erase_all();   // 另一个槽的区库擦不到，裸擦
+
+                PRINT("Stage 3: clearing fingerprint templates\n");
+                if(fp_wake() == FP_OK) {
+                    fp_clear_all();
+                    fp_power_off();
+                }
+
+#if HAS_RGB_LED
+                led_stop();  // turn off red before reboot
+#endif
+                DelayMs(50);
+                SYS_ResetExecute();
+                // never returns
+            }
+            tmos_start_task(hidEmuTaskId, BUTTON_SCAN_EVT, BUTTON_SCAN_INTERVAL);
+        }
+        else if(!btn && lastBtn && pressStart)
+        {
+            // Release
+            uint32_t elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - pressStart);
+
+            if(btnStage == 1) {
+                // Released during 1-3s warning — cancel
+                PRINT("Long-press cancelled (%dms)\n", (int)elapsed);
+#if HAS_RGB_LED
+                led_stop();
+#endif
+                if(s_pair_wait_button) {
+                    // Pair-wait was active: long press abandons the pair.
+                    s_pair_wait_button = 0;
+                    tmos_stop_task(s_led_task_id, PAIR_BTN_TIMEOUT_EVT);
+                    if(s_app_connected) {
+                        uint8_t notif[2] = { IMMUROK_NTF_PAIR_BUTTON, 0x02 };  // cancel
+                        ImmurokService_SendResponse(notif, 2);
+                    }
+                    PRINT("Pair button cancelled by long press\n");
+                }
+            } else if(elapsed < 1000 && s_pair_wait_button) {
+                // PAIR_INIT is waiting for the user to confirm — short press
+                // is the confirmation. Notify the App immediately so it can
+                // update UI ("button pressed, key exchange running") then
+                // start the ECDH key generation that PAIR_INIT skipped.
+                PRINT("Short press: PAIR confirm\n");
+                s_pair_wait_button = 0;
+                tmos_stop_task(s_led_task_id, PAIR_BTN_TIMEOUT_EVT);
+#if HAS_RGB_LED
+                led_stop();
+#endif
+                uint8_t notif[2] = { IMMUROK_NTF_PAIR_BUTTON, 0x01 };  // confirmed
+                ImmurokService_SendResponse(notif, 2);
+                if(immurok_security_pair_init() == 0) {
+                    tmos_set_event(hidEmuTaskId, FP_GATE_EXEC_EVT);
+                } else {
+                    uint8_t err[2] = { IMMUROK_CMD_PAIR_INIT, SEC_ERR_INTERNAL };
+                    ImmurokService_SendResponse(err, 2);
+                }
+#if HAS_FACTORY_TEST
+            } else if(elapsed < 1000 && g_factory_case_open) {
+                PRINT("Short press ignored (case-open hold)\n");
+#endif
+            } else if(elapsed < 1000) {
+                // Short press: full FP sensor reset to recover from stuck
+                // states (e.g., previous power-off skipped PS_Sleep so the
+                // sensor's touch-detect logic is latched). Sequence:
+                //   1. If currently powered, force-cut VCC (fp_finish_off
+                //      avoids the ~4s PS_Sleep block when sensor is hung).
+                //   2. Reuse the existing s_touch_reset flow: power on,
+                //      wait for 0x55 ready, send PS_Sleep, power off
+                //      properly. That clean cycle un-latches touch detect.
+                //   3. ADV restart from slow phase already handled at
+                //      press-start.
+                PRINT("Short press: FP touch reset + batt refresh\n");
+                // 按键是最后的逃生口，必须独占 UART。先停掉可能还在跑的
+                // 搜索 / 异步 PS_Sleep：否则 fp_power_on() 之后它们会立刻
+                // 插进 GET_IMAGE，把下面 touch-reset 的 0x55 等待和 CMD_SLEEP
+                // 再撞一次——按几次都救不回来的直接原因。
+                s_search_active = 0;
+                s_search_substate = 0;
+                s_wait_finger_lift = 0;
+                s_sleep_retry_active = 0;
+                s_sleep_retry_substate = 0;
+                tmos_stop_task(hidEmuTaskId, FP_SEARCH_EVT);
+                tmos_stop_task(hidEmuTaskId, FP_AUTH_EVT);
+                tmos_stop_task(hidEmuTaskId, FP_WAKE_DONE_EVT);
+                tmos_stop_task(s_led_task_id, FP_SLEEP_RETRY_EVT);
+                if(fp_is_powered()) {
+                    fp_finish_off();
+                }
+                s_touch_reset = 1;
+                s_touch_reset_retry = 0;
+                s_pending_batt_check = 1;
+                fp_power_on();
+                s_fp_power_on_tick = RTC_GetCycle32k();
+                tmos_start_task(hidEmuTaskId, FP_WAKE_DONE_EVT, 48);  // 30ms
+#if HAS_RGB_LED
+                led_solid('B', LED_FLASH_TICKS);  // brief blue confirm; LED_OFF_EVT restores adv blink
+#endif
+            }
+            pressStart = 0;
+            btnStage = 0;
+        }
+        // else: idle, no timer needed — GPIO IRQ will trigger next event
+
+        lastBtn = btn;
+        return (events ^ BUTTON_SCAN_EVT);
+    }
+
+    if(events & TOUCH_SCAN_EVT)
+    {
+        if(s_ota_active) return (events ^ TOUCH_SCAN_EVT);
+        // Ignore TOUCH events while a touch-reset is in flight: fp_power_on()
+        // there briefly re-energizes the R599S DETECT line, generating a
+        // spurious rising-edge IRQ. Without this guard the IRQ would steal
+        // the FP_WAKE_DONE_EVT chain and start a fingerprint search before
+        // the sensor's 0x55 ready, leaving everything in a broken state.
+        if(s_touch_reset) return (events ^ TOUCH_SCAN_EVT);
+
+        if(s_adv_phase == ADV_PHASE_LOW_BATT)
+        {
+            // 低电模式：触摸只用来唤醒测电量（够则恢复、不够回睡），不起指纹搜索。
+            low_batt_wake_check();
+            return (events ^ TOUCH_SCAN_EVT);
+        }
+
+        uint8_t touch = TOUCH_ReadPin() ? 1 : 0;
+
+        if(touch)
+        {
+            // Restart fast advertising if in deep-sleep phase
+            if(s_adv_phase == ADV_PHASE_DEEP_SLEEP)
+            {
+                adv_restart_fast_cycle();
+            }
+
+            if(s_enroll_active) {
+                // Skip - enrollment handles touch internally
+            }
+            else if(s_search_active) {
+                // 搜索已在跑，这一次触摸不另开搜索——但也不能就这么丢掉。
+                // 一旦搜索状态机因为 UART 撞车 / 被别的路径切电而卡住，
+                // s_search_active 会滞留为 1，之后每一次触摸都在这里被静默
+                // 吞掉，用户看到的就是「怎么按都没反应」。重排一次轮询，
+                // 搜索一结束就能接上（100ms 周期，相对 FP 的 30mA 可忽略）。
+                tmos_start_task(hidEmuTaskId, TOUCH_SCAN_EVT, 160);  // 100ms
+            }
+            else if(s_sleep_retry_active) {
+                // Async PS_Sleep retry is in flight (after a no-match search
+                // the user is still holding for). Don't start a new search —
+                // we'd send GET_IMAGE while another task is sending PS_Sleep
+                // on the same UART, corrupting both. Wait until the sleep
+                // path finishes (cuts VCC, clears flag) and the user touches
+                // again — that touch will refire the IRQ via the always-on
+                // VCC rail. Re-poll touch GPIO in 30ms so we don't lose the
+                // IRQ if the sleep completes mid-window.
+                tmos_start_task(hidEmuTaskId, TOUCH_SCAN_EVT, 48);
+            }
+            else if(s_gate_preheat) {
+                // Gate preheat in progress — FP_WAKE_DONE_EVT will start search
+            }
+            else if(s_wait_finger_lift) {
+                // Wait for finger to be lifted before allowing new search
+                tmos_start_task(hidEmuTaskId, TOUCH_SCAN_EVT, 48);  // poll 30ms
+            }
+            /* 配对等待按键（白灯慢闪）/ 按键长按计时（黄→红警告）期间，
+             * 指纹触摸整体屏蔽：认证分支会用绿/蓝/红盖掉流程指示灯，
+             * 还会附带发解锁通知、arm 锁屏长按计时——配对/重置流程中
+             * 这些全是异常行为。屏蔽 = 只复位 DETECT latch（不复位的话
+             * 下次触摸不再产生 IRQ），LED 一概不碰，归各自流程所有。
+             * 放在上面几个「流程已在跑」分支之后：slot2 登记的指纹门
+             * 搜索还在 WAIT_LIFT 时不能被这里的 touch-reset 切电。 */
+            else if(s_pair_wait_button || s_btn_hold_active) {
+                PRINT("Touch ignored: %s\n",
+                      s_pair_wait_button ? "pair-wait" : "button-hold");
+                s_wait_finger_lift = 1;
+                s_touch_reset = 1;
+                s_touch_reset_retry = 0;
+                if(!fp_is_powered()) {
+                    fp_power_on();
+                    s_fp_power_on_tick = RTC_GetCycle32k();
+                    tmos_start_task(hidEmuTaskId, FP_WAKE_DONE_EVT, 48);
+                } else {
+                    // fp_power_off 内部完成 CMD_SLEEP+ACK+清理；不可先发
+                    // fp_sleep（双 CMD_SLEEP 嵌套 TMOS_SystemProcess 会爆栈）
+                    fp_power_off();
+                    s_touch_reset = 0;
+                    tmos_start_task(hidEmuTaskId, TOUCH_SCAN_EVT, 160);
+                }
+            }
+            // 双主机例外（同下面 !s_app_connected 那道门，两道必须一起放行）：
+            // 停在空槽时根本没有任何 BLE 连接 —— 没人 bond 过那个地址 ——
+            // 于是触摸在这里就被丢掉，走不到下面那道门。切换指纹是纯本地
+            // 动作，不需要任何连接。1.6.6 只改了下面一道，结果设备照样
+            // 卡死在空槽；2026-08-03 真机复现。
+            else if(!s_ble_connected
+                    && !(g_cached_fp_bitmap & (1u << FP_SWITCH_SLOT))) {
+                PRINT("Touch ignored: BLE not connected\n");
+                s_wait_finger_lift = 1;
+#if HAS_RGB_LED
+                // Brief yellow, then restore blue advertising blink
+                led_stop();
+                led_on('Y');
+                s_led_color = 'B';
+                s_led_blink = 1;
+                s_led_toggle = 0;
+                s_led_on_ticks = LED_BLINK_TICKS;
+                s_led_off_ticks = LED_BLINK_TICKS;
+                tmos_start_task(s_led_task_id, LED_BLINK_EVT, LED_FLASH_TICKS);
+#elif HAS_FP_LED
+                fp_led_flash(FP_LED_RED, 25, 1);
+#endif
+                // Power cycle FP module to reset latched touch GPIO
+                s_touch_reset = 1;
+                s_touch_reset_retry = 0;
+                if(!fp_is_powered()) {
+                    fp_power_on();
+                    s_fp_power_on_tick = RTC_GetCycle32k();
+                    tmos_start_task(hidEmuTaskId, FP_WAKE_DONE_EVT, 48);
+                } else {
+                    // fp_power_off() internally handles CMD_SLEEP + ACK + GPIO cleanup.
+                    // Calling fp_sleep() first sends a redundant CMD_SLEEP, and the
+                    // second one blocks fp_recv_ack inside a nested TMOS_SystemProcess
+                    // — risks stack overflow on CH592F's 512B stack.
+                    fp_power_off();
+                    s_touch_reset = 0;
+                    tmos_start_task(hidEmuTaskId, TOUCH_SCAN_EVT, 160);
+                }
+            }
+            // 双主机例外：登记了切换指纹时，即使没有 app 连着也要照常扫描。
+            //
+            // 切换指纹是**纯本地动作**，不需要投递给任何主机。而原来这道门
+            // 会把触摸在扫描之前就丢掉，导致：
+            //   1. 停在空槽（如登记前的槽 2）时无法切回来 —— 设备卡死，
+            //      因为切换指纹本该是唯一的逃生口
+            //   2. 更常见的：要离开的那台主机睡眠/关机时切不走 —— 多主机
+            //      切换在最典型的场景下失效
+            // 2026-08-03 真机踩到。
+            //
+            // 代价是没有 app 连着时每次触摸多一次传感器扫描。只在**已登记
+            // 切换指纹**时才放行，没登记的设备行为一字不变。
+            else if(!s_app_connected && s_pending_cmd == 0
+                    && !immurok_security_has_pending_auth()
+                    && !(g_cached_fp_bitmap & (1u << FP_SWITCH_SLOT))) {
+                // BLE connected but daemon/app has not subscribed to GATT
+                // notifications — FP result cannot be delivered.
+                PRINT("Touch ignored: app not connected\n");
+                s_wait_finger_lift = 1;
+#if HAS_RGB_LED
+                led_solid('Y', LED_FLASH_TICKS);  // brief yellow flash
+#elif HAS_FP_LED
+                fp_led_flash(FP_LED_RED, 25, 1);
+#endif
+                // Power on → wait ready → send sleep → power off.
+                // The sensor latches touch HIGH until the module receives
+                // a sleep command; without this reset, subsequent touches
+                // won't generate a rising-edge IRQ.
+                s_touch_reset = 1;
+                s_touch_reset_retry = 0;
+                if(!fp_is_powered()) {
+                    fp_power_on();
+                    s_fp_power_on_tick = RTC_GetCycle32k();
+                    tmos_start_task(hidEmuTaskId, FP_WAKE_DONE_EVT, 48);  // 30ms
+                } else {
+                    // Already powered — fp_power_off handles CMD_SLEEP+ACK+cleanup.
+                    // Do NOT precede with fp_sleep — double CMD_SLEEP inside nested
+                    // TMOS_SystemProcess overflows the 512B stack and reboots via WDT.
+                    fp_power_off();
+                    s_touch_reset = 0;
+                    tmos_start_task(hidEmuTaskId, TOUCH_SCAN_EVT, 160);
+                }
+            }
+            else
+            {
+                // Block further touch events until finger is lifted
+                s_wait_finger_lift = 1;
+#if HAS_RGB_LED
+                if(s_pending_cmd != 0 || immurok_security_has_pending_auth()) {
+                    led_blink_start(fp_indicator_color());  // restore blink for gate mode (yellow if low batt)
+                } else {
+                    led_solid(fp_indicator_color(), 0);     // yellow if low batt, else green
+                }
+                // Arm 2s long-press lock-screen detector. The handler runs on
+                // the LED task and re-checks TOUCH_ReadPin() before sending,
+                // so a release before 2s naturally cancels (no explicit stop
+                // needed except on disconnect, where the timer is purged).
+                s_lock_pending = 1;
+                tmos_start_task(s_led_task_id, LOCK_HOLD_EVT, LOCK_HOLD_TICKS);
+#endif
+
+                // Send CTRL key to wake host screen, but only when no
+                // gated command is pending (KEY_SIGN, OTP, etc. don't need it)
+                if(s_pending_cmd == 0 && !immurok_security_has_pending_auth()) {
+                    hidEmuSendCtrlKey();
+                    PRINT_V("CTRL sent (early wake)\n");
+                }
+
+                if(!fp_is_powered())
+                {
+                    PRINT_V("Waking FP module (async)...\n");
+                    fp_power_on();
+                    s_fp_power_on_tick = RTC_GetCycle32k();
+                    tmos_start_task(hidEmuTaskId, FP_WAKE_DONE_EVT, 48);  // 30ms (poll for 0x55)
+                }
+                else
+                {
+                    // Cancel stale WAKE_DONE from a prior touch's power-on to prevent
+                    // it from firing on a module that this search may power off.
+                    tmos_stop_task(hidEmuTaskId, FP_WAKE_DONE_EVT);
+                    if(immurok_security_has_pending_auth()) {
+                        PRINT_V("Starting FP auth...\n");
+                    } else {
+                        PRINT_V("Test FP search...\n");
+                    }
+                    tmos_set_event(hidEmuTaskId, FP_AUTH_EVT);
+                }
+            }
+            // Done - next touch detected by GPIO IRQ
+        }
+        else
+        {
+            // No touch (IRQ was noise or finger already lifted).
+            // Guard against R599S DETECT momentarily dipping LOW during
+            // the sensor's internal processing while the finger is still
+            // pressed: a stale touch=0 reading here would clear the lift
+            // flag, then the next rising edge spawns a fresh FP_SEARCH —
+            // observed as the green→blue→red cycling on long-hold
+            // unregistered finger. While async PS_Sleep retry is in
+            // flight the finger is provably still pressed (the sensor
+            // hasn't acked PS_Sleep yet); keep the flag armed and let
+            // the sleep-retry completion path drive the next state.
+            if(!s_sleep_retry_active) {
+                s_wait_finger_lift = 0;
+            }
+        }
+
+        return (events ^ TOUCH_SCAN_EVT);
+    }
+
+    if(events & FP_WAKE_DONE_EVT)
+    {
+        if(s_ota_active) return (events ^ FP_WAKE_DONE_EVT);
+
+        // Touch-reset path: module was powered only to send sleep and
+        // reset the touch GPIO.  Wait for 0x55, send sleep, power off.
+        if(s_touch_reset) {
+#ifdef FP_TEST_TOUCH_RESET_HOLD_MS
+            /* 测试专用（TEST_DEFS=-DFP_TEST_TOUCH_RESET_HOLD_MS=4000）：
+             * 把 touch-reset 窗口从 30-200ms 撑到几秒，好让第 2 个
+             * AUTH_REQUEST 必然落进来。正常构建下这个窗口太窄，靠人手抬指
+             * 的时机去碰它纯属撞运气 —— 撞不到就跑出一个「全 PASS 但根本
+             * 没执行到修复代码」的假阳性。配 FP_FORCE_SLEEP_NOACK 使用。 */
+            /* 只套第一次尝试：重试也套的话 4s×3 = 12s 触摸全被
+             * TOUCH_SCAN_EVT 的 s_touch_reset 门吞掉，测出来的「迟滞」
+             * 全是脚手架自己造的，跟真实固件（3×140ms≈0.5s）差 20 倍，
+             * 反而掩盖了真实手感。窗口撑开的目的只是让第 2 个
+             * AUTH_REQUEST 撞得进来，第一次尝试就够了。 */
+            if(s_touch_reset_retry == 0)
+            {
+                uint32_t held_ms = (RTC_GetCycle32k() - s_fp_power_on_tick) / 33;
+                if(held_ms < (FP_TEST_TOUCH_RESET_HOLD_MS)) {
+                    tmos_start_task(hidEmuTaskId, FP_WAKE_DONE_EVT, 160);  // 100ms
+                    return (events ^ FP_WAKE_DONE_EVT);
+                }
+                PRINT("*** FP_TEST_TOUCH_RESET_HOLD: window held %ums (TEST BUILD) ***\n",
+                      (unsigned)held_ms);
+            }
+#warning "FP_TEST_TOUCH_RESET_HOLD_MS enabled - TEST BUILD ONLY, never ship this"
+#endif
+            bool got_ready = false;
+            int b;
+            while((b = uart_rx_pop()) >= 0) {
+                if((uint8_t)b == 0x55) { got_ready = true; break; }
+            }
+            if(!got_ready) {
+                uint32_t elapsed = (RTC_GetCycle32k() - s_fp_power_on_tick) / 33;
+                if(elapsed < 200) {
+                    tmos_start_task(hidEmuTaskId, FP_WAKE_DONE_EVT, 16);
+                    return (events ^ FP_WAKE_DONE_EVT);
+                }
+                PRINT("Touch reset: 0x55 timeout (%dms)\n", (int)elapsed);
+            }
+            // fp_power_off handles CMD_SLEEP + ACK + GPIO cleanup atomically.
+            // Calling fp_sleep first sends a redundant CMD_SLEEP whose ACK wait
+            // runs uart_recv inside a nested TMOS_SystemProcess — the recursive
+            // dispatch overflows CH592F's 512B stack and reboots the device
+            // (observed 2026-05-11: PRINT output garbled mid-line, WDT reset).
+            PRINT("Touch reset: power off\n");
+            bool reset_slept = fp_power_off();
+            // slept=false → R599S 没进 wake-on-touch standby，恢复流程本身
+            // 失败了。直接放手 = 传感器留在死状态（触摸中断不再触发），正是
+            // 「按按键也救不回来」的最后一环。重跑完整 power-cycle + PS_Sleep。
+            if(!reset_slept && s_touch_reset_retry < FP_TOUCH_RESET_MAX_RETRY) {
+                s_touch_reset_retry++;
+                PRINT("Touch reset: sleep no-ack, retry %d/%d\n",
+                      s_touch_reset_retry, FP_TOUCH_RESET_MAX_RETRY);
+                fp_power_on();
+                s_fp_power_on_tick = RTC_GetCycle32k();
+                tmos_start_task(hidEmuTaskId, FP_WAKE_DONE_EVT, 48);  // 30ms
+                return (events ^ FP_WAKE_DONE_EVT);  // s_touch_reset 保持 1
+            }
+            if(!reset_slept) {
+                PRINT("Touch reset: still no-ack after %d retries, giving up\n",
+                      s_touch_reset_retry);
+            }
+            s_touch_reset_retry = 0;
+            s_touch_reset = 0;
+            s_wait_finger_lift = 0;
+            if(s_pending_batt_check) {
+                s_pending_batt_check = 0;
+                HidDev_BattForceUpdate();
+            }
+            tmos_start_task(hidEmuTaskId, TOUCH_SCAN_EVT, 160);  // 100ms settle
+            return (events ^ FP_WAKE_DONE_EVT);
+        }
+
+        if(s_gate_preheat) {
+            // Gate preheat (AUTH_REQUEST etc.): time is available before user
+            // touches sensor, so do full wake (0x55 + password verify).
+            bool got_ready = false;
+            int b;
+            while((b = uart_rx_pop()) >= 0) {
+                if((uint8_t)b == 0x55) { got_ready = true; break; }
+            }
+            if(!got_ready && !fp_is_password_verified()) {
+                uint32_t elapsed = (RTC_GetCycle32k() - s_fp_power_on_tick) / 33;
+                if(elapsed < 200) {
+                    tmos_start_task(hidEmuTaskId, FP_WAKE_DONE_EVT, 16);  // 10ms retry
+                    return (events ^ FP_WAKE_DONE_EVT);
+                }
+                PRINT("FP 0x55 timeout (%dms), proceeding anyway\n", (int)elapsed);
+                (void)elapsed;
+            } else if(got_ready) {
+                uint32_t elapsed = (RTC_GetCycle32k() - s_fp_power_on_tick) / 33;
+                PRINT_V("FP 0x55 at %dms\n", (int)elapsed);
+                (void)elapsed;
+            }
+
+            PRINT_V("FP_WAKE (gate): verifying password...\n");
+            int ret = fp_start_verify();
+            if(ret != FP_OK) {
+                PRINT("FP wake failed: %d\n", ret);
+                fp_power_off();
+                return (events ^ FP_WAKE_DONE_EVT);
+            }
+            fp_reset_power_timer();
+
+            s_gate_preheat = 0;
+#if HAS_RGB_LED
+            led_blink_start(fp_indicator_color());  // green / yellow on low batt
+#elif HAS_FP_LED
+            fp_led_flash(FP_LED_GREEN, 20, 0);  // continuous flash
+#endif
+#if HAS_R599S
+            // R599S: DSP holds Touch IRQ in reset while VCC-MCU is on,
+            // so GPIO touch interrupt won't fire. Start search immediately.
+            PRINT_V("FP ready, starting search (R599S)\n");
+            tmos_set_event(hidEmuTaskId, FP_AUTH_EVT);
+#else
+            // Wait for GPIO touch interrupt, then search.
+            // Search timeout auto-retries (no GPIO wait between retries).
+            PRINT_V("FP ready, waiting for touch...\n");
+#endif
+            return (events ^ FP_WAKE_DONE_EVT);
+        }
+
+        // Cold touch: finger is already on sensor — wait for 0x55 (module ready)
+        // but skip password verify (~110ms saving). 0x55 typically arrives at 30-80ms.
+        if(!fp_is_powered()) {
+            // Module was powered off by a concurrent search (e.g., a second touch
+            // fired FP_AUTH_EVT while this WAKE_DONE was pending). Bail out.
+            PRINT_V("FP_WAKE (cold): module already off, skip\n");
+            s_wait_finger_lift = 0;
+            return (events ^ FP_WAKE_DONE_EVT);
+        }
+        {
+            bool got_ready = false;
+            int b;
+            while((b = uart_rx_pop()) >= 0) {
+                if((uint8_t)b == 0x55) { got_ready = true; break; }
+            }
+            if(!got_ready) {
+                uint32_t elapsed = (RTC_GetCycle32k() - s_fp_power_on_tick) / 33;
+                if(elapsed < 200) {
+                    tmos_start_task(hidEmuTaskId, FP_WAKE_DONE_EVT, 16);  // 10ms retry
+                    return (events ^ FP_WAKE_DONE_EVT);
+                }
+                PRINT("FP_WAKE (cold): 0x55 timeout (%dms), proceeding\n", (int)elapsed);
+            } else {
+                uint32_t elapsed = (RTC_GetCycle32k() - s_fp_power_on_tick) / 33;
+                PRINT_V("FP_WAKE (cold): 0x55 at %dms, skip verify\n", (int)elapsed);
+                (void)elapsed;
+            }
+        }
+        // Check if finger is still on sensor before starting search.
+        // If user tapped and lifted quickly, skip search to avoid 1.5s blocking wait.
+        // R599S: skip this check — DSP resets Touch IRQ on power-up, so pin reads LOW
+        // even though finger is still on the sensor.
+#if !HAS_R599S
+        if(!TOUCH_ReadPin()) {
+            PRINT_V("FP_WAKE (cold): finger already lifted, skip\n");
+#if HAS_RGB_LED
+            led_stop();
+#endif
+            s_wait_finger_lift = 0;
+            fp_reset_power_timer();
+            return (events ^ FP_WAKE_DONE_EVT);
+        }
+#endif
+
+        fp_reset_power_timer();
+
+        if(immurok_security_has_pending_auth()) {
+            PRINT_V("Starting FP auth...\n");
+        } else {
+            PRINT_V("Test FP search...\n");
+        }
+
+#ifndef FP_USE_AUTO_IDENTIFY
+        // Pipeline: kick off GET_IMAGE async here (saves the one-dispatch round
+        // trip through FP_AUTH_EVT → FP_SEARCH_EVT case 0 substate 0) and let
+        // FP_SEARCH_EVT case 0 substate 1 poll the parser for the response.
+        // Guard: skip if search already active (race with concurrent FP_AUTH_EVT)
+        if(s_search_active) {
+            PRINT_V("FP_WAKE_DONE: search already active, skip pipeline\n");
+            return (events ^ FP_WAKE_DONE_EVT);
+        }
+        {
+            extern int fp_send_cmd(uint8_t cmd, const uint8_t *data, uint16_t len);
+
+            s_search_active = 1;
+            s_search_start_time = TMOS_GetSystemClock();
+            s_search_state = 0;          // GET_IMAGE
+            s_search_substate = 1;       // already sent — go straight to "poll"
+            s_search_substate_start = TMOS_GetSystemClock();
+            fp_parser_reset();
+            fp_send_cmd(0x01, NULL, 0);  // CMD_GET_IMAGE
+            tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, FP_SEARCH_POLL_TICKS);
+        }
+#else
+        tmos_start_task(hidEmuTaskId, FP_AUTH_EVT, 1);  // 625us delay
+#endif
+
+        return (events ^ FP_WAKE_DONE_EVT);
+    }
+
+    if(events & FP_AUTH_EVT)
+    {
+        if(s_ota_active) return (events ^ FP_AUTH_EVT);
+
+        // 纵深防御（配 fp_gate_enter 的同名门）：touch-reset / 异步 PS_Sleep
+        // 期间 UART 归它们所有，开搜索必然撞车并把传感器留在非 standby。
+        if(s_touch_reset || s_sleep_retry_active) {
+            PRINT("FP_AUTH_EVT: FP busy (reset=%d sleep=%d), skip\n",
+                  s_touch_reset, s_sleep_retry_active);
+            return (events ^ FP_AUTH_EVT);
+        }
+
+        // Module should already be awake at this point
+        if(!fp_is_powered())
+        {
+            PRINT("FP_AUTH_EVT: module not powered!\n");
+            return (events ^ FP_AUTH_EVT);
+        }
+
+        // Reset power-off timer
+        fp_reset_power_timer();
+
+        // Start non-blocking search state machine
+        if(!s_search_active)
+        {
+            s_search_active = 1;
+            s_search_substate = 0;  // fresh search — parser state is clean
+            s_search_start_time = TMOS_GetSystemClock();
+#ifdef FP_USE_AUTO_IDENTIFY
+            PRINT_V("FP_AUTH_EVT: starting AutoIdentify search...\n");
+#else
+            PRINT_V("FP_AUTH_EVT: starting manual 3-step search...\n");
+            s_search_state = 0;  // Start from GET_IMAGE
+#endif
+            // Yield briefly to let TMOS process BLE events.
+            // uart_recv already kicks TMOS every ~15ms, so 1.25ms is sufficient.
+            tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, 2);  // 1.25ms yield
+        }
+
+        return (events ^ FP_AUTH_EVT);
+    }
+
+    if(events & FP_SEARCH_EVT)
+    {
+        if(s_ota_active) return (events ^ FP_SEARCH_EVT);
+        // Fingerprint search — two modes selected at compile time:
+        // FP_USE_AUTO_IDENTIFY: PSAutoIdentify (0x32), single blocking command (~300ms)
+        // Manual: 3-step state machine GET_IMAGE→GEN_CHAR→SEARCH with TMOS yields
+
+        extern int fp_send_cmd(uint8_t cmd, const uint8_t *data, uint16_t len);
+        extern int fp_recv_ack(uint8_t *ack, uint8_t *data, uint16_t *len, uint32_t timeout_ms);
+
+        if(!s_search_active)
+        {
+            return (events ^ FP_SEARCH_EVT);
+        }
+
+        // 同上的忙门。这里额外把 s_search_active 清掉：否则搜索状态机被
+        // touch-reset / 异步 sleep 切电后会滞留为 1，TOUCH_SCAN_EVT 的
+        // 「search already in progress」分支就会把之后每一次触摸静默吞掉。
+        if(s_touch_reset || s_sleep_retry_active) {
+            PRINT("FP_SEARCH_EVT: FP busy (reset=%d sleep=%d), abort search\n",
+                  s_touch_reset, s_sleep_retry_active);
+            s_search_active = 0;
+            s_search_substate = 0;
+            return (events ^ FP_SEARCH_EVT);
+        }
+
+        // Refresh the 500ms idle watchdog on every search iteration. Without
+        // this, R599S's worst-case 600ms full identify time (per datasheet)
+        // outruns FP_POWER_OFF_DELAY and FP_POWER_OFF_EVT fires mid-SEARCH,
+        // triggering fp_async_off_start. PS_Sleep then collides with the
+        // in-flight SEARCH response on UART1, parser parses the interleaved
+        // bytes as a malformed packet (e.g. raw_slot=96 score=32 observed
+        // 2026-05-19). MIN_SCORE catches that garbage, but the sensor is
+        // left in a bad state. case 3 (WAIT_LIFT) already does this at its
+        // own top; case 0/1/2 were missing the call.
+        fp_reset_power_timer();
+
+        uint8_t ack = 0xFF;
+        uint16_t raw_page_id = 0;
+        uint16_t match_score = 0;
+        int search_done = 0;  // 1 = search produced a final result
+
+#ifdef FP_USE_AUTO_IDENTIFY
+        // === PSAutoIdentify: single command, module handles entire pipeline ===
+        // uart_recv calls TMOS_SystemProcess every ~15ms internally to keep BLE alive.
+        {
+            fp_search_result_t ai_result;
+            int ret = fp_auto_identify(&ai_result);
+            WWDG_SetCounter(0);
+#if HAS_RGB_LED
+            // Gate/auth mode: keep green blink for retry indication
+            // (success/failure handlers set their own LED state)
+            if(!(s_pending_cmd != 0 || immurok_security_has_pending_auth())) {
+                led_stop();  // Non-gate: turn off green LED
+            }
+#endif
+            uint32_t search_ms = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_search_start_time);
+
+            if(ret == FP_OK) {
+                ack = 0x00;
+                raw_page_id = ai_result.page_id;
+                match_score = ai_result.match_score;
+                search_done = 1;
+                PRINT("AutoIdentify matched in %dms\n", (int)search_ms);
+                // Same firmware-side score floor as the manual SEARCH path.
+                if(match_score < FP_MIN_MATCH_SCORE) {
+                    PRINT("AutoIdentify score %d < %d, rejecting\n",
+                          match_score, FP_MIN_MATCH_SCORE);
+                    ack = FP_ACK_NOT_FOUND;
+                    raw_page_id = 0;
+                }
+            } else if(ret == FP_ERR_NOT_FOUND) {
+                ack = FP_ACK_NOT_FOUND;
+                search_done = 1;
+                PRINT("AutoIdentify no match (%dms)\n", (int)search_ms);
+            } else {
+                // Timeout / error — same handling as manual search timeout
+                PRINT("AutoIdentify timeout (%dms)\n", (int)search_ms);
+                s_search_active = 0;
+                s_wait_finger_lift = 1;
+                tmos_start_task(hidEmuTaskId, TOUCH_SCAN_EVT, 48);
+                if(s_pending_cmd != 0)
+                {
+                    uint32_t gate_elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_pending_cmd_start);
+                    if(gate_elapsed > FP_GATE_TIMEOUT_MS)
+                    {
+                        PRINT("AutoIdentify timeout + gate expired (%dms)\n", (int)gate_elapsed);
+#if HAS_RGB_LED
+                        led_blink_start('R');
+                        tmos_start_task(s_led_task_id, LED_OFF_EVT, 1600);
+#elif HAS_FP_LED
+                        fp_led_flash(FP_LED_RED, 15, 3);
+#endif
+                        s_pending_cmd = 0;
+                        s_pending_payload_len = 0;
+                        s_gate_fail_count = 0;
+                        uint8_t rspBuf[1] = { SEC_ERR_TIMEOUT };
+                        ImmurokService_SendResponse(rspBuf, 1);
+                        fp_power_off();
+                    }
+                    else
+                    {
+                        PRINT("AutoIdentify timeout (gate pending, retrying)\n");
+                        tmos_start_task(hidEmuTaskId, FP_AUTH_EVT, 480);  // 300ms — see gate-retry note above
+                    }
+                }
+                else if(immurok_security_has_pending_auth())
+                {
+                    uint32_t auth_elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_pending_cmd_start);
+                    if(auth_elapsed > FP_GATE_TIMEOUT_MS) {
+                        PRINT("Auth timeout (%dms)\n", (int)auth_elapsed);
+#if HAS_RGB_LED
+                        led_blink_start('R');
+                        tmos_start_task(s_led_task_id, LED_OFF_EVT, 1600);
+#endif
+                        uint8_t rspBuf[1] = { SEC_ERR_TIMEOUT };
+                        ImmurokService_SendResponse(rspBuf, 1);
+                        immurok_security_auth_cancel();
+                        fp_power_off();
+                    } else {
+                        PRINT("AutoIdentify timeout (auth pending, retrying)\n");
+                        tmos_start_task(hidEmuTaskId, FP_AUTH_EVT, 480);  // 300ms — see gate-retry note above
+                    }
+                }
+                else
+                {
+#if HAS_RGB_LED
+                    led_solid('R', LED_FLASH_TICKS);
+#elif HAS_FP_LED
+                    fp_led_flash(FP_LED_RED, 25, 1);
+#endif
+                }
+                fp_reset_power_timer();
+                return (events ^ FP_SEARCH_EVT);
+            }
+        }
+#else // !FP_USE_AUTO_IDENTIFY
+        // === Manual 3-step search: GET_IMAGE → GEN_CHAR → SEARCH ===
+        // Each state does send+recv together (UART FIFO is only 8 bytes)
+        // State 3 = post-match finger-lift polling (not subject to search timeout)
+
+        // Check per-search timeout (finger not detected in time)
+        // Skip for state 3 (finger lift uses power-off timer)
+        // Skip for gate/auth mode — use the gate's own 25s timeout instead of 1.5s
+        // to avoid wasteful search restarts that consume BLE supervision budget.
+        if(s_search_state <= 2
+           && s_pending_cmd == 0 && !immurok_security_has_pending_auth())
+        {
+            uint32_t elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_search_start_time);
+            if(elapsed > FP_SEARCH_TIMEOUT_MS)
+            {
+                s_search_active = 0;
+                s_wait_finger_lift = 1;
+                tmos_start_task(hidEmuTaskId, TOUCH_SCAN_EVT, 48);
+                if(s_pending_cmd != 0)
+                {
+                    uint32_t gate_elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_pending_cmd_start);
+                    if(gate_elapsed > FP_GATE_TIMEOUT_MS)
+                    {
+                        PRINT("FP search timeout + gate expired (%dms), clearing cmd 0x%02X\n",
+                              (int)gate_elapsed, s_pending_cmd);
+#if HAS_RGB_LED
+                        led_blink_start('R');
+                        tmos_start_task(s_led_task_id, LED_OFF_EVT, 1600);
+#elif HAS_FP_LED
+                        fp_led_flash(FP_LED_RED, 15, 3);
+#endif
+                        s_pending_cmd = 0;
+                        s_pending_payload_len = 0;
+                        s_gate_fail_count = 0;
+                        uint8_t rspBuf[1] = { SEC_ERR_TIMEOUT };
+                        ImmurokService_SendResponse(rspBuf, 1);
+                        fp_power_off();
+                    }
+                    else
+                    {
+                        PRINT("FP search timeout (gate pending, retrying)\n");
+#if HAS_RGB_LED
+                        led_blink_start(fp_indicator_color());
+#endif
+                        // Retry search immediately — GET_IMAGE will detect finger
+                        tmos_start_task(hidEmuTaskId, FP_AUTH_EVT, 480);  // 300ms — see gate-retry note above
+                    }
+                }
+                else if(immurok_security_has_pending_auth())
+                {
+                    uint32_t auth_elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_pending_cmd_start);
+                    if(auth_elapsed > FP_GATE_TIMEOUT_MS) {
+                        PRINT("Auth timeout (%dms)\n", (int)auth_elapsed);
+#if HAS_RGB_LED
+                        led_blink_start('R');
+                        tmos_start_task(s_led_task_id, LED_OFF_EVT, 1600);
+#endif
+                        uint8_t rspBuf[1] = { SEC_ERR_TIMEOUT };
+                        ImmurokService_SendResponse(rspBuf, 1);
+                        immurok_security_auth_cancel();
+                        fp_power_off();
+                    } else {
+                        PRINT("FP search timeout (auth pending, retrying)\n");
+#if HAS_RGB_LED
+                        led_blink_start(fp_indicator_color());
+#endif
+                        tmos_start_task(hidEmuTaskId, FP_AUTH_EVT, 480);  // 300ms — see gate-retry note above
+                    }
+                }
+                else
+                {
+                    PRINT("FP search timeout\n");
+#if HAS_RGB_LED
+                    led_solid('R', LED_FLASH_TICKS);
+#elif HAS_FP_LED
+                    fp_led_flash(FP_LED_RED, 25, 1);
+#endif
+#if HAS_R599S
+                    // R599S DETECT can latch HIGH after rapid touches: GPIO
+                    // reads "still touching" forever, TOUCH_SCAN_EVT polling
+                    // never sees the lift, s_wait_finger_lift stays 1, and
+                    // the next 100 touches are silently ignored. If the pin
+                    // is still high after a search timeout, the user almost
+                    // certainly lifted their finger — power-cycle to break
+                    // the latch and re-arm the touch path.
+                    if(TOUCH_ReadPin())
+                    {
+                        PRINT("DETECT latched after timeout, power-cycling FP\n");
+                        fp_power_off();
+                        s_wait_finger_lift = 0;
+                    }
+#endif
+                }
+                fp_reset_power_timer();
+                return (events ^ FP_SEARCH_EVT);
+            }
+        }
+
+        {
+            int ret;
+            switch(s_search_state)
+            {
+            case 0:  // GET_IMAGE
+                if(s_search_substate == 0) {
+                    fp_parser_reset();
+                    fp_send_cmd(0x01, NULL, 0);
+                    s_search_substate = 1;
+                    s_search_substate_start = TMOS_GetSystemClock();
+                    tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, FP_SEARCH_POLL_TICKS);
+                    return (events ^ FP_SEARCH_EVT);
+                }
+                ret = fp_try_parse_packet(&ack, NULL, NULL);
+                WWDG_SetCounter(0);
+                if(ret == FP_ERR_TIMEOUT) {
+                    uint32_t elapsed_ms = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_search_substate_start);
+                    if(elapsed_ms < FP_STATE_GET_IMAGE_TMO_MS) {
+                        tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, FP_SEARCH_POLL_TICKS);
+                        return (events ^ FP_SEARCH_EVT);
+                    }
+                    // 400ms with no response — sensor is unresponsive. Do NOT
+                    // re-send here: resending resets the sensor's pending
+                    // command and makes the next response even later. Treat
+                    // as "no finger" — user mode goes to standby, gate/auth
+                    // mode retries via the existing ack=0x02 handler.
+                    PRINT("GET_IMAGE sensor tmo (%dms)\n", (int)elapsed_ms);
+                    ack = 0x02;
+                    ret = FP_OK;
+                }
+                if(ret == FP_ERR_FAIL) {
+                    PRINT("GET_IMAGE parse fail (ring=%d)\n", (int)uart_rx_available());
+                }
+                s_search_substate = 0;
+                if(ret == FP_OK && ack == 0x00)
+                {
+                    // Image captured successfully
+#if HAS_RGB_LED
+                    // Gate mode: keep green blink during search cycle
+                    if(!(s_pending_cmd != 0 || immurok_security_has_pending_auth())) {
+                        led_solid('B', 0);  // Processing → blue
+                    }
+#endif
+                    s_search_state = 1;
+                    tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, 2);  // 1.25ms yield
+                }
+                else if(ret == FP_OK && ack == 0x02)
+                {
+                    // No finger detected
+                    if(s_pending_cmd != 0 || immurok_security_has_pending_auth()) {
+                        // Gate/auth mode: check overall gate timeout
+                        uint32_t gate_elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_pending_cmd_start);
+                        if(gate_elapsed > FP_GATE_TIMEOUT_MS) {
+                            PRINT("GET_IMAGE: gate timeout (%dms)\n", (int)gate_elapsed);
+                            s_search_active = 0;
+#if HAS_FP_LED
+                            fp_led_flash(FP_LED_RED, 15, 3);
+#elif HAS_RGB_LED
+                            led_blink_start('R');
+                            tmos_start_task(s_led_task_id, LED_OFF_EVT, 1600);
+#endif
+                            if(s_pending_cmd != 0) {
+                                s_pending_cmd = 0;
+                                s_pending_payload_len = 0;
+                                s_gate_fail_count = 0;
+                            }
+                            if(immurok_security_has_pending_auth()) {
+                                immurok_security_auth_cancel();
+                            }
+                            uint8_t tmoBuf[1] = { SEC_ERR_TIMEOUT };
+                            ImmurokService_SendResponse(tmoBuf, 1);
+                            fp_power_off();
+                        } else {
+                            tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, 32);  // 20ms yield
+                        }
+                    } else {
+                        // User-initiated: 400ms GET_IMAGE window already gave
+                        // the sensor time to warm up. ack=0x02 (or the
+                        // synthesized-from-timeout 0x02) at this point means
+                        // no finger on the pad → standby. Sensor reports
+                        // "no finger" → user has lifted, cancel any armed
+                        // long-press lock timer.
+                        PRINT("GET_IMAGE: no finger (false touch), standby\n");
+                        s_search_active = 0;
+                        s_wait_finger_lift = 0;
+#if HAS_RGB_LED
+                        s_lock_pending = 0;
+                        tmos_stop_task(s_led_task_id, LOCK_HOLD_EVT);
+                        led_solid('R', 400);  // red 0.25s
+#endif
+                        fp_power_off();
+                    }
+                }
+                else
+                {
+                    // Read failure (0x01) or comm error — retry
+                    tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, 32);  // 20ms yield
+                }
+                return (events ^ FP_SEARCH_EVT);
+
+            case 1:  // GEN_CHAR: async send + poll (~100ms total wall time)
+            {
+                if(s_search_substate == 0) {
+                    uint8_t params[1] = { 1 };
+                    fp_parser_reset();
+                    fp_send_cmd(0x02, params, 1);  // CMD_IMAGE2TZ
+                    s_search_substate = 1;
+                    s_search_substate_start = TMOS_GetSystemClock();
+                    tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, FP_SEARCH_POLL_TICKS);
+                    return (events ^ FP_SEARCH_EVT);
+                }
+                ret = fp_try_parse_packet(&ack, NULL, NULL);
+                WWDG_SetCounter(0);
+                if(ret == FP_ERR_TIMEOUT) {
+                    uint32_t elapsed_ms = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_search_substate_start);
+                    if(elapsed_ms < FP_STATE_GEN_CHAR_TMO_MS) {
+                        tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, FP_SEARCH_POLL_TICKS);
+                        return (events ^ FP_SEARCH_EVT);
+                    }
+                    // Response timed out — treat as failure, retry from GET_IMAGE.
+                    PRINT("FP gen_char timeout\n");
+                    s_search_substate = 0;
+                    s_search_state = 0;
+                    tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, 32);
+                    return (events ^ FP_SEARCH_EVT);
+                }
+                s_search_substate = 0;
+                if(ret == FP_OK && ack == 0x00)
+                {
+                    s_search_state = 2;
+                    tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, 2);  // 1.25ms yield
+                }
+                else
+                {
+                    PRINT("FP gen_char failed\n");
+                    s_search_state = 0;
+                    tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, 32);  // 20ms retry
+                }
+                return (events ^ FP_SEARCH_EVT);
+            }
+
+            case 2:  // SEARCH: async send + poll (~200ms total wall time)
+            {
+                if(s_search_substate == 0) {
+                    uint8_t search_params[5];
+                    search_params[0] = 1;
+                    search_params[1] = 0;
+                    search_params[2] = 0;
+                    search_params[3] = 0;
+                    search_params[4] = FP_SLOT_MAX;
+                    fp_parser_reset();
+                    fp_send_cmd(0x04, search_params, 5);  // CMD_SEARCH
+                    s_search_substate = 1;
+                    s_search_substate_start = TMOS_GetSystemClock();
+                    tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, FP_SEARCH_POLL_TICKS);
+                    return (events ^ FP_SEARCH_EVT);
+                }
+                uint8_t search_result[4];
+                uint16_t result_len = 4;
+                ret = fp_try_parse_packet(&ack, search_result, &result_len);
+                WWDG_SetCounter(0);
+                if(ret == FP_ERR_TIMEOUT) {
+                    uint32_t elapsed_ms = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_search_substate_start);
+                    if(elapsed_ms < FP_STATE_SEARCH_TMO_MS) {
+                        tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, FP_SEARCH_POLL_TICKS);
+                        return (events ^ FP_SEARCH_EVT);
+                    }
+                    // No response within 200ms — treat as comm error.
+                    // ack stays 0xFF → falls through as no-match in shared handler.
+                    ack = 0xFF;
+                }
+                s_search_substate = 0;
+                if(ret == FP_OK && ack == 0x00) {
+                    raw_page_id = (search_result[0] << 8) | search_result[1];
+                    match_score = (search_result[2] << 8) | search_result[3];
+                    // Defense-in-depth: sensor said match, but if score is
+                    // below the firmware floor, treat as no-match. Catches
+                    // chips that defaulted to ScoreLevel < 5 before fp_init
+                    // could write the strict level (e.g. on first boot
+                    // before the WriteReg lands).
+                    if(match_score < FP_MIN_MATCH_SCORE) {
+                        PRINT("FP score %d < %d, rejecting (raw_slot=%d)\n",
+                              match_score, FP_MIN_MATCH_SCORE, raw_page_id);
+                        ack = FP_ACK_NOT_FOUND;
+                        raw_page_id = 0;
+                    }
+                }
+                search_done = 1;
+                break;  // fall through to shared result handling
+            }
+
+            case 3:  // WAIT_LIFT: async poll GET_IMAGE until finger removed
+            {
+                // Reset the FP idle timer on every WAIT_LIFT iteration. The
+                // 10s FP_POWER_OFF_DELAY would otherwise fire mid-hold and
+                // call fp_async_off_start with the finger still on, which
+                // gets stuck because the sensor is silent to PS_Sleep while
+                // touched. Keeping the timer pushed forward means the only
+                // way out of WAIT_LIFT is the lift-detected branch (or the
+                // 60s hard cap below).
+                fp_reset_power_timer();
+
+                // Absolute timeout: prevent infinite loop if sensor truly
+                // stuck. 60s is way past any plausible user hold; if we hit
+                // it, the sensor isn't responding to GET_IMAGE either.
+                uint32_t lift_elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_search_start_time);
+                if(lift_elapsed > 60000) {
+                    // 60s hard cap for a genuinely stuck sensor. Use
+                    // fp_finish_off (no PS_Sleep) — synchronous fp_power_off
+                    // blocks ~4s on no-ack while the BLE supervision window
+                    // expires. The sensor is already non-functional at this
+                    // point; cutting VCC at least frees our state machine.
+                    PRINT("WAIT_LIFT hard timeout (%dms), force off\n",
+                          (int)lift_elapsed);
+                    s_search_active = 0;
+                    s_search_substate = 0;
+                    s_wait_finger_lift = 0;
+                    s_wait_lift_no_match = 0;
+                    fp_finish_off();
+                    return (events ^ FP_SEARCH_EVT);
+                }
+                // No-match soft cap: 1.4.0 commit documented R599S DETECT-
+                // latch on long unregistered-finger holds with sustained
+                // ~50Hz GET_IMAGE polling. By the time this fires, the
+                // long-press lock has already triggered (1s) and the user
+                // is no longer waiting on lift detection — switch to the
+                // async PS_Sleep path which is quiet on the UART.
+                if(s_wait_lift_no_match
+                   && lift_elapsed > FP_WAIT_LIFT_NOMATCH_SOFT_TMO_MS) {
+                    PRINT("WAIT_LIFT no-match soft cap (%dms), async off\n",
+                          (int)lift_elapsed);
+                    s_wait_lift_no_match = 0;
+                    s_search_active = 0;
+                    s_search_substate = 0;
+                    s_wait_finger_lift = 1;  // block re-trigger until lift
+#if HAS_RGB_LED
+                    // LOCK_HOLD has already fired (1s) and either flashed
+                    // white-then-off or hit its suppressed-cleanup path —
+                    // LED should be off. Defensive clear in case anything
+                    // re-armed the persistent red in between.
+                    // 例外：pair-wait 白闪仍在等按键，恢复而非熄灭。
+                    if(s_pair_wait_button) {
+                        led_blink_start_ex('W', 320, 320);
+                    } else {
+                        led_stop();
+                    }
+#endif
+                    fp_async_off_start();
+                    tmos_start_task(hidEmuTaskId, TOUCH_SCAN_EVT, 48);
+                    return (events ^ FP_SEARCH_EVT);
+                }
+                if(s_search_substate == 0) {
+                    fp_parser_reset();
+                    fp_send_cmd(0x01, NULL, 0);
+                    s_search_substate = 1;
+                    s_search_substate_start = TMOS_GetSystemClock();
+                    tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, FP_SEARCH_POLL_TICKS);
+                    return (events ^ FP_SEARCH_EVT);
+                }
+                ret = fp_try_parse_packet(&ack, NULL, NULL);
+                WWDG_SetCounter(0);
+                if(ret == FP_ERR_TIMEOUT) {
+                    uint32_t elapsed_ms = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_search_substate_start);
+                    if(elapsed_ms < FP_STATE_WAIT_LIFT_TMO_MS) {
+                        tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, FP_SEARCH_POLL_TICKS);
+                        return (events ^ FP_SEARCH_EVT);
+                    }
+                    // Response timed out — retry after a longer idle (finger still on).
+                    s_search_substate = 0;
+                    tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, 32);  // 20ms
+                    return (events ^ FP_SEARCH_EVT);
+                }
+                s_search_substate = 0;
+                if(ret == FP_OK && ack == 0x02) {
+                    s_lift_confirm++;
+                    if(s_lift_confirm < FP_WAIT_LIFT_CONFIRM_NEEDED) {
+                        // Need another consecutive 0x02 to confirm lift.
+                        tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, 32);  // 20ms
+                        return (events ^ FP_SEARCH_EVT);
+                    }
+                    PRINT_V("Finger lifted (debounced %d)\n", s_lift_confirm);
+                    s_lift_confirm = 0;
+                    s_search_active = 0;
+                    s_wait_finger_lift = 0;
+                    s_wait_lift_no_match = 0;
+#if HAS_RGB_LED
+                    // Reliable lift signal — cancel pending long-press timer
+                    // and clear the persistent blue match indicator (set in
+                    // the non-gate ack==0x00 branch above).
+                    s_lock_pending = 0;
+                    tmos_stop_task(s_led_task_id, LOCK_HOLD_EVT);
+                    if(s_pair_wait_button) {
+                        /* slot2 登记：指纹门通过时白闪已启动，但手指还压在
+                         * 传感器上，这里抬指若照常 led_stop 会把它杀掉——
+                         * 用户看到的就是「第二台 host 配对从不闪白灯」。
+                         * 恢复白闪，参数与 PAIR_INIT 启动处一致。 */
+                        led_blink_start_ex('W', 320, 320);
+                    } else {
+                        led_stop();
+                    }
+#endif
+                    if(!s_enroll_active) {
+                        bool slept = fp_power_off();
+#if HAS_R599S
+                        // 两种 race 都会让下次 touch-wake 失效,都要跑 touch-reset
+                        // 恢复(power on → 0x55 → PS_Sleep → off,即按钮恢复那套):
+                        // (1) DETECT latch HIGH：PS_Sleep 撞上刚完成的 GET_IMAGE,
+                        //     VCC 一切芯片 MCU 状态损坏,touch IRQ 不再触发。
+                        // (2) sleep no-ack(!slept)：CMD_SLEEP 没被确认,R599S 没进
+                        //     wake-on-touch standby;2-step pair 期间 BLE 高负载会把
+                        //     sleep 的 ack 窗口挤掉(TMOS_SystemProcess 阻塞几百 ms),
+                        //     是高发场景。此时 TOUCH 已被 IN_PD 拉低,只看
+                        //     TOUCH_ReadPin() 会漏判,必须靠 !slept 兜住。
+                        if(TOUCH_ReadPin() || !slept) {
+                            PRINT("post-lift touch recovery (DETECT=%d slept=%d)\n",
+                                  TOUCH_ReadPin(), slept);
+                            s_touch_reset = 1;
+                            s_touch_reset_retry = 0;
+                            fp_power_on();
+                            s_fp_power_on_tick = RTC_GetCycle32k();
+                            tmos_start_task(hidEmuTaskId,
+                                            FP_WAKE_DONE_EVT, 48);  // 30ms
+                        }
+#endif
+                    } else {
+                        fp_reset_power_timer();  // keep module alive for enrollment
+                    }
+                } else {
+                    // Anything other than ack=0x02 → still touching (or comm
+                    // error) → reset debounce counter so a spurious 0x02
+                    // followed by 0x00 doesn't accidentally count as 2-in-a-row.
+                    s_lift_confirm = 0;
+                    tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, 32);  // 20ms
+                }
+                return (events ^ FP_SEARCH_EVT);
+            }
+
+            default:
+                s_search_active = 0;
+                s_wait_finger_lift = 1;
+                tmos_start_task(hidEmuTaskId, TOUCH_SCAN_EVT, 48);
+                return (events ^ FP_SEARCH_EVT);
+            }
+        }
+#endif // FP_USE_AUTO_IDENTIFY
+
+        // ================================================================
+        // Shared result handling (both AUTO_IDENTIFY and manual case 2)
+        // do-while(0) preserves break semantics from original switch-case
+        // ================================================================
+        if(!search_done) {
+            return (events ^ FP_SEARCH_EVT);
+        }
+
+        do {
+            if(ack == 0x00)
+            {
+                // Ignore duplicate matches while ECC is pending/running
+                if(s_long_op_busy) {
+                    PRINT("FP match ignored: ECC busy\n");
+                    fp_reset_power_timer();
+                    break;
+                }
+
+                // Defense in depth: if the cached bitmap says no fingerprint
+                // is enrolled but the module reported ack=0x00 with some
+                // page_id, treat it as a hardware glitch. The downstream
+                // proactive-match path would otherwise sign and emit a 0x21
+                // unlock notification, letting the App unlock the screen
+                // even though no legitimate user fingerprint exists. Drop
+                // it; ENROLL/DELETE keep g_cached_fp_bitmap accurate.
+                if(g_cached_fp_bitmap == 0) {
+                    PRINT("FP match ignored: no fingerprint enrolled (raw_slot=%d)\n", raw_page_id);
+                    fp_reset_power_timer();
+                    break;
+                }
+
+                // Convert physical slot to user finger ID
+                uint16_t page_id = FP_FINGER_ID(raw_page_id);
+
+                // 双主机：专用切换指纹只切主机，绝不落入下面任何一条认证
+                // 路径。放在这里（LED / 优先级分发之前）就是为了让它无法
+                // 被当成认证使用。
+                if(page_id == FP_SWITCH_SLOT) {
+                    uint8_t target = (immurok_security_active_slot() == IMMUROK_SLOT_1)
+                                   ? IMMUROK_SLOT_2 : IMMUROK_SLOT_1;
+
+                    // spec §9：ECDH / proof 交易进行中拒绝切换，避免状态机
+                    // 竞态。登记窗口本身不拦 —— 流程正需要在窗口内切过去。
+                    // （登记只剩 ECDH 一个异步阶段，这一条就覆盖了整个交易期。）
+                    if(immurok_security_get_ecdh_state() != ECDH_STATE_IDLE) {
+                        PRINT("Switch finger ignored: pairing in progress\n");
+#if HAS_RGB_LED
+                        led_solid('R', LED_FLASH_TICKS);
+#endif
+                        fp_reset_power_timer();
+                        break;
+                    }
+                    // 目标槽是否已配对**不做检查**：切换是无条件的循环，
+                    // 跟多主机蓝牙键盘的通道切换一样。切到空槽只是广播一个
+                    // 没有主机 bond 过的地址（看起来没反应），再按一下就
+                    // 切回来了 —— 切换指纹本身就是逃生口。
+                    // 这也正是新增主机所必需的：登记时槽 2 尚未配对，
+                    // 设备必须能以槽 2 的地址广播，主机 2 才发现得了它。
+                    PRINT("Switch finger: slot %d -> %d (occupied=%d), resetting\n",
+                          immurok_security_active_slot(), target,
+                          immurok_security_slot_occupied(target));
+                    // spec §7.3：设备无显示屏，LED 是用户判断当前主机的唯一
+                    // 即时反馈。与广播期配色保持一致：槽 1 蓝、槽 2 白 ——
+                    // 切换瞬间闪的颜色，就是接下来广播时会一直闪的颜色。
+#if HAS_RGB_LED
+                    led_solid((target == IMMUROK_SLOT_1) ? 'B' : 'W', LED_FLASH_TICKS);
+                    DelayMs(200);
+                    led_stop();
+#endif
+                    immurok_slots_set_active(target);
+                    DelayMs(50);
+                    SYS_ResetExecute();   // BLE 地址在 init 时消费，须重启
+                }
+
+                // 走到这里说明不是切换指纹。若没有 app 接收结果，就按原来的
+                // 省电意图早退 —— 上面放宽 TOUCH 门只是为了让切换指纹能用，
+                // 普通认证指纹在无 app 时照旧不该浪费后续流程。
+                if(!s_app_connected && s_pending_cmd == 0
+                   && !immurok_security_has_pending_auth()) {
+                    PRINT("FP match ignored: not switch finger, app not connected\n");
+                    fp_reset_power_timer();
+                    break;
+                }
+#if HAS_RGB_LED
+                // Gate / pending-auth: brief green flash bridges from the
+                // pre-match green-blink state to the upcoming blue "computing"
+                // (KEY_SIGN/KEY_GENERATE/PAIR_*) — the EXEC dispatch delay is
+                // timed to 200ms so the flash completes before blue starts.
+                // Non-gate proactive match: hold blue solid so the long-press
+                // window has a visible "match recognized, holding" indicator.
+                // WAIT_LIFT lift detection clears it on early release;
+                // LOCK_HOLD_EVT white-flash overrides it at 1s.
+                if(s_pending_cmd != 0 || immurok_security_has_pending_auth()) {
+                    led_solid(fp_indicator_color(), LED_FLASH_TICKS);  // green/yellow flash before blue compute
+                } else {
+                    led_solid('B', 0);  // blue stays until lift or lock white-flash
+                }
+#elif HAS_FP_LED
+                fp_led_off();
+#endif
+                s_gate_fail_count = 0;
+                PRINT("FP matched! raw_slot=%d, finger_id=%d, score=%d\n", raw_page_id, page_id, match_score);
+
+                // Gate 场景的 LOCK_HOLD 抑制: pending_cmd / pending_auth 紧接着
+                // 会在 priority 1/2 分支被清零, 1s 后 LOCK_HOLD_EVT fire 时
+                // in_gate 检查全 false 会误触发锁屏 (DELETE_FP / KEY_OTP /
+                // KEY_DELETE / AUTH_REQUEST 都漏抑制).
+                // 仅在确实有 gate 时清, 普通解锁屏幕 (priority 3 proactive
+                // match) 的长按是 by design 的锁屏路径, 不在此抑制.
+                if(s_pending_cmd != 0 || immurok_security_has_pending_auth()) {
+                    s_lock_pending = 0;
+                    tmos_stop_task(s_led_task_id, LOCK_HOLD_EVT);
+                }
+
+                // Expire stale pending command (gate timeout)
+                if(s_pending_cmd != 0)
+                {
+                    uint32_t gate_elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_pending_cmd_start);
+                    if(gate_elapsed > FP_GATE_TIMEOUT_MS)
+                    {
+                        PRINT("Pending cmd 0x%02X expired (%dms), clearing\n", s_pending_cmd, (int)gate_elapsed);
+                        s_pending_cmd = 0;
+                        s_pending_payload_len = 0;
+                        fp_power_off();
+                    }
+                }
+
+                // Priority 1: Execute pending fingerprint-gated command
+                // Skip if ECC already deferred (prevents duplicate sign from rapid touches)
+                if(s_pending_cmd != 0 && !s_long_op_busy)
+                {
+                    uint8_t cmd = s_pending_cmd;
+                    s_pending_cmd = 0;
+                    s_fp_gate_last[fp_gate_cat_for_cmd(cmd)] = TMOS_GetSystemClock();
+                    PRINT("Executing pending cmd 0x%02X after FP verify (cooldown set)\n", cmd);
+
+                    uint8_t rspBuf[2];
+                    switch(cmd) {
+                    case IMMUROK_CMD_ENROLL_START:
+                        // Stop search WAIT_LIFT polling — avoid concurrent UART ops
+                        s_search_active = 0;
+                        tmos_stop_task(hidEmuTaskId, FP_SEARCH_EVT);
+                        s_enroll_page_id = s_pending_payload[0];
+                        s_enroll_step = 0;
+                        s_enroll_substate = 0;
+                        s_enroll_capture = 0;
+                        s_enroll_from_gate = 1;  // verify finger is still on the sensor
+                        s_enroll_active = 1;
+                        tmos_set_event(hidEmuTaskId, FP_ENROLL_EVT);
+                        rspBuf[0] = IMMUROK_RSP_OK;
+                        ImmurokService_SendResponse(rspBuf, 1);
+                        break;
+                    case IMMUROK_CMD_DELETE_FP:
+                    {
+                        // Send gate-approved RSP_OK so daemon's gate resolves.
+                        // Actual delete deferred to FP_GATE_EXEC_EVT (~400ms blocking).
+                        // Use s_deferred_delete_id instead of restoring s_pending_cmd
+                        // to avoid race with concurrent FP match clearing s_pending_cmd.
+                        rspBuf[0] = IMMUROK_RSP_OK;
+                        ImmurokService_SendResponse(rspBuf, 1);
+                        s_deferred_delete_id = s_pending_payload[0];
+                        tmos_start_task(hidEmuTaskId, FP_GATE_EXEC_EVT, 16);  // 10ms yield
+                        break;
+                    }
+                    case IMMUROK_CMD_FACTORY_RESET:
+                    {
+                        // Clear all fingerprints
+                        if(fp_ensure_ready() == FP_OK) {
+                            fp_clear_all();
+                        }
+                        g_cached_fp_bitmap = 0;
+                        // Clear security data (pairing keys, password)
+                        immurok_security_factory_reset();
+                        // Send OK response FIRST, then defer bond erase + reboot
+                        // (ERASE_ALLBONDS terminates link immediately — response would be lost)
+                        rspBuf[0] = IMMUROK_RSP_OK;
+                        ImmurokService_SendResponse(rspBuf, 1);
+                        s_factory_reset_pending = 1;
+                        tmos_start_task(hidEmuTaskId, FP_POWER_OFF_EVT, 320);  // 200ms
+                        break;
+                    }
+                    case IMMUROK_CMD_KEY_DELETE:
+                    {
+                        uint8_t kcat = s_pending_payload[0];
+                        uint8_t kidx = s_pending_payload[1];
+                        rspBuf[0] = (immurok_keystore_delete(kcat, kidx) == 0)
+                                    ? IMMUROK_RSP_OK : SEC_ERR_INTERNAL;
+                        ImmurokService_SendResponse(rspBuf, 1);
+                        break;
+                    }
+                    case IMMUROK_CMD_KEY_COMMIT:
+                    {
+                        uint8_t kcat = s_pending_payload[0];
+                        uint8_t kidx = s_pending_payload[1];
+                        rspBuf[0] = (immurok_keystore_commit(kcat, kidx) == 0)
+                                    ? IMMUROK_RSP_OK : SEC_ERR_INTERNAL;
+                        ImmurokService_SendResponse(rspBuf, 1);
+                        break;
+                    }
+                    case IMMUROK_CMD_KEY_SIGN:
+                    {
+                        // Notify App: fingerprint approved, now signing
+                        uint8_t fpApproved[1] = { 0x10 };  // FP_APPROVED
+                        ImmurokService_SendResponse(fpApproved, 1);
+                        // Defer sign to TMOS event (watchdog callback calls
+                        // TMOS_SystemProcess during ~2s ECC to keep BLE alive).
+                        // 320 ticks = 200ms — matches LED_FLASH_TICKS so the
+                        // green "match OK" flash finishes before the blue
+                        // "computing" blink starts in the EXEC handler.
+                        s_pending_cmd = IMMUROK_CMD_KEY_SIGN;  // restore (cleared above)
+                        s_long_op_busy = 1;  // Lock out duplicate FP matches
+                        tmos_start_task(hidEmuTaskId, FP_GATE_EXEC_EVT, 320);
+                        break;
+                    }
+                    case IMMUROK_CMD_KEY_GENERATE:
+                    {
+                        // Defer keygen to TMOS event (~2s ECC computation)
+                        uint8_t fpApproved[1] = { 0x10 };
+                        ImmurokService_SendResponse(fpApproved, 1);
+                        s_pending_cmd = IMMUROK_CMD_KEY_GENERATE;  // restore
+                        s_long_op_busy = 1;  // Lock out duplicate FP matches
+                        tmos_start_task(hidEmuTaskId, FP_GATE_EXEC_EVT, 320);  // 200ms
+                        break;
+                    }
+                    case IMMUROK_CMD_KEY_OTP_GET:
+                    {
+                        uint8_t kidx = s_pending_payload[0];
+                        uint32_t ts = (uint32_t)s_pending_payload[1]
+                                    | ((uint32_t)s_pending_payload[2] << 8)
+                                    | ((uint32_t)s_pending_payload[3] << 16)
+                                    | ((uint32_t)s_pending_payload[4] << 24);
+                        // Adjust timestamp by elapsed time since gate started
+                        uint32_t elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_pending_cmd_start) / 1000;
+                        ts += elapsed;
+                        uint8_t code[6];
+                        STACK_PROBE_BEGIN();
+                        int totp_rc = immurok_keystore_totp(kidx, ts, code);
+                        STACK_PROBE_REPORT("otp-gate");
+                        if(totp_rc == 0) {
+                            uint8_t rsp7[7];
+                            rsp7[0] = IMMUROK_RSP_OK;
+                            memcpy(&rsp7[1], code, 6);
+                            ImmurokService_SendResponse(rsp7, 7);
+                        } else {
+                            rspBuf[0] = SEC_ERR_INTERNAL;
+                            ImmurokService_SendResponse(rspBuf, 1);
+                        }
+                        break;
+                    }
+                    case IMMUROK_CMD_SLOT_CLEAR:
+                    {
+                        /* 清另一个槽的指纹门过了。不重启 —— 本槽的密钥完好，
+                         * 连接照旧，重启反而把用户踢下线。
+                         *
+                         * 解绑另一台:它的 bond 住在它自己的 SNV 区里
+                         * （immurok_snv.h），库此刻挂着的是本槽的区，够不
+                         * 着，也不该够着 —— 直接裸擦那个区。
+                         *
+                         * 曾经这里按 slot_meta 记的对端地址做 ERASE_SINGLEBOND
+                         * （spec §6.3）。分区后那条调用成了空操作；更糟的是
+                         * 双启动场景两槽对端地址相同，它会精确擦掉当前正连着
+                         * 的这台主机自己的 bond。 */
+                        uint8_t target = s_pending_payload[0];
+                        immurok_snv_erase_slot(target);
+                        PRINT("SLOT_CLEAR other: slot %d SNV area erased\n", target);
+                        int ret = immurok_security_slot_clear(target);
+                        PRINT("SLOT_CLEAR slot=%d (other) ret=%d\n", target, ret);
+                        /* bump gen 仅在 slot_clear 确认成功后才做，否则会停在
+                         * 「新地址 + 旧密钥仍有效」的死状态(spec §7.1 同一顺序
+                         * 约束，参照 own 分支 ~5437 行的既有写法)。 */
+                        if(ret == 0) {
+                            slot_meta_bump_gen(target);
+                        }
+                        /* 指纹门的结果一律是**1 字节状态**，不带命令码 ——
+                         * app 的门结果分发直接读 data[0] 判成败。发 2 字节
+                         * 会被读成 0x3C（命令码）从而永远判失败。 */
+                        rspBuf[0] = (ret == 0) ? IMMUROK_RSP_OK
+                                               : IMMUROK_RSP_INVALID_PARAM;
+                        ImmurokService_SendResponse(rspBuf, 1);
+                        break;
+                    }
+                    case IMMUROK_CMD_PAIR_INIT:
+                    {
+                        /* 登记第二台主机的第一重（指纹）过了 —— 接着挂第二重
+                         * 按键门，和首次配对走同一条路：短按由 BUTTON_SCAN_EVT
+                         * 消费，在那里才真正启动 ECDH。 */
+                        PRINT("Slot enroll: FP ok, waiting for button\n");
+                        s_pair_wait_button = 1;
+                        /* 告诉 app「第一步过了，现在等按键」。没有这条通知，
+                         * app 只能靠猜来点亮引导框里的第一步 —— 猜出来的
+                         * 勾是假的。旧 app 收到未知状态码走 default 忽略。 */
+                        {
+                            uint8_t ntf[2] = { IMMUROK_NTF_PAIR_BUTTON, 0x03 };
+                            ImmurokService_SendResponse(ntf, 2);
+                        }
+#if HAS_RGB_LED
+                        led_blink_start_ex('W', 320, 320);
+                        tmos_stop_task(s_led_task_id, PAIR_BTN_TIMEOUT_EVT);
+                        tmos_start_task(s_led_task_id, PAIR_BTN_TIMEOUT_EVT,
+                                        PAIR_BTN_TIMEOUT_TICKS);
+#endif
+                        break;
+                    }
+                    default:
+                        rspBuf[0] = IMMUROK_RSP_UNKNOWN_CMD;
+                        ImmurokService_SendResponse(rspBuf, 1);
+                        break;
+                    }
+                }
+                // Priority 2: Pending auth request
+                else if(immurok_security_has_pending_auth())
+                {
+                    // Refresh ONLY the AUTH cooldown — never KEYSTORE/ADMIN.
+                    // Original 1.2.6 design said "do not set cooldown" to
+                    // prevent sudo from auto-granting KEY_SIGN access; that
+                    // intent is preserved (we only touch FP_CAT_AUTH). But
+                    // not setting AUTH's own cooldown made 1.2.12's
+                    // "API KEY_READ accepts AUTH or KEYSTORE" useless —
+                    // s_fp_gate_last[FP_CAT_AUTH] stayed 0 forever, so a
+                    // CLI flow that does AUTH_REQUEST → readKeyEntry(.api)
+                    // would still see WAIT_FP on the secret chunk.
+                    s_fp_gate_last[FP_CAT_AUTH] = TMOS_GetSystemClock();
+                    uint8_t rspBuf[1];
+                    rspBuf[0] = SEC_OK;
+                    ImmurokService_SendResponse(rspBuf, 1);
+                    PRINT_V("Auth OK response sent (AUTH cooldown set)\n");
+                    immurok_security_auth_cancel();
+                }
+                // Priority 3: Proactive match - send signed 0x21 notification
+                else
+                {
+                    PRINT_V("FP match OK (no pending auth) - sending signed notify\n");
+
+                    // Build signed notification: [0x21][page_id:2B][hmac:8B] = 11 bytes
+                    int notify_len = immurok_security_sign_fp_match(page_id, s_fp_notify_data);
+                    if(notify_len < 0) {
+                        PRINT("Not paired, cannot send signed notify\n");
+                        fp_power_off();
+                        break;
+                    }
+                    s_fp_notify_len = notify_len;
+
+                    // Send notification. Mark pending until App ACKs (0x22).
+                    // If GATT is disconnected, notification is lost — device will
+                    // re-send on next connection (see GAPROLE_CONNECTED handler).
+                    ImmurokService_SendResponse(s_fp_notify_data, s_fp_notify_len);
+                    s_fp_notify_pending = 1;
+                    s_fp_notify_start_time = TMOS_GetSystemClock();
+                    PRINT_V("FP notify sent (%d bytes), pending ACK\n", s_fp_notify_len);
+                }
+            }
+            else
+            {
+                PRINT("FP no match (ack=0x%02X)\n", ack);
+                uint8_t in_gate = (s_pending_cmd != 0 || immurok_security_has_pending_auth());
+
+                // Red LED for failure indication (0.25s)
+#if HAS_RGB_LED
+                if(in_gate) {
+                    // Gate mode: brief red, then restore green/yellow blink for retry
+                    led_stop();
+                    led_on('R');
+                    s_led_color = fp_indicator_color();  // yellow when battery low, else green
+                    s_led_blink = 1;
+                    s_led_toggle = 0;
+                    tmos_start_task(s_led_task_id, LED_BLINK_EVT, 400);  // 0.25s red then green/yellow blink
+                } else {
+                    // Hold red solid until LOCK_HOLD_EVT white-flash (or
+                    // lift-cleanup via TOUCH_SCAN_EVT / suppressed path) —
+                    // the persistent red is the "no match, still holding"
+                    // indicator that bridges to the long-press lock.
+                    led_solid('R', 0);
+                }
+#elif HAS_FP_LED
+                fp_led_flash(FP_LED_RED, 25, 1);
+#endif
+
+                // Track gate failure count
+                if(in_gate)
+                {
+                    s_gate_fail_count++;
+                    PRINT("FP gate fail count: %d/%d\n", s_gate_fail_count, FP_GATE_MAX_RETRIES);
+
+                    if(s_gate_fail_count >= FP_GATE_MAX_RETRIES)
+                    {
+                        // Max retries reached — terminate gate
+                        PRINT("FP gate: max retries reached, cancelling\n");
+#if HAS_RGB_LED
+                        led_blink_start('R');
+                        tmos_start_task(s_led_task_id, LED_OFF_EVT, 1600);  // 1s
+#elif HAS_FP_LED
+                        fp_led_flash(FP_LED_RED, 15, 3);  // fast flash 3x
+#endif
+                        if(s_pending_cmd != 0) {
+                            s_pending_cmd = 0;
+                            s_pending_payload_len = 0;
+                            uint8_t rspBuf[1] = { SEC_ERR_TIMEOUT };
+                            ImmurokService_SendResponse(rspBuf, 1);
+                        }
+                        if(immurok_security_has_pending_auth()) {
+                            uint8_t rspBuf[1] = { SEC_ERR_TIMEOUT };
+                            ImmurokService_SendResponse(rspBuf, 1);
+                            immurok_security_auth_cancel();
+                        }
+                        s_gate_fail_count = 0;
+                        fp_power_off();
+                        break;
+                    }
+
+                    // Not max retries — notify App + check gate timeout
+                    uint8_t notifyBuf[1] = { 0x07 };  // FP_NOT_MATCH
+                    ImmurokService_SendResponse(notifyBuf, 1);
+
+                    if(s_pending_cmd != 0)
+                    {
+                        uint32_t gate_elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_pending_cmd_start);
+                        if(gate_elapsed > FP_GATE_TIMEOUT_MS)
+                        {
+                            PRINT("FP gate timeout (%dms), cancelling pending cmd 0x%02X\n",
+                                  (int)gate_elapsed, s_pending_cmd);
+#if HAS_RGB_LED
+                            led_blink_start('R');
+                            tmos_start_task(s_led_task_id, LED_OFF_EVT, 1600);
+#elif HAS_FP_LED
+                            fp_led_flash(FP_LED_RED, 15, 3);
+#endif
+                            s_pending_cmd = 0;
+                            s_pending_payload_len = 0;
+                            uint8_t rspBuf[1] = { SEC_ERR_TIMEOUT };
+                            ImmurokService_SendResponse(rspBuf, 1);
+                            s_gate_fail_count = 0;
+                            fp_power_off();
+                            break;
+                        }
+                        else
+                        {
+                            PRINT("FP gate: retry (%dms/%dms)\n", (int)gate_elapsed, FP_GATE_TIMEOUT_MS);
+                        }
+                    }
+                }
+
+                // Restore green LED for next attempt (VER0 only — VER2 restores in TOUCH_SCAN_EVT)
+#if HAS_FP_LED
+                if(s_pending_cmd != 0 || immurok_security_has_pending_auth()) {
+                    fp_led_flash(FP_LED_GREEN, 20, 0);  // continuous flash
+                }
+#endif
+                // Keep power on for retry via next touch IRQ
+                fp_reset_power_timer();
+            }
+        } while(0);
+
+        // Match success + module still on → poll GET_IMAGE for finger lift
+        if(ack == 0x00 && fp_is_powered()) {
+            s_search_state = 3;
+            s_lift_confirm = 0;
+            s_wait_finger_lift = 0;
+            s_wait_lift_no_match = 0;  // match path: no soft cap
+            fp_reset_power_timer();
+            tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, 32);  // 20ms
+        } else if(fp_is_powered() && (s_pending_cmd != 0 || immurok_security_has_pending_auth())) {
+            // Gate mode no-match: auto-retry search via GET_IMAGE polling.
+            // Cannot rely on touch GPIO — R599S DSP holds Touch IRQ in reset
+            // while VCC-MCU is on, so GPIO interrupt never fires.
+            uint32_t gate_elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_pending_cmd_start);
+            if(gate_elapsed > FP_GATE_TIMEOUT_MS) {
+                PRINT("Gate/auth timeout on retry (%dms)\n", (int)gate_elapsed);
+#if HAS_RGB_LED
+                led_blink_start('R');
+                tmos_start_task(s_led_task_id, LED_OFF_EVT, 1600);
+#endif
+                if(s_pending_cmd != 0) {
+                    s_pending_cmd = 0;
+                    s_pending_payload_len = 0;
+                }
+                if(immurok_security_has_pending_auth()) {
+                    immurok_security_auth_cancel();
+                }
+                uint8_t rspBuf[1] = { SEC_ERR_TIMEOUT };
+                ImmurokService_SendResponse(rspBuf, 1);
+                s_gate_fail_count = 0;
+                fp_power_off();
+            } else {
+                s_search_active = 0;
+                s_wait_finger_lift = 0;
+                // 10ms was too aggressive: in sudo / auth dialog long-press
+                // wrong-finger, each retry runs full GET_IMAGE→GEN→SEARCH
+                // (~300-600ms), and 10ms between cycles means the sensor
+                // barely settles before the next round — same UART-hammer
+                // pattern that causes DETECT-latch (commit a922ec0). 480
+                // ticks = 300ms gives the sensor a real recovery window.
+                // s_gate_fail_count + FP_GATE_MAX_RETRIES still caps the
+                // total attempts and FP_GATE_TIMEOUT_MS the wall-clock.
+                tmos_start_task(hidEmuTaskId, FP_AUTH_EVT, 480);  // 300ms
+            }
+        } else {
+            // Non-gate no-match. Enter WAIT_LIFT (case 3) to poll GET_IMAGE
+            // for the user lifting, mirroring the match-success path —
+            // this keeps the persistent red LED solid while the long-press
+            // lock window counts down, lets a lift before 1s cancel the
+            // lock cleanly, and avoids the green→blue→red cycling caused
+            // by R599S DETECT toggling under sensor-power-on hold.
+            //
+            // Safety: 1.4.0 commit 0ddb770 documented this exact path as
+            // 100% reproducing R599S DETECT-latch on long holds (10s+,
+            // sustained ~50Hz GET_IMAGE). The case 3 handler now bails to
+            // fp_async_off_start after FP_WAIT_LIFT_NOMATCH_SOFT_TMO_MS
+            // (2s) when entered with s_wait_lift_no_match=1, which is
+            // well past the 1s lock fire and bounds the UART hammer to
+            // ~100 polls — far below the documented failure threshold.
+            if(fp_is_powered()) {
+                s_search_state = 3;
+                s_search_substate = 0;
+                s_lift_confirm = 0;
+                s_wait_finger_lift = 0;
+                s_wait_lift_no_match = 1;
+                fp_reset_power_timer();
+                tmos_start_task(hidEmuTaskId, FP_SEARCH_EVT, 32);  // 20ms
+            } else {
+                // Already off (e.g., gate-mode bailout above) — fall back to
+                // the GPIO-based touch wait used by non-R599S sensors.
+                s_search_active = 0;
+                s_wait_finger_lift = 1;
+                tmos_start_task(hidEmuTaskId, TOUCH_SCAN_EVT, 48);
+            }
+        }
+
+        return (events ^ FP_SEARCH_EVT);
+    }
+
+    if(events & FP_ENROLL_EVT)
+    {
+        if(s_ota_active) {
+            s_enroll_active = 0;
+            s_enroll_substate = 0;
+            return (events ^ FP_ENROLL_EVT);
+        }
+
+        // Manual step-by-step enrollment using individual commands:
+        //   PS_GetEnrollImage (0x29) → PS_GenChar (0x02) → PS_RegModel (0x05) → PS_StoreChar (0x06)
+        // Each TMOS event does one short UART exchange (~50-200ms), keeping BLE alive.
+
+        extern int fp_send_cmd(uint8_t cmd, const uint8_t *data, uint16_t len);
+        extern int fp_recv_ack(uint8_t *ack, uint8_t *data, uint16_t *len, uint32_t timeout_ms);
+        extern void uart_flush(void);
+
+        #define ENROLL_TOTAL  FP_ENROLL_CAPTURES
+        #define ENROLL_TIMEOUT_MS  20000   // 20s per-step timeout (waiting for finger)
+        // (mode 1) max consecutive 0x28 overlap rejects on one slice before we
+        // accept it anyway, so a finger that can't yield a new area can't deadlock.
+        #define ENROLL_OVERLAP_MAX_RETRY  4
+
+        uint8_t rspBuf[4];
+        uint8_t ack = 0xFF;
+
+        if(!s_enroll_active) {
+            s_enroll_step = 0;
+            s_enroll_substate = 0;
+            return (events ^ FP_ENROLL_EVT);
+        }
+
+        switch(s_enroll_step) {
+
+        case 0: {
+            // ── INIT: wake module, start green blink ──
+            PRINT_V("ENROLL_EVT: manual enroll finger %d (slot %d, %d captures)\n",
+                  s_enroll_page_id, FP_SLOT(s_enroll_page_id), ENROLL_TOTAL);
+            s_enroll_substate = 0;
+            int wake_ret = fp_ensure_ready();
+            if(wake_ret != FP_OK) {
+                PRINT("ENROLL_EVT: wake failed %d\n", wake_ret);
+                rspBuf[0] = 0x11;
+                rspBuf[1] = FP_ENROLL_FAILED;
+                rspBuf[2] = 0;
+                rspBuf[3] = 0;
+                ImmurokService_SendResponse(rspBuf, 4);
+                s_enroll_active = 0;
+                s_enroll_substate = 0;
+                fp_async_off_start();
+                return (events ^ FP_ENROLL_EVT);
+            }
+            uart_flush();
+#if HAS_RGB_LED
+            led_blink_start_ex('G', 320, 320);  // fast blink 200ms on/off
+#elif HAS_FP_LED
+            fp_led_flash(FP_LED_GREEN, 10, 0);  // continuous fast flash
+#endif
+
+            // Decide whether to wait for a finger lift before capture 1.
+            // When ENROLL_START was unlocked by an FP gate verify (re-enroll,
+            // bitmap != 0), the verify finger is GUARANTEED still on the
+            // sensor — go straight to the step-3 wait-lift loop so capture 1
+            // comes from a fresh, deliberate press (App shows "lift, then
+            // press again"). We must NOT probe with 0x29 here: right after the
+            // gate SEARCH the sensor is busy and a 50ms probe often times out,
+            // misdetecting "no finger" → step 1 would then capture the held
+            // verify finger as slice 1 (no green-blink wait shown; slice 2
+            // overlaps it → spurious red). For first-ever enrollment there is
+            // no verify finger, so a short probe is still worthwhile to catch
+            // a user already resting a finger on the pad.
+            uint8_t finger_on;
+            if(s_enroll_from_gate) {
+                finger_on = 1;
+            } else {
+                fp_send_cmd(0x29, NULL, 0);
+                int probe = fp_recv_ack(&ack, NULL, NULL, 50);
+                finger_on = (probe == FP_OK && ack == FP_ACK_SUCCESS);
+            }
+            s_enroll_from_gate = 0;
+
+            rspBuf[0] = 0x11;
+            rspBuf[1] = finger_on ? FP_ENROLL_LIFT_FINGER : FP_ENROLL_WAITING;
+            rspBuf[2] = 0;
+            rspBuf[3] = ENROLL_TOTAL;
+            ImmurokService_SendResponse(rspBuf, 4);
+
+            s_enroll_capture = 0;
+            s_enroll_overlap_retries = 0;
+            s_enroll_step = finger_on ? 3 : 1;
+            s_enroll_start = TMOS_GetSystemClock();
+            tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, 80);  // 50ms yield for BLE
+            break;
+        }
+
+        case 1: {
+            // ── GET_ENROLL_IMAGE (0x29): wait for finger on sensor ──
+            // Keep-alive: emit a small notif every ~3s while polling so the
+            // BLE link sees fresh app-layer TX. Without this, a >6s pause
+            // between captures (user thinking, looking at progress, etc.)
+            // triggers BLE supervision timeout in macOS / CH592F LL even
+            // though slave is awake (g_sleep_inhibit holds it active).
+            // Use 0x11+FP_ENROLL_WAITING (4 bytes) so the frame matches
+            // App's existing enrollment-status handler — old [0x12,...]
+            // opcode collided with DELETE_FP (0x12), corrupting any
+            // concurrent gate / responseCallback (e.g. GET_STATUS run
+            // during enroll). App dispatches "waiting" → no UI change.
+            static uint32_t s_ka_last_tick = 0;
+            uint32_t now = TMOS_GetSystemClock();
+            if(now - s_ka_last_tick > 4800) {  // ~3s in 625µs ticks
+                s_ka_last_tick = now;
+                uint8_t ka[4] = { 0x11, FP_ENROLL_WAITING,
+                                  s_enroll_capture, ENROLL_TOTAL };
+                ImmurokService_SendResponse(ka, 4);
+            }
+            if(s_enroll_substate == 0) {
+                fp_parser_reset();
+                fp_send_cmd(0x29, NULL, 0);
+                s_enroll_substate = 1;
+                s_enroll_substate_start = TMOS_GetSystemClock();
+                tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, FP_ENROLL_POLL_TICKS);
+                return (events ^ FP_ENROLL_EVT);
+            }
+
+            int ret = fp_try_parse_packet(&ack, NULL, NULL);
+            WWDG_SetCounter(0);
+            if(ret == FP_ERR_TIMEOUT) {
+                uint32_t wait_ms = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_enroll_substate_start);
+                if(wait_ms < FP_ENROLL_GET_IMAGE_TMO_MS) {
+                    tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, FP_ENROLL_POLL_TICKS);
+                    return (events ^ FP_ENROLL_EVT);
+                }
+                // No complete response: treat this poll as "no finger" and
+                // retry later. The next send may flush a truly stale partial.
+                s_enroll_substate = 0;
+                ret = FP_OK;
+                ack = FP_ACK_NO_FINGER;
+            } else {
+                s_enroll_substate = 0;
+            }
+
+            if(ret == FP_OK && ack == FP_ACK_SUCCESS) {
+                // Finger detected, image captured → generate feature
+                PRINT_V("ENROLL_EVT: image captured (capture %d/%d)\n", s_enroll_capture + 1, ENROLL_TOTAL);
+                s_enroll_step = 2;
+                s_enroll_substate = 0;
+                tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, 80);  // 50ms yield for BLE
+            }
+            else {
+                // No finger (0x02), UART timeout, or transient error — retry
+                // Only fail on overall 20s timeout, not on individual poll errors
+                if(ret == FP_OK && ack != FP_ACK_NO_FINGER) {
+                    PRINT("ENROLL_EVT: GetEnrollImage ack=0x%02X, retrying\n", ack);
+                }
+                uint32_t elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_enroll_start);
+                if(elapsed > ENROLL_TIMEOUT_MS) {
+                    PRINT("ENROLL_EVT: timeout waiting for finger (%dms)\n", (int)elapsed);
+                    rspBuf[0] = 0x11;
+                    rspBuf[1] = FP_ENROLL_FAILED;
+                    rspBuf[2] = 0;
+                    rspBuf[3] = 0;
+                    ImmurokService_SendResponse(rspBuf, 4);
+                    s_enroll_active = 0;
+                    s_enroll_substate = 0;
+#if HAS_RGB_LED
+                    led_solid('R', LED_FLASH_TICKS);
+#elif HAS_FP_LED
+                    fp_led_flash(FP_LED_RED, 25, 1);
+#endif
+                    fp_async_off_start();
+                    return (events ^ FP_ENROLL_EVT);
+                }
+                tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, 320);  // retry 200ms
+            }
+            break;
+        }
+
+        case 2: {
+            // ── GEN_CHAR (0x02): generate feature from captured image ──
+            uint8_t buffer_id = s_enroll_capture + 1;  // CharBuffer 1..12
+            if(s_enroll_substate == 0) {
+                fp_parser_reset();
+                fp_send_cmd(0x02, &buffer_id, 1);
+                s_enroll_substate = 1;
+                s_enroll_substate_start = TMOS_GetSystemClock();
+                tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, FP_ENROLL_POLL_TICKS);
+                return (events ^ FP_ENROLL_EVT);
+            }
+
+            int ret = fp_try_parse_packet(&ack, NULL, NULL);
+            WWDG_SetCounter(0);
+            if(ret == FP_ERR_TIMEOUT) {
+                uint32_t wait_ms = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_enroll_substate_start);
+                if(wait_ms < FP_ENROLL_GEN_CHAR_TMO_MS) {
+                    tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, FP_ENROLL_POLL_TICKS);
+                    return (events ^ FP_ENROLL_EVT);
+                }
+                s_enroll_substate = 0;
+            } else {
+                s_enroll_substate = 0;
+            }
+
+            // (mode 1) 0x28 = current feature overlaps the previous one too much.
+            // Soft-retry (don't count) up to ENROLL_OVERLAP_MAX_RETRY, prompting
+            // the user to shift position; beyond that, accept this slice anyway
+            // (degrade to mode-0 behavior) so enrollment can't deadlock.
+            uint8_t accept = (ret == FP_OK && ack == FP_ACK_SUCCESS);
+            if(ret == FP_OK && ack == FP_ACK_OVERLAP) {
+                if(++s_enroll_overlap_retries >= ENROLL_OVERLAP_MAX_RETRY) {
+                    PRINT("ENROLL_EVT: overlap x%d, accepting capture %d anyway\n",
+                          s_enroll_overlap_retries, s_enroll_capture + 1);
+                    accept = 1;
+                } else {
+                    PRINT("ENROLL_EVT: GenChar overlap (0x28), shift finger (retry %d)\n",
+                          s_enroll_overlap_retries);
+                    // No red flash here: overlap is a soft "shift a bit" hint,
+                    // not a failure. Red is reserved for real enroll failures;
+                    // a red flash right after the gate verify reads as "auth
+                    // rejected". The green blink keeps running (set on the
+                    // previous lift / step 0) and the App shows the shake +
+                    // "shift your finger" prompt.
+                    rspBuf[0] = 0x11;
+                    rspBuf[1] = FP_ENROLL_OVERLAP;
+                    rspBuf[2] = s_enroll_capture;
+                    rspBuf[3] = ENROLL_TOTAL;
+                    ImmurokService_SendResponse(rspBuf, 4);
+                    s_enroll_step = 3;  // wait for lift, then recapture same slice
+                    s_enroll_substate = 0;
+                    tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, 480);  // 300ms pause
+                    break;
+                }
+            }
+
+            if(accept) {
+                s_enroll_overlap_retries = 0;
+                s_enroll_capture++;
+                PRINT_V("ENROLL_EVT: GenChar OK (capture %d/%d)\n", s_enroll_capture, ENROLL_TOTAL);
+
+                // Notify host: CAPTURED
+                rspBuf[0] = 0x11;
+                rspBuf[1] = FP_ENROLL_CAPTURED;
+                rspBuf[2] = s_enroll_capture;
+                rspBuf[3] = ENROLL_TOTAL;
+                ImmurokService_SendResponse(rspBuf, 4);
+
+                if(s_enroll_capture < ENROLL_TOTAL) {
+                    // More captures needed → wait for finger lift
+                    s_enroll_step = 3;
+                    s_enroll_substate = 0;
+                    tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, 320);  // 200ms pause
+                } else {
+                    // All captures done → merge templates
+                    // 200ms yield: let BLE transmit the CAPTURED notification
+                    // before step 4 sends PROCESSING (60ms BLE interval)
+                    s_enroll_step = 4;
+                    s_enroll_substate = 0;
+                    tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, 320);  // 200ms
+                }
+            }
+            else if(ret == FP_OK && (ack == FP_ACK_IMAGE_SMALL || ack == FP_ACK_IMAGE_MESS)) {
+                // Bad quality — brief red flash, re-capture same buffer
+                PRINT("ENROLL_EVT: GenChar quality fail ack=0x%02X, retrying capture %d\n",
+                      ack, s_enroll_capture + 1);
+#if HAS_RGB_LED
+                led_solid('R', LED_FLASH_TICKS);
+#elif HAS_FP_LED
+                fp_led_flash(FP_LED_RED, 25, 1);
+#endif
+                s_enroll_step = 3;  // wait for lift, then back to step 1
+                s_enroll_substate = 0;
+                tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, 480);  // 300ms pause
+            }
+            else {
+                // Fatal error
+                PRINT("ENROLL_EVT: GenChar fatal error ret=%d ack=0x%02X\n", ret, ack);
+                rspBuf[0] = 0x11;
+                rspBuf[1] = FP_ENROLL_FAILED;
+                rspBuf[2] = 0;
+                rspBuf[3] = 0;
+                ImmurokService_SendResponse(rspBuf, 4);
+                s_enroll_active = 0;
+                s_enroll_substate = 0;
+#if HAS_RGB_LED
+                led_solid('R', LED_FLASH_TICKS);
+#elif HAS_FP_LED
+                fp_led_flash(FP_LED_RED, 25, 1);
+#endif
+                fp_async_off_start();
+                return (events ^ FP_ENROLL_EVT);
+            }
+            break;
+        }
+
+        case 3: {
+            // ── WAIT FINGER LIFT: poll until finger removed ──
+            if(s_enroll_substate == 0) {
+                fp_parser_reset();
+                fp_send_cmd(0x29, NULL, 0);
+                s_enroll_substate = 1;
+                s_enroll_substate_start = TMOS_GetSystemClock();
+                tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, FP_ENROLL_POLL_TICKS);
+                return (events ^ FP_ENROLL_EVT);
+            }
+
+            int ret = fp_try_parse_packet(&ack, NULL, NULL);
+            WWDG_SetCounter(0);
+            if(ret == FP_ERR_TIMEOUT) {
+                uint32_t wait_ms = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_enroll_substate_start);
+                if(wait_ms < FP_ENROLL_WAIT_LIFT_TMO_MS) {
+                    tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, FP_ENROLL_POLL_TICKS);
+                    return (events ^ FP_ENROLL_EVT);
+                }
+                s_enroll_substate = 0;
+            } else {
+                s_enroll_substate = 0;
+            }
+
+            if(ret == FP_OK && ack == FP_ACK_NO_FINGER) {
+                // Finger lifted
+                PRINT_V("ENROLL_EVT: finger lifted (capture %d/%d)\n", s_enroll_capture, ENROLL_TOTAL);
+                rspBuf[0] = 0x11;
+                rspBuf[1] = FP_ENROLL_LIFT_FINGER;
+                rspBuf[2] = s_enroll_capture;
+                rspBuf[3] = ENROLL_TOTAL;
+                ImmurokService_SendResponse(rspBuf, 4);
+#if HAS_RGB_LED
+                led_blink_start_ex('G', 320, 320);  // resume fast green blink
+#elif HAS_FP_LED
+                fp_led_flash(FP_LED_GREEN, 10, 0);  // continuous fast flash
+#endif
+                s_enroll_start = TMOS_GetSystemClock();  // reset timeout
+                s_enroll_step = 1;  // back to GET_ENROLL_IMAGE
+                s_enroll_substate = 0;
+                tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, 80);  // 50ms yield for BLE
+            }
+            else if(ret == FP_OK && ack == FP_ACK_SUCCESS) {
+                // Finger still on sensor — check timeout and retry
+                uint32_t elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_enroll_start);
+                if(elapsed > ENROLL_TIMEOUT_MS) {
+                    PRINT("ENROLL_EVT: timeout waiting for finger lift (%dms)\n", (int)elapsed);
+                    rspBuf[0] = 0x11;
+                    rspBuf[1] = FP_ENROLL_FAILED;
+                    rspBuf[2] = 0;
+                    rspBuf[3] = 0;
+                    ImmurokService_SendResponse(rspBuf, 4);
+                    s_enroll_active = 0;
+                    s_enroll_substate = 0;
+#if HAS_RGB_LED
+                    led_solid('R', LED_FLASH_TICKS);
+#elif HAS_FP_LED
+                    fp_led_flash(FP_LED_RED, 25, 1);
+#endif
+                    fp_async_off_start();
+                    return (events ^ FP_ENROLL_EVT);
+                }
+                tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, 320);  // retry 200ms
+            }
+            else {
+                // Communication error — retry with timeout guard
+                uint32_t elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_enroll_start);
+                if(elapsed > ENROLL_TIMEOUT_MS) {
+                    PRINT("ENROLL_EVT: comm error timeout (%dms)\n", (int)elapsed);
+                    rspBuf[0] = 0x11;
+                    rspBuf[1] = FP_ENROLL_FAILED;
+                    rspBuf[2] = 0;
+                    rspBuf[3] = 0;
+                    ImmurokService_SendResponse(rspBuf, 4);
+                    s_enroll_active = 0;
+                    s_enroll_substate = 0;
+#if HAS_RGB_LED
+                    led_solid('R', LED_FLASH_TICKS);
+#elif HAS_FP_LED
+                    fp_led_flash(FP_LED_RED, 25, 1);
+#endif
+                    fp_async_off_start();
+                    return (events ^ FP_ENROLL_EVT);
+                }
+                PRINT("ENROLL_EVT: finger lift poll error ret=%d ack=0x%02X, retrying\n", ret, ack);
+                tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, 320);  // retry 200ms
+            }
+            break;
+        }
+
+        case 4: {
+            // ── REG_MODEL (0x05): merge all captured features ──
+            if(s_enroll_substate == 0) {
+                PRINT_V("ENROLL_EVT: merging %d captures\n", ENROLL_TOTAL);
+                rspBuf[0] = 0x11;
+                rspBuf[1] = FP_ENROLL_PROCESSING;
+                rspBuf[2] = ENROLL_TOTAL;
+                rspBuf[3] = ENROLL_TOTAL;
+                ImmurokService_SendResponse(rspBuf, 4);
+
+                fp_parser_reset();
+                fp_send_cmd(0x05, NULL, 0);
+                s_enroll_substate = 1;
+                s_enroll_substate_start = TMOS_GetSystemClock();
+                tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, FP_ENROLL_POLL_TICKS);
+                return (events ^ FP_ENROLL_EVT);
+            }
+
+            int ret = fp_try_parse_packet(&ack, NULL, NULL);
+            WWDG_SetCounter(0);
+            if(ret == FP_ERR_TIMEOUT) {
+                uint32_t wait_ms = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_enroll_substate_start);
+                if(wait_ms < FP_ENROLL_REG_MODEL_TMO_MS) {
+                    tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, FP_ENROLL_POLL_TICKS);
+                    return (events ^ FP_ENROLL_EVT);
+                }
+                s_enroll_substate = 0;
+            } else {
+                s_enroll_substate = 0;
+            }
+
+            if(ret == FP_OK && ack == FP_ACK_SUCCESS) {
+                PRINT_V("ENROLL_EVT: RegModel OK\n");
+                s_enroll_step = 5;
+                s_enroll_substate = 0;
+                tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, 80);  // 50ms yield for BLE
+            }
+            else {
+                PRINT("ENROLL_EVT: RegModel failed ret=%d ack=0x%02X\n", ret, ack);
+                rspBuf[0] = 0x11;
+                rspBuf[1] = FP_ENROLL_FAILED;
+                rspBuf[2] = 0;
+                rspBuf[3] = 0;
+                ImmurokService_SendResponse(rspBuf, 4);
+                s_enroll_active = 0;
+                s_enroll_substate = 0;
+#if HAS_RGB_LED
+                led_solid('R', LED_FLASH_TICKS);
+#elif HAS_FP_LED
+                fp_led_flash(FP_LED_RED, 25, 1);
+#endif
+                fp_async_off_start();
+                return (events ^ FP_ENROLL_EVT);
+            }
+            break;
+        }
+
+        case 5: {
+            // ── STORE_CHAR (0x06): save merged template to flash ──
+            uint16_t page = FP_SLOT(s_enroll_page_id);
+            uint8_t params[3];
+            params[0] = 1;                     // CharBuffer 1
+            params[1] = (page >> 8) & 0xFF;    // page_id high
+            params[2] = page & 0xFF;            // page_id low
+
+            if(s_enroll_substate == 0) {
+                fp_parser_reset();
+                fp_send_cmd(0x06, params, 3);
+                s_enroll_substate = 1;
+                s_enroll_substate_start = TMOS_GetSystemClock();
+                tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, FP_ENROLL_POLL_TICKS);
+                return (events ^ FP_ENROLL_EVT);
+            }
+
+            int ret = fp_try_parse_packet(&ack, NULL, NULL);
+            WWDG_SetCounter(0);
+            if(ret == FP_ERR_TIMEOUT) {
+                uint32_t wait_ms = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_enroll_substate_start);
+                if(wait_ms < FP_ENROLL_STORE_TMO_MS) {
+                    tmos_start_task(hidEmuTaskId, FP_ENROLL_EVT, FP_ENROLL_POLL_TICKS);
+                    return (events ^ FP_ENROLL_EVT);
+                }
+                s_enroll_substate = 0;
+            } else {
+                s_enroll_substate = 0;
+            }
+
+            if(ret == FP_OK && ack == FP_ACK_SUCCESS) {
+                PRINT("ENROLL_EVT: SUCCESS (slot %d)\n", FP_SLOT(s_enroll_page_id));
+#if HAS_RGB_LED
+                led_stop();
+                led_solid('B', 400);  // blue 0.25s
+#elif HAS_FP_LED
+                fp_led_flash(FP_LED_BLUE, 25, 1);
+#endif
+                // Update bitmap BEFORE sending COMPLETE — daemon queries
+                // FP_LIST immediately after receiving COMPLETE notification
+                fp_get_fingerprint_bitmap(&g_cached_fp_bitmap);
+                rspBuf[0] = 0x11;
+                rspBuf[1] = FP_ENROLL_COMPLETE;
+                rspBuf[2] = ENROLL_TOTAL;
+                rspBuf[3] = ENROLL_TOTAL;
+                ImmurokService_SendResponse(rspBuf, 4);
+                // No separate RSP_OK needed — COMPLETE notification is sufficient.
+                // Sending two notifications back-to-back overflows the GATT queue.
+                s_enroll_active = 0;
+                s_enroll_substate = 0;
+                fp_async_off_start();
+            }
+            else {
+                PRINT("ENROLL_EVT: StoreChar failed ret=%d ack=0x%02X\n", ret, ack);
+                rspBuf[0] = 0x11;
+                rspBuf[1] = FP_ENROLL_FAILED;
+                rspBuf[2] = 0;
+                rspBuf[3] = 0;
+                ImmurokService_SendResponse(rspBuf, 4);
+                s_enroll_active = 0;
+                s_enroll_substate = 0;
+#if HAS_RGB_LED
+                led_solid('R', LED_FLASH_TICKS);
+#elif HAS_FP_LED
+                fp_led_flash(FP_LED_RED, 25, 1);
+#endif
+                fp_async_off_start();
+            }
+            break;
+        }
+
+        default:
+            PRINT("ENROLL_EVT: invalid step %d\n", s_enroll_step);
+            s_enroll_active = 0;
+            s_enroll_substate = 0;
+            fp_async_off_start();
+            break;
+        }  // switch(s_enroll_step)
+
+        return (events ^ FP_ENROLL_EVT);
+    }
+
+    if(events & FP_NOTIFY_RETRY_EVT)
+    {
+        // Re-send pending FP match notification after reconnect.
+        // The first send was lost because GATT wasn't connected.
+        if(s_fp_notify_pending && s_fp_notify_len > 0)
+        {
+            // Expire after 30s — don't auto-unlock from a stale match
+            uint32_t elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_fp_notify_start_time);
+            if(elapsed > 30000) {
+                PRINT("Pending FP notify expired (%dms)\n", (int)elapsed);
+                s_fp_notify_pending = 0;
+            } else {
+                PRINT_V("Re-sending pending FP notify (%d bytes, %dms old)\n",
+                      s_fp_notify_len, (int)elapsed);
+                ImmurokService_SendResponse(s_fp_notify_data, s_fp_notify_len);
+            }
+        }
+        return (events ^ FP_NOTIFY_RETRY_EVT);
+    }
+
+    if(events & HID_KEY_RELEASE_EVT)
+    {
+        // Delayed key release — ensures press and release go in separate BLE packets.
+        // Retry on failure: if BLE buffer is full, GATT_Notification fails and
+        // CTRL stays stuck (macOS interprets click as right-click).
+        uint8_t buf[HID_KEYBOARD_IN_RPT_LEN] = {0};
+        uint8_t ret = HidDev_Report(HID_RPT_ID_KEY_IN, HID_REPORT_TYPE_INPUT,
+                                    HID_KEYBOARD_IN_RPT_LEN, buf);
+        if(ret != SUCCESS)
+        {
+            PRINT("Key release failed (0x%02X), retrying in 10ms\n", ret);
+            tmos_start_task(hidEmuTaskId, HID_KEY_RELEASE_EVT, 16);  // 10ms retry
+        }
+        return (events ^ HID_KEY_RELEASE_EVT);
+    }
+
+    if(events & FP_POWER_OFF_EVT)
+    {
+        // OTA inactivity watchdog: this slot is repurposed during OTA mode
+        // since FP is powered off and the FP idle path is dormant. If the
+        // client (ota-update.py) was killed mid-session and the daemon never
+        // got a chance to clean up, this fires 10s after the last OTA cmd
+        // and restores the device to idle. Must be checked before the FP
+        // logic — fp_is_powered() is false during OTA so the FP branch
+        // would early-out anyway, but the gate-pending re-arm below would
+        // mis-fire on s_pending_cmd_start state from before OTA entry.
+        if(s_ota_active) {
+            ota_abort_to_idle();
+            return (events ^ FP_POWER_OFF_EVT);
+        }
+        // own SLOT_CLEAR 阶段 1：应答已发出。擦本槽对端的 bond（连着时只是
+        // 标记）、主动断链，再等 800ms 让 TMOS 处理链路终止（真删发生在此）。
+        if(s_factory_reset_pending == 2) {
+            uint8_t ptype, paddr[6];
+            uint8_t slot = immurok_security_active_slot();
+            s_factory_reset_pending = 3;
+            if(slot_meta_get_peer(slot, &ptype, paddr) == 0) {
+                bond_erase_peer(ptype, paddr, "CLR own");
+            }
+            if(s_ble_connected) GAPRole_TerminateLink(hidEmuConnHandle);
+            tmos_start_task(hidEmuTaskId, FP_POWER_OFF_EVT, MS1_TO_SYSTEM_TIME(800));
+            return (events ^ FP_POWER_OFF_EVT);
+        }
+        // own SLOT_CLEAR 阶段 2：看回收结果，复位换地址。
+        if(s_factory_reset_pending == 3) {
+            uint8_t bc = 0;
+            GAPBondMgr_GetParameter(GAPBOND_BOND_COUNT, &bc);
+            bond_dump("term");
+            PRINT("CLR own: bonds after term=%d\n", bc);
+            // 保险：本槽的区只住本槽的 bond，复位前整区裸擦。上面的
+            // ERASE_SINGLEBOND 若又碰上「连着时只标记」之类的库行为，
+            // 这一擦兜底，不会再留下一条陈旧 bond 占位。
+            immurok_snv_erase_slot(immurok_security_active_slot());
+#if HAS_RGB_LED
+            led_stop();
+#endif
+            DelayMs(50);
+            SYS_ResetExecute();
+        }
+        // Deferred factory reset: erase bonds + system reset
+        // (OK response already sent, 200ms delay for BLE transmission)
+        if(s_factory_reset_pending) {
+            s_factory_reset_pending = 0;
+            // 1.8.3：无门路径可能还留着切换指纹模板（缓存位图非零）。门后路径和
+            // SLOT_CLEAR 末槽路径已经清过并把缓存置 0，这里就不会重复。这是
+            // TMOS 上下文，允许唤醒模块。
+            if(g_cached_fp_bitmap != 0) {
+                PRINT("Factory reset: clearing leftover templates (bitmap=0x%02X)\n", g_cached_fp_bitmap);
+                if(fp_ensure_ready() == FP_OK) {
+                    fp_clear_all();
+                }
+                g_cached_fp_bitmap = 0;
+                WWDG_SetCounter(0);
+            }
+            PRINT("Factory reset: erasing bonds + reboot\n");
+            HidDev_SetParameter(HIDDEV_ERASE_ALLBONDS, 0, NULL);
+            DelayMs(100);
+            immurok_snv_erase_all();   // 另一个槽的区库擦不到，裸擦
+            SYS_ResetExecute();
+            // Never returns
+        }
+        // If async sleep retry is already running, the LED task is handling
+        // power-off — skip to avoid running the synchronous path in parallel
+        // (would issue a duplicate PS_Sleep and block ~4s on no-ack).
+        if(s_sleep_retry_active) {
+            return (events ^ FP_POWER_OFF_EVT);
+        }
+        // Two arming paths feed this event:
+        //   (a) fp_reset_power_timer() — 500ms after the last FP op; FP is on.
+        //       Idle-watchdog: state machine quit without explicit power-off.
+        //   (b) fp_gate_enter() — 25s gate-pending watchdog; FP is OFF
+        //       (no preheat). User never touched within the gate window.
+        // (a) requires async VCC cut. (b) only requires gate cleanup.
+        // Both cases share the same gate-cleanup logic, gated on the time
+        // elapsed since the gate was opened (s_pending_cmd_start).
+        /* touch-reset 期间模块归恢复流程所有，它自己会 PS_Sleep + 断电。
+         * 这里再插一脚 fp_async_off_start() 会把 VCC 从它脚下抽走：
+         * 之后 fp_power_off() 撞上 !s_powered_on 早退返回 true，恢复逻辑
+         * 收到一个「睡好了」的假信号（其实只是电已经断了），重试永远不会
+         * 触发。1.7.7 实测（16:34:16.091）确实打进来了，那次靠异步 sleep
+         * 恰好成功才没出事 —— 不能留着靠运气。
+         * 窗口本来只有 ~330ms 够不到 500ms 空闲计时器，但 no-ack 重试最多
+         * 跑 3 轮 ≈ 900ms，真实固件里也够得着。 */
+        if(fp_is_powered() && !s_enroll_active && !s_touch_reset) {
+            PRINT("FP idle timeout - async power off\n");
+            fp_async_off_start();
+        } else if(s_touch_reset) {
+            /* touch-reset 自己会断电。但这个空闲看门狗是模块「永远开着」的
+             * 唯一兜底，光跳过就等于把事件吃掉 —— touch-reset 万一卡死，
+             * 30mA 会一直烧到按按键为止。所以要把事件续上。
+             * 有 pending gate 时下面的分支会用剩余 gate 时间自己续，
+             * 这里只管没有 gate 的情况，避免两处互相覆盖。 */
+            PRINT("FP idle timeout deferred (touch-reset owns module)\n");
+            if(s_pending_cmd == 0 && !immurok_security_has_pending_auth()) {
+                fp_reset_power_timer();
+            }
+        }
+
+        // Gate-pending decision: re-arm watchdog if still within the window,
+        // otherwise time out and emit SEC_ERR_TIMEOUT. Same logic for both
+        // arming paths — case (a) typically falls through to re-arm because
+        // the gate was just opened, while case (b) usually hits the timeout
+        // branch because by definition the 25s window has expired.
+        if(!s_enroll_active &&
+           (s_pending_cmd != 0 || immurok_security_has_pending_auth()))
+        {
+            uint32_t elapsed_ms = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_pending_cmd_start);
+            if(elapsed_ms < FP_GATE_TIMEOUT_MS) {
+                uint32_t remaining_ms = FP_GATE_TIMEOUT_MS - elapsed_ms;
+                uint32_t ticks = (remaining_ms * 1000) / 625;
+                if(ticks < 16)    ticks = 16;     // floor 10ms
+                if(ticks > 60000) ticks = 60000;  // 16-bit ceiling
+                tmos_start_task(hidEmuTaskId, FP_POWER_OFF_EVT, (uint16_t)ticks);
+                return (events ^ FP_POWER_OFF_EVT);
+            }
+            PRINT("Gate timeout (%dms): clearing pending\n", (int)elapsed_ms);
+            if(s_pending_cmd != 0) {
+                s_pending_cmd = 0;
+                s_pending_payload_len = 0;
+                s_gate_fail_count = 0;
+                uint8_t rspBuf[1] = { SEC_ERR_TIMEOUT };
+                ImmurokService_SendResponse(rspBuf, 1);
+            }
+            if(immurok_security_has_pending_auth()) {
+                immurok_security_auth_cancel();
+            }
+#if HAS_RGB_LED
+            led_solid('R', 1600);
+#endif
+        }
+        return (events ^ FP_POWER_OFF_EVT);
+    }
+
+    if(events & OTA_FLASH_ERASE_EVT)
+    {
+        // Shared event bit: deferred KEY_SIGN or ECDH compute (when not in OTA mode)
+        if(!s_ota_active)
+        {
+            // DELETE_FP: delete the single physical slot for a finger
+            // Uses s_deferred_delete_id (not s_pending_cmd) to avoid race
+            if(s_deferred_delete_id != 0xFF)
+            {
+                uint8_t fingerId = s_deferred_delete_id;
+                s_deferred_delete_id = 0xFF;
+                int del_ret = fp_ensure_ready();
+                if(del_ret == FP_OK) {
+                    del_ret = fp_delete(FP_SLOT(fingerId), 1);
+                    WWDG_SetCounter(0);
+                    if(del_ret == FP_OK)
+                        fp_get_fingerprint_bitmap(&g_cached_fp_bitmap);
+                }
+                // No RSP_OK needed — daemon already received gate-approved RSP_OK.
+                // Sending another would race with the daemon's FP_LIST query.
+                fp_reset_power_timer();
+                return (events ^ OTA_FLASH_ERASE_EVT);
+            }
+
+            // ── 长 ECC 操作(~2s)前确保 supervision timeout 够长 ────────────
+            // 覆盖三种阻塞 ~2s 的 ECC:KEY_SIGN(ECDSA 签名)、配对的 MAKE_KEY 与
+            // SHARED_SECRET。macOS 27 重连/刚开机的 override 窗口强制
+            // latency=22/timeout=2000ms,比 2s 计算短 → 阻塞期 LL 不发包 →
+            // supervision 超时断链(Reason:8)。签名现象:提示按指纹→signing→跳密码
+            // 框(结果丢在断链上);配对现象:make_key「勉强活下来随即断」(hidkbd.h
+            // 118-122 实机记录)。修复:计算前主动申请 latency=20/timeout=6000ms,
+            // 等 macOS grant(实测~1s)再算。latency=20 本身省电,全程低功耗、无需
+            // 事后恢复。等不到(5s)按操作类型回错误:KEY_SIGN 回 0xE1(app fallback
+            // 密码);配对回 [PAIR_INIT/PAIR_CONFIRM, SEC_ERR_INTERNAL](app 显示配对
+            // 失败,可重试)——不能裸回 0xE1,那会在 button-wait 阶段被 app 丢弃
+            // (1.6.3 坑)。详见 hidkbd.h 的 KEY_SIGN_PARAM_WAIT_MS 注释。
+            immurok_ecdh_state_t long_ecc_st = immurok_security_get_ecdh_state();
+            uint8_t is_long_ecc =
+                (s_pending_cmd == IMMUROK_CMD_KEY_SIGN)
+                || (long_ecc_st == ECDH_STATE_MAKE_KEY)
+                || (long_ecc_st == ECDH_STATE_SHARED_SECRET);
+            if(is_long_ecc
+               && s_conn_timeout < PARAM_OK_CONN_TIMEOUT + 100 /*< 3000ms*/)
+            {
+                if(!s_long_op_param_requested)
+                {
+                    s_long_op_param_requested = 1;
+                    s_long_op_wait_start = TMOS_GetSystemClock();
+                    s_long_op_req_count = 1;  // 首发(计入 LONG_OP_MAX_PARAM_REQ)
+                    // 锁住整个等待期,避免其它命令挤进来。下面每个出口要么设
+                    // (proceed)要么清(reject)它;GAP_LINK_TERMINATED 也会清,断链
+                    // 不会把它卡住。
+                    s_long_op_busy = 1;
+                    GAPRole_PeripheralConnParamUpdateReq(hidEmuConnHandle,
+                        DEFAULT_DESIRED_MIN_CONN_INTERVAL,
+                        DEFAULT_DESIRED_MAX_CONN_INTERVAL,
+                        DEFAULT_DESIRED_SLAVE_LATENCY,
+                        DEFAULT_DESIRED_CONN_TIMEOUT, hidEmuTaskId);
+                    PRINT("LONG_ECC: timeout=%dms too short, req latency=20 timeout=6000ms\n",
+                          s_conn_timeout * 10);
+                }
+
+                if(s_conn_timeout >= PARAM_OK_CONN_TIMEOUT + 100)
+                {
+                    // macOS 已把 timeout 提上来 —— 落到下方原门(会跳过)后计算。
+                    PRINT("LONG_ECC: timeout now %dms, proceeding\n",
+                          s_conn_timeout * 10);
+                    s_long_op_param_requested = 0;
+                    s_long_op_wait_start = 0;
+                }
+                else
+                {
+                    uint32_t waited =
+                        immurok_ticks_to_ms(TMOS_GetSystemClock() - s_long_op_wait_start);
+                    if(waited < KEY_SIGN_PARAM_WAIT_MS)
+                    {
+                        // 重发(防首包被丢),但总请求数受 LONG_OP_MAX_PARAM_REQ
+                        // 限制,超过后只 poll 不再发 —— 短时反复请求会被 central ban
+                        // (Apple 明确"不应持续重协商")。实测 ~1s grant,首发+2 重发够。
+                        if(s_long_op_req_count < LONG_OP_MAX_PARAM_REQ)
+                        {
+                            GAPRole_PeripheralConnParamUpdateReq(hidEmuConnHandle,
+                                DEFAULT_DESIRED_MIN_CONN_INTERVAL,
+                                DEFAULT_DESIRED_MAX_CONN_INTERVAL,
+                                DEFAULT_DESIRED_SLAVE_LATENCY,
+                                DEFAULT_DESIRED_CONN_TIMEOUT, hidEmuTaskId);
+                            s_long_op_req_count++;
+                        }
+                        tmos_start_task(hidEmuTaskId, OTA_FLASH_ERASE_EVT,
+                                        LONG_OP_PARAM_POLL_TICKS);
+                        return (events ^ OTA_FLASH_ERASE_EVT);
+                    }
+                    // 等够 5s 仍没拿到长 timeout —— 不冒险计算(必断链),按操作类型
+                    // 回错误。清锁与 LED,同下方原门 REJECT 分支。
+                    PRINT("LONG_ECC REJECTED: no adequate timeout after %dms (cur=%dms)\n",
+                          (int)waited, s_conn_timeout * 10);
+                    s_long_op_param_requested = 0;
+                    s_long_op_wait_start = 0;
+                    if(s_pending_cmd == IMMUROK_CMD_KEY_SIGN)
+                    {
+                        // 签名:回 0xE1 → app fallback 到密码。
+                        uint8_t rspErr[1] = { 0xE1 };
+                        ImmurokService_SendResponse(rspErr, 1);
+                        s_pending_cmd = 0;
+                    }
+                    else
+                    {
+                        // 配对:回 app 认得的错误格式(同 make_key/compute 内部失败),
+                        // app 显示配对失败可重试。裸 0xE1 会在 button-wait 阶段被丢。
+                        uint8_t rspErr[2];
+                        rspErr[0] = (long_ecc_st == ECDH_STATE_SHARED_SECRET)
+                                    ? IMMUROK_CMD_PAIR_CONFIRM
+                                    : IMMUROK_CMD_PAIR_INIT;
+                        rspErr[1] = SEC_ERR_INTERNAL;
+                        ImmurokService_SendResponse(rspErr, 2);
+                    }
+                    s_long_op_busy = 0;
+#if HAS_RGB_LED
+                    led_stop();
+#endif
+                    return (events ^ OTA_FLASH_ERASE_EVT);
+                }
+            }
+
+            // ECC (~1.8s) wants an adequate supervision timeout. If the current
+            // one is short, ask for a better one and retry shortly — do NOT
+            // reject outright. A hard 0xE1 here is what turned macOS 27's
+            // 2000ms into an unrecoverable "Secure Pair never works": the
+            // central had already stopped granting anything better, so every
+            // retry hit the same wall forever.
+            if(s_conn_timeout < LONG_OP_MIN_CONN_TIMEOUT)
+            {
+                if(!s_long_op_param_requested)
+                {
+                    s_long_op_param_requested = 1;
+                    s_long_op_wait_start = TMOS_GetSystemClock();
+                    // Hold the lock for the whole wait so no other command
+                    // runs between polls. Every exit below either sets it
+                    // (proceed) or clears it (reject); GAP_LINK_TERMINATED
+                    // clears it too, so a disconnect mid-wait cannot strand it.
+                    s_long_op_busy = 1;
+                    param_update_kick();
+                    PRINT("Long op: timeout=%dms too short, requesting update\n",
+                          s_conn_timeout * 10);
+                }
+
+                uint32_t waited_ms =
+                    immurok_ticks_to_ms(TMOS_GetSystemClock() - s_long_op_wait_start);
+                if(waited_ms < LONG_OP_PARAM_WAIT_MS)
+                {
+                    // Still waiting for the central to answer — re-check soon.
+                    tmos_start_task(hidEmuTaskId, OTA_FLASH_ERASE_EVT,
+                                    LONG_OP_PARAM_POLL_TICKS);
+                    return (events ^ OTA_FLASH_ERASE_EVT);
+                }
+
+                // Waited long enough. The central is not going to improve the
+                // link. Proceed anyway as long as the timeout still clears the
+                // absolute floor — the uECC keepalive services the link every
+                // ~56ms, so even a few hundred ms of supervision timeout is
+                // ample (see hidkbd.h). Only a genuinely broken link is worth
+                // failing for.
+                s_long_op_param_requested = 0;
+                s_long_op_wait_start = 0;
+                if(s_conn_timeout < LONG_OP_FLOOR_CONN_TIMEOUT)
+                {
+                    PRINT("Long op REJECTED: timeout=%dms below floor %dms\n",
+                          s_conn_timeout * 10, LONG_OP_FLOOR_CONN_TIMEOUT * 10);
+                    uint8_t rspErr[1] = { 0xE1 };
+                    ImmurokService_SendResponse(rspErr, 1);
+                    s_pending_cmd = 0;
+                    // FP-match dispatch (KEY_SIGN/KEY_GENERATE) sets
+                    // s_long_op_busy=1 before scheduling this event to lock out
+                    // duplicate matches. If we early-return here, that flag
+                    // stays stuck and every subsequent command gets rejected
+                    // with 0xFD until disconnect. led_stop() too: gate flow
+                    // leaves LED in green-flash/blue-solid state that would
+                    // otherwise persist with no further trigger.
+                    s_long_op_busy = 0;
+#if HAS_RGB_LED
+                    led_stop();
+#endif
+                    return (events ^ OTA_FLASH_ERASE_EVT);
+                }
+                PRINT("Long op: no better params after %dms, proceeding at %dms\n",
+                      (int)waited_ms, s_conn_timeout * 10);
+            }
+            s_long_op_param_requested = 0;
+            s_long_op_wait_start = 0;
+            PRINT("Long op: proceeding, timeout=%dms latency_accepted=%d\n",
+                  s_conn_timeout * 10, s_latency_accepted);
+
+            // Lock out concurrent commands during ECC (~2s)
+            s_long_op_busy = 1;
+            // Suppress FP power-off during ECC — avoid sys_safe_access / PRINT
+            // inside TMOS_SystemProcess() called from uECC keepalive
+            tmos_stop_task(hidEmuTaskId, FP_POWER_OFF_EVT);
+
+#if HAS_RGB_LED
+            // Blue solid for the ~2s ECC compute. Match success flashed
+            // green for 200ms first; that's now finished, so starting blue
+            // here gives a clean green→blue transition. led_stop() at each
+            // ECC branch's exit turns it off when the response is sent.
+            led_solid('B', 0);
+#endif
+
+            // Check if this is an ECDH computation
+            immurok_ecdh_state_t ecdh_state = immurok_security_get_ecdh_state();
+            if(ecdh_state == ECDH_STATE_MAKE_KEY)
+            {
+                // ECDH key generation (~2s)
+                uint8_t rspBuf[34];
+                // TEST BUILD instrumentation: how long does the blocking ECC
+                // actually take, and did the link survive it at this timeout?
+                uint32_t ecc_t0 = TMOS_GetSystemClock();
+                (void)ecc_t0;  // PRINT compiles out in RELEASE
+                int mk_ret = immurok_security_pair_make_key();
+                PRINT("ECDH make_key took %dms (conn alive=%d, timeout=%dms)\n",
+                      (int)(immurok_ticks_to_ms(TMOS_GetSystemClock() - ecc_t0)),
+                      s_ble_connected, s_conn_timeout * 10);
+                if(mk_ret == 0) {
+                    rspBuf[0] = IMMUROK_CMD_PAIR_INIT;
+                    immurok_security_pair_get_pubkey(&rspBuf[1]);
+                    ImmurokService_SendResponse(rspBuf, 34);
+                    PRINT_V("ECDH PAIR_INIT response sent\n");
+                } else {
+                    rspBuf[0] = IMMUROK_CMD_PAIR_INIT;
+                    rspBuf[1] = SEC_ERR_INTERNAL;
+                    ImmurokService_SendResponse(rspBuf, 2);
+                }
+                s_long_op_busy = 0;
+#if HAS_RGB_LED
+                led_stop();
+#endif
+                return (events ^ OTA_FLASH_ERASE_EVT);
+            }
+            if(ecdh_state == ECDH_STATE_SHARED_SECRET)
+            {
+                // ECDH shared secret computation (~2s)
+                uint8_t rspBuf[2];
+                rspBuf[0] = IMMUROK_CMD_PAIR_CONFIRM;
+                uint32_t ecc_t0 = TMOS_GetSystemClock();
+                (void)ecc_t0;  // PRINT compiles out in RELEASE
+                int cs_ret = immurok_security_pair_compute_secret();
+                PRINT("ECDH shared_secret took %dms (conn alive=%d, timeout=%dms)\n",
+                      (int)(immurok_ticks_to_ms(TMOS_GetSystemClock() - ecc_t0)),
+                      s_ble_connected, s_conn_timeout * 10);
+                if(cs_ret == 0) {
+                    rspBuf[1] = SEC_OK;
+                    PRINT_V("ECDH PAIR_CONFIRM response sent (success)\n");
+                } else {
+                    rspBuf[1] = SEC_ERR_INTERNAL;
+                    PRINT("ECDH PAIR_CONFIRM response sent (failed)\n");
+                }
+                ImmurokService_SendResponse(rspBuf, 2);
+                // Schedule deferred EEPROM save — calling save_security_data
+                // inline right after ECC crashes the chip into the IAP
+                // bootloader (likely a BootROM flash arbitration issue with
+                // the post-ECC instruction-fetch state). See immurok_security.h.
+                if(immurok_security_pair_save_pending) {
+                    tmos_start_task(s_led_task_id, EEPROM_SAVE_EVT, 320);  // 200ms
+                }
+                s_long_op_busy = 0;
+#if HAS_RGB_LED
+                led_stop();
+#endif
+                return (events ^ OTA_FLASH_ERASE_EVT);
+            }
+
+            if(s_pending_cmd == IMMUROK_CMD_KEY_SIGN)
+            {
+                uint8_t kidx = s_pending_payload[1];
+                uint8_t *hash = &s_pending_payload[2];
+                uint8_t rspBuf[2];
+                if(immurok_keystore_sign(kidx, hash, immurok_keystore_result_buf()) == 0) {
+                    immurok_keystore_set_result(immurok_keystore_result_buf(), 64);
+                    rspBuf[0] = IMMUROK_RSP_OK;
+                    rspBuf[1] = 64;
+                    PRINT_V("ECDSA sign done\n");
+                    ImmurokService_SendResponse(rspBuf, 2);
+                } else {
+                    rspBuf[0] = SEC_ERR_INTERNAL;
+                    PRINT("ECDSA sign failed\n");
+                    ImmurokService_SendResponse(rspBuf, 1);
+                }
+            }
+            else if(s_pending_cmd == IMMUROK_CMD_KEY_GENERATE)
+            {
+                uint8_t *name = &s_pending_payload[1];  // skip cat byte
+                int new_idx = immurok_keystore_generate_stage(name, immurok_keystore_result_buf());
+                if(new_idx >= 0) {
+                    immurok_keystore_set_result(immurok_keystore_result_buf(), 64);
+                    PRINT_V("KEY_GENERATE staged: idx=%d, deferring commit\n", new_idx);
+                    // Defer flash commit to KEYSTORE_COMMIT_EVT (LED task,
+                    // 200ms later) — calling EEPROM_ERASE/WRITE inline right
+                    // after uECC_make_key faults into the IAP bootloader on
+                    // this chip, causing a silent reboot and BLE supervision
+                    // timeout (~6s no response → host disconnects). Same
+                    // hazard as save_security_data after PAIR_CONFIRM.
+                    //
+                    // Park the index in s_pending_payload past the name (cat
+                    // + 16B name = 0..16, [17] free). COMMIT handler reads
+                    // it and gates on (pending_cmd == KEY_GENERATE && busy)
+                    // to detect "stage done, awaiting commit".
+                    s_pending_payload[17] = (uint8_t)new_idx;
+                    tmos_start_task(s_led_task_id, KEYSTORE_COMMIT_EVT, 320);  // 200ms
+                    // Leave s_pending_cmd / s_long_op_busy set; cleared by
+                    // the COMMIT handler. Don't led_stop yet — keep the blue
+                    // "computing" indicator on until commit really finishes.
+                    return (events ^ OTA_FLASH_ERASE_EVT);
+                } else {
+                    uint8_t rspErr[1] = { SEC_ERR_INTERNAL };
+                    PRINT("KEY_GENERATE stage failed\n");
+                    ImmurokService_SendResponse(rspErr, 1);
+                }
+            }
+            s_pending_cmd = 0;
+            s_long_op_busy = 0;
+#if HAS_RGB_LED
+            led_stop();
+#endif
+            return (events ^ OTA_FLASH_ERASE_EVT);
+        }
+
+        // Deferred OTA verification (heavy: flash-readback SHA256 + ECDSA
+        // P-256 + anti-rollback). Runs here in the main loop — NOT the GATT
+        // callback — and pumps TMOS to keep BLE alive. On pass it schedules the
+        // reboot commit; on fail it sends the status and aborts OTA.
+        if(s_ota_verify_pending)
+        {
+            s_ota_verify_pending = 0;
+            s_ota_verifying = 1;  // gate re-entrant OTA cmds from the keepalive pump
+
+            static uint8_t computed[32];
+            // Reuse s_ota_sec.sha256_ctx (the streamed hash is no longer used —
+            // we verify against flash, not the stream) to avoid extra BSS.
+            sha256_ctx_t *vctx = &s_ota_sec.sha256_ctx;
+            uint8_t ok = 0;
+            uint8_t err = OTA_ERR_SHA256_MISMATCH;
+            // Read the SVN floor NOW, before the ECC verify below: any EEPROM
+            // access right after uECC_* faults into the IAP bootloader on this
+            // chip (same post-ECC hazard keystore/security defer 200ms for).
+            uint16_t floor = ota_svn_floor_read();
+
+            // 1. Hash what ACTUALLY landed in Image B (not the streamed bytes),
+            //    so a silent FLASH_ROM_WRITE failure cannot pass verification.
+            //    Code flash is memory-mapped, so read it directly in chunks and
+            //    pump TMOS between them to keep BLE alive across the ~216KB hash.
+            sha256_init(vctx);
+            {
+                uint32_t remaining = s_ota_sec.header.fw_size;
+                uint32_t faddr = IMAGE_B_START_ADD;
+                while(remaining)
+                {
+                    uint32_t chunk = (remaining > 1024) ? 1024 : remaining;
+                    sha256_update(vctx, (const uint8_t *)faddr, chunk);
+                    faddr += chunk;
+                    remaining -= chunk;
+                    WWDG_SetCounter(0);  // feed WDT only — no TMOS pump (see ota_verify_watchdog_kick)
+                }
+            }
+            sha256_final(vctx, computed);
+
+            if(memcmp(computed, s_ota_sec.header.fw_sha256, 32) == 0)
+            {
+                PRINT_V("OTA verify: flash SHA256 OK\n");
+
+                // 2. ECDSA P-256 over SHA256(header[0:0x40]). uECC reads the
+                //    hash/pubkey/sig as big-endian (LITTLE_ENDIAN=0), matching
+                //    the build-side signer — no byte reversal.
+                static uint8_t hhash[32];
+                sha256_init(vctx);
+                sha256_update(vctx, (const uint8_t *)&s_ota_sec.header, 0x40);
+                sha256_final(vctx, hhash);
+
+                // Convert BE (.imfw) → LE (uECC NATIVE_LITTLE_ENDIAN=1).
+                // Reuse the 4KB stack-guard work buffer (no keystore op runs
+                // during OTA) instead of adding BSS that overflows the stack.
+                extern uint8_t immurok_keystore_work_buf[];
+                uint8_t *pub_le = immurok_keystore_work_buf;
+                memcpy(pub_le, OTA_PUBLIC_KEY, 64);
+                ota_rev32(pub_le);          ota_rev32(pub_le + 32);          // X||Y → LE
+                ota_rev32(hhash);                                            // hash → LE
+                ota_rev32(s_ota_sec.header.ecdsa_sig);                       // r → LE
+                ota_rev32(s_ota_sec.header.ecdsa_sig + 32);                  // s → LE
+
+                PRINT_V("OTA verify: hdr SHA done, calling uECC_verify...\n");
+                uECC_set_watchdog_cb(ota_verify_watchdog_kick);
+                WWDG_SetCounter(0);
+                int vr = uECC_verify(pub_le, hhash, 32,
+                                     s_ota_sec.header.ecdsa_sig, uECC_secp256r1());
+                WWDG_SetCounter(0);
+                uECC_set_watchdog_cb(NULL);
+                PRINT_V("OTA verify: uECC_verify returned %d\n", vr);
+
+                if(vr == 1)
+                {
+                    PRINT_V("OTA verify: ECDSA OK\n");
+                    // 3. Anti-rollback: reject SVN below the persisted floor
+                    //    (floor was read before the ECC verify, above).
+                    if(s_ota_sec.header.sec_version >= floor)
+                    {
+                        ok = 1;
+                    }
+                    else
+                    {
+                        PRINT("OTA verify: SVN %d < floor %d (rollback)\n",
+                              s_ota_sec.header.sec_version, floor);
+                        err = OTA_ERR_VERSION_ROLLBACK;
+                    }
+                }
+                else
+                {
+                    PRINT("OTA verify: ECDSA FAIL\n");
+                    err = OTA_ERR_SIG_INVALID;
+                }
+            }
+            else
+            {
+                PRINT("OTA verify: flash SHA256 mismatch\n");
+                err = OTA_ERR_SHA256_MISMATCH;
+            }
+
+            s_ota_verifying = 0;
+
+            if(ok)
+            {
+                PRINT("OTA verify: PASS — committing reboot\n");
+                s_ota_sec.active = 0;
+#if HAS_RGB_LED
+                led_solid('G', 0);  // green until reboot
+#elif HAS_FP_LED
+                fp_led_flash(FP_LED_GREEN, 25, 2);
+#endif
+                s_ota_reboot_pending = 1;
+                // Defer the reboot commit ~200ms: it writes the IAP flag via
+                // EEPROM_ERASE/WRITE, which faults into the IAP bootloader when
+                // done right after the ECC verify (chip resets before the flag
+                // is set → IAP boots the OLD image, OTA silently no-ops). Same
+                // mitigation as the post-ECC keystore/security EEPROM saves.
+                tmos_start_task(hidEmuTaskId, OTA_FLASH_ERASE_EVT, 320);  // ~200ms
+            }
+            else
+            {
+                s_ota_sec.active = 0;
+                s_ota_active = 0;
+#if HAS_RGB_LED
+                led_solid('R', 1600);  // 1s red — verify failed
+#elif HAS_FP_LED
+                fp_led_flash(FP_LED_RED, 15, 5);
+#endif
+                GAPRole_PeripheralConnParamUpdateReq(hidEmuConnHandle,
+                    DEFAULT_DESIRED_MIN_CONN_INTERVAL,
+                    DEFAULT_DESIRED_MAX_CONN_INTERVAL,
+                    DEFAULT_DESIRED_SLAVE_LATENCY,
+                    DEFAULT_DESIRED_CONN_TIMEOUT,
+                    hidEmuTaskId);
+                OTA_IAP_SendStatus(err);
+            }
+            return (events ^ OTA_FLASH_ERASE_EVT);
+        }
+
+        // Deferred OTA reboot: write IAP flag to DataFlash EEPROM, then reset
+        if(s_ota_reboot_pending)
+        {
+            s_ota_reboot_pending = 0;
+
+            __attribute__((aligned(8))) uint8_t block_buf[16];
+            uint8_t ret;
+            (void)ret;  // Used only in DEBUG PRINT below
+
+            PRINT_V("OTA REBOOT: writing ImageFlag to EEPROM @ 0x%x\n", OTA_DATAFLASH_ADD);
+
+            ret = EEPROM_READ(OTA_DATAFLASH_ADD, (uint32_t *)block_buf, 4);
+            PRINT_V("  read: ret=%d, cur=0x%02X\n", ret, block_buf[0]);
+
+            ret = EEPROM_ERASE(OTA_DATAFLASH_ADD, EEPROM_PAGE_SIZE);
+            PRINT_V("  erase: ret=%d\n", ret);
+
+            block_buf[0] = IMAGE_IAP_FLAG;
+            ret = EEPROM_WRITE(OTA_DATAFLASH_ADD, (uint32_t *)block_buf, 4);
+            PRINT_V("  write: ret=%d\n", ret);
+
+            // Verify
+            block_buf[0] = 0xFF;
+            EEPROM_READ(OTA_DATAFLASH_ADD, (uint32_t *)block_buf, 4);
+            PRINT_V("  verify: 0x%02X %s\n", block_buf[0],
+                  (block_buf[0] == IMAGE_IAP_FLAG) ? "OK" : "FAIL!");
+
+            // Advance the anti-rollback floor — the image is verified and about
+            // to be promoted. Own DataFlash page, so the IAP flag just written
+            // is untouched.
+            ota_svn_floor_bump(s_ota_sec.header.sec_version);
+
+            PRINT("OTA REBOOT: resetting...\n");
+            DelayMs(10);
+            SYS_DisableAllIrq(NULL);
+            SYS_ResetExecute();
+        }
+
+        uint8_t status;
+
+        PRINT_V("OTA ERASE: %08x block %d/%d\n",
+              (int)(s_ota_erase_addr + s_ota_erase_count * FLASH_BLOCK_SIZE),
+              (int)s_ota_erase_count, (int)s_ota_erase_blocks);
+
+        status = FLASH_ROM_ERASE(s_ota_erase_addr + s_ota_erase_count * FLASH_BLOCK_SIZE,
+                                  FLASH_BLOCK_SIZE);
+
+        if(status != SUCCESS)
+        {
+            PRINT("OTA ERASE failed: %d\n", status);
+            OTA_IAP_SendStatus(status);
+            return (events ^ OTA_FLASH_ERASE_EVT);
+        }
+
+        s_ota_erase_count++;
+
+        if(s_ota_erase_count >= s_ota_erase_blocks)
+        {
+            PRINT_V("OTA ERASE complete\n");
+            OTA_IAP_SendStatus(SUCCESS);
+            return (events ^ OTA_FLASH_ERASE_EVT);
+        }
+
+        // Continue erasing (return events without XOR to process again)
+        return events;
+    }
+
+    return 0;
+}
+
+/*********************************************************************
+ * @fn      hidEmu_ProcessTMOSMsg
+ *
+ * @brief   Process an incoming task message.
+ *
+ * @param   pMsg - message to process
+ *
+ * @return  none
+ */
+static void hidEmu_ProcessTMOSMsg(tmos_event_hdr_t *pMsg)
+{
+    // 本任务没有订阅任何 TMOS 消息，能到这里的只有库主动投递的。已知一条：
+    // 0xA2 = GAPRole_PeripheralConnParamUpdateReq 的 L2CAP 信令响应。
+    // 2026-09-05 真机核对的布局（与 TI l2capSignalEvent_t 同源）：
+    //   hdr(2) connHandle(2) id(1) [5]=0x13 pad(2) cmd(4 字节对齐 → 偏移 8)
+    // cmd 联合体里有 32 位成员所以 4 字节对齐；偏移 6-7 是填充垃圾（实测每次
+    // 不同：07 00 / 05 00 / 00 20 / 65 BE），**不要**从那里取值。偏移 8 起是
+    // l2capParamUpdateRsp_t.result：0 接受 / 1 拒绝。主机「接受」不等于参数
+    // 已生效——那要等控制器的更新完成回调；Linux 实测接受后不生效也有，
+    // 仍受上限约束。
+    const uint8_t *b = (const uint8_t *)pMsg;
+    if(pMsg->event == 0xA2 && b[5] == 0x13)
+    {
+        uint16_t result = b[8] | ((uint16_t)b[9] << 8);
+        PRINT_V("L2CAP param rsp: %d\n", result);
+        if(result == 1)
+        {
+            s_param_update_retries = PARAM_UPDATE_GIVEN_UP;
+            tmos_stop_task(hidEmuTaskId, START_PARAM_UPDATE_EVT);
+        }
+        return;
+    }
+    PRINT_V("msg%02X\n", pMsg->event);
+}
+
+/*********************************************************************
+ * @fn      hidEmuSendKbdReport
+ *
+ * @brief   Build and send a HID keyboard report.
+ *
+ * @param   keycode - HID keycode.
+ *
+ * @return  none
+ */
+static void hidEmuSendKbdReport(uint8_t keycode)
+{
+    uint8_t buf[HID_KEYBOARD_IN_RPT_LEN];
+
+    buf[0] = 0;       // Modifier keys
+    buf[1] = 0;       // Reserved
+    buf[2] = keycode; // Keycode 1
+    buf[3] = 0;       // Keycode 2
+    buf[4] = 0;       // Keycode 3
+    buf[5] = 0;       // Keycode 4
+    buf[6] = 0;       // Keycode 5
+    buf[7] = 0;       // Keycode 6
+
+    HidDev_Report(HID_RPT_ID_KEY_IN, HID_REPORT_TYPE_INPUT,
+                  HID_KEYBOARD_IN_RPT_LEN, buf);
+}
+
+/*********************************************************************
+ * @fn      hidEmuSendCtrlKey
+ *
+ * @brief   Send a CTRL key press and release to wake host from sleep.
+ *          Uses LEFT_CTRL modifier only (no keycode) to avoid typing.
+ *
+ * @return  none
+ */
+static void hidEmuSendCtrlKey(void)
+{
+    uint8_t buf[HID_KEYBOARD_IN_RPT_LEN] = {0};
+
+    // Cancel any pending key-release timer and send immediate release first,
+    // to prevent Ctrl from "sticking" if called multiple times
+    tmos_stop_task(hidEmuTaskId, HID_KEY_RELEASE_EVT);
+    HidDev_Report(HID_RPT_ID_KEY_IN, HID_REPORT_TYPE_INPUT,
+                  HID_KEYBOARD_IN_RPT_LEN, buf);
+
+    // Press: LEFT_CTRL modifier only
+    buf[0] = 0x01;  // LEFT_CTRL
+    uint8_t ret = HidDev_Report(HID_RPT_ID_KEY_IN, HID_REPORT_TYPE_INPUT,
+                                HID_KEYBOARD_IN_RPT_LEN, buf);
+
+    // Schedule key release only if press succeeded;
+    // if press failed (BLE buffer full), no CTRL was sent, no release needed
+    if(ret == SUCCESS) {
+        tmos_start_task(hidEmuTaskId, HID_KEY_RELEASE_EVT, 128);  // 80ms
+    }
+}
+
+/*********************************************************************
+ * @fn      hidEmuStateCB
+ *
+ * @brief   GAP state change callback.
+ *
+ * @param   newState - new state
+ *
+ * @return  none
+ */
+static void hidEmuStateCB(gapRole_States_t newState, gapRoleEvent_t *pEvent)
+{
+    switch(newState & GAPROLE_STATE_ADV_MASK)
+    {
+        case GAPROLE_STARTED:
+        {
+            uint8_t ownAddr[6];
+            GAPRole_GetParameter(GAPROLE_BD_ADDR, ownAddr);
+            GAP_ConfigDeviceAddr(ADDRTYPE_STATIC, ownAddr);
+            PRINT_V("Initialized..\n");
+        }
+        break;
+
+        case GAPROLE_ADVERTISING:
+            if(pEvent->gap.opcode == GAP_MAKE_DISCOVERABLE_DONE_EVENT)
+            {
+                PRINT("Advertising (phase %d)..\n", s_adv_phase);
+#if HAS_RGB_LED
+                // LED is managed by SLOW_ADV_EVT phase transitions;
+                // only set default blink if no phase-specific pattern is active
+                if(s_adv_phase <= ADV_PHASE_FAST && !s_led_blink)
+                {
+                    led_blink_start(adv_led_color());
+                }
+#endif
+            }
+            break;
+
+        case GAPROLE_CONNECTED:
+            // 参数更新请求被主机明确拒绝（或控制器报错）：停下，不再等上限。
+            // 成功的那条走 hiddev.c 的 hidDevParamUpdateCB，这里只看失败。
+            if(pEvent->gap.opcode == GAP_LINK_PARAM_UPDATE_EVENT)
+            {
+                gapLinkUpdateEvent_t *ev = (gapLinkUpdateEvent_t *)pEvent;
+                if(ev->status != SUCCESS)
+                {
+                    PRINT("Param update rejected: %d\n", ev->status);
+                    s_param_update_retries = PARAM_UPDATE_GIVEN_UP;
+                    tmos_stop_task(hidEmuTaskId, START_PARAM_UPDATE_EVT);
+                }
+            }
+            if(pEvent->gap.opcode == GAP_LINK_ESTABLISHED_EVENT)
+            {
+                gapEstLinkReqEvent_t *event = (gapEstLinkReqEvent_t *)pEvent;
+
+                // get connection handle
+                hidEmuConnHandle = event->connectionHandle;
+                ImmurokService_SetConnHandle(event->connectionHandle);
+                // Record this connection's peer address against the active
+                // slot (flash-backed, "only write on change" — see
+                // slot_meta.h). This SDK's CH59xBLE_LIB.h only exposes
+                // linkDB_Register/State/PerformFunc/Up — there is no
+                // linkDB_Find(connHandle) to look the peer address up on
+                // demand later — so it must be captured here, at the one
+                // point the stack hands it to us (gapEstLinkReqEvent_t),
+                // and persisted rather than cached in RAM: RAM is at 0
+                // slack in this build (.bss butts directly against
+                // .stack_guard/.stack, see keng.md), so a new static byte
+                // buffer here doesn't link. SLOT_CLEAR's "own" branch reads
+                // it back via slot_meta_get_peer() for ERASE_SINGLEBOND.
+                // NOTE: runs BEFORE pairing/auth; unauthenticated peer with
+                // rotating addresses can force 0x6300 page writes, but only
+                // that page (never SSH keys), and dedup prevents writes on
+                // unchanged address (spec §5.3).
+                // M9：不在鉴权前写 0x6300。暂存对端地址，等 PEER_RECORD_EVT
+                // 确认链路加密后再 reclaim + 落盘（见该事件处理）。
+                s_peer_type = event->devAddrType;
+                tmos_memcpy(s_peer_addr, event->devAddr, 6);
+                s_peer_pending = 1;
+                s_peer_retries = 0;
+                tmos_start_task(hidEmuTaskId, PEER_RECORD_EVT, PEER_RECORD_FIRST_DELAY);
+                tmos_start_task(hidEmuTaskId, START_PARAM_UPDATE_EVT, START_PARAM_UPDATE_EVT_DELAY);
+                // Cancel advertising cycle timer, mark as connected (not advertising)
+                tmos_stop_task(hidEmuTaskId, SLOW_ADV_EVT);
+                s_adv_phase = ADV_PHASE_OFF;
+                GAP_SetParamValue(TGAP_DISC_ADV_INT_MIN, ADV_FAST_INT);
+                GAP_SetParamValue(TGAP_DISC_ADV_INT_MAX, ADV_FAST_INT);
+                s_ble_connected = 1;
+                PRINT("Connected..\n");
+                // 连接期常驻电池监测：不依赖主机是否订阅 BAS notify（mac app
+                // 连上即一次性读+主动退订以躲 App Nap，notify 门控在 CCCD，退订
+                // 后不推送）。每次真正测量后判低电（HidEmu_CheckLowBatt）。
+                HidDev_StartBattMonitor();
+#if HAS_RGB_LED
+                led_solid('B', LED_SOLID_2S_TICKS);
+#endif
+                // Print connection parameters
+                // Interval: unit 1.25ms, Latency: events, Timeout: unit 10ms
+                PRINT("Conn params: Interval=%d (%d.%02dms), Latency=%d, Timeout=%d (%dms)\n",
+                      event->connInterval,
+                      (event->connInterval * 5) / 4, ((event->connInterval * 5) % 4) * 25,
+                      event->connLatency,
+                      event->connTimeout, event->connTimeout * 10);
+                // Save initial connection parameters — Linux may already negotiate
+                // adequate params at connection time, so hidDevParamUpdateCB may
+                // never fire. Without this, s_conn_timeout stays 0 and PAIR_INIT
+                // is rejected with 0xE1.
+                s_conn_timeout = event->connTimeout;
+                s_conn_interval = event->connInterval;
+                s_conn_latency = event->connLatency;
+                // latency>=5 才算"够省电"(见 MIN_ACCEPTABLE_SLAVE_LATENCY);低于此
+                // 不标记 accepted,让 param 协商在后台继续把它谈回 20。
+                if(event->connLatency >= MIN_ACCEPTABLE_SLAVE_LATENCY)
+                {
+                    s_latency_accepted = 1;
+                }
+            }
+            break;
+
+        case GAPROLE_CONNECTED_ADV:
+            if(pEvent->gap.opcode == GAP_MAKE_DISCOVERABLE_DONE_EVENT)
+            {
+                PRINT_V("Connected Advertising..\n");
+            }
+            break;
+
+        case GAPROLE_WAITING:
+            if(pEvent->gap.opcode == GAP_END_DISCOVERABLE_DONE_EVENT)
+            {
+                PRINT("Advertising timeout (phase %d)\n", s_adv_phase);
+                // Stack-side advertising timeout → start fast cycle. With
+                // GENERAL discoverable flags this never fires on its own
+                // (see START_DEVICE_EVT); kept as a safety net.
+                if(ADV_HOLD_OFF()) { /* hold/qc-done: stay off */ } else
+                if(s_adv_phase == ADV_PHASE_OFF)
+                {
+                    s_adv_phase = ADV_PHASE_FAST;
+                    GAP_SetParamValue(TGAP_DISC_ADV_INT_MIN, ADV_FAST_INT);
+                    GAP_SetParamValue(TGAP_DISC_ADV_INT_MAX, ADV_FAST_INT);
+                    GAP_SetParamValue(TGAP_LIM_ADV_TIMEOUT, 0);  // no timeout
+                    tmos_start_task(hidEmuTaskId, SLOW_ADV_EVT, SLOW_ADV_DELAY);
+                }
+            }
+            else if(pEvent->gap.opcode == GAP_LINK_TERMINATED_EVENT)
+            {
+                s_ble_connected = 0;
+                s_app_connected = 0;
+                s_touch_reset = 0;
+                HidDev_StopBattMonitor();   // 断开即停电池周期任务（深睡/低电不留定时器）
+                PRINT("Disconnected.. Reason:%x\n", pEvent->linkTerminate.reason);
+#if HAS_RGB_LED
+#if HAS_FACTORY_TEST
+                if(g_factory_case_open) led_blink_start_ex('R', 1600, 1600); else
+#endif
+                led_blink_start(adv_led_color());
+#endif
+                // Clear ALL session state for clean reconnect
+                s_pending_cmd = 0;
+                s_pending_payload_len = 0;
+                s_peer_pending = 0;   // M9：断连丢弃未落盘的暂存地址
+                tmos_stop_task(hidEmuTaskId, PEER_RECORD_EVT);
+                immurok_security_auth_cancel();
+                // Reset param update state
+                s_param_update_retries = 0;
+                s_latency_accepted = 0;
+                s_conn_timeout = 0;
+                s_post_discovery = 0;
+                s_post_override_retry_count = 0;
+                s_post_override_retry_armed = 0;
+                s_param_replay_done = 0;
+                tmos_stop_task(s_led_task_id, PARAM_NOTIFY_EVT);
+                extern volatile uint8_t g_sleep_inhibit;
+                // QC 自检持有一个 ref，测试中的断链不能把它清掉
+                g_sleep_inhibit = g_qc_running ? 1 : 0;
+                s_long_op_param_requested = 0;
+                s_long_op_wait_start = 0;
+                s_long_op_busy = 0;
+                // Drop any half-finished KEY_GENERATE: stop the deferred
+                // commit timer; the s_pending_cmd clear above + s_long_op_busy=0
+                // makes the COMMIT handler's gate fail anyway, but stopping
+                // the timer prevents a stale fire on the next session.
+                tmos_stop_task(s_led_task_id, KEYSTORE_COMMIT_EVT);
+                // Reset fingerprint state
+                s_search_active = 0;
+                s_search_substate = 0;
+                s_enroll_active = 0;
+                s_enroll_step = 0;
+                s_enroll_substate = 0;
+                s_enroll_capture = 0;
+                s_gate_fail_count = 0;
+                s_gate_preheat = 0;
+                s_deferred_delete_id = 0xFF;
+                s_wait_finger_lift = 0;
+                s_fp_gate_last[0] = 0;  // invalidate all gate cooldowns on disconnect
+                s_fp_gate_last[1] = 0;
+                s_fp_gate_last[2] = 0;
+                // Clear OTA state. Without this, an attacker who completes
+                // BLE pairing and sends a single ERASE then disconnects
+                // leaves s_ota_active=1 forever — HID/FP/buttons all stay
+                // suppressed (see early-return guards in *_EVT handlers)
+                // until power cycle. Disconnect always invalidates an
+                // in-progress OTA session: incomplete writes can't be
+                // resumed safely, and END would have failed the SHA/HMAC
+                // check anyway.
+                // OTA cleanup (idempotent; clears LED + scratch state + watchdog).
+                // Skips conn-param restore inside ota_abort_to_idle since we're
+                // already disconnected — s_ble_connected = 0 above.
+                ota_abort_to_idle();
+                tmos_memset(&s_ota_sec, 0, sizeof(s_ota_sec));
+                s_ota_verify_status = 0;
+                tmos_stop_task(hidEmuTaskId, START_PARAM_UPDATE_EVT);
+                tmos_stop_task(hidEmuTaskId, HID_KEY_RELEASE_EVT);
+                tmos_stop_task(hidEmuTaskId, FP_NOTIFY_RETRY_EVT);
+                tmos_stop_task(hidEmuTaskId, FP_SEARCH_EVT);
+                tmos_stop_task(hidEmuTaskId, FP_ENROLL_EVT);
+                tmos_stop_task(hidEmuTaskId, FP_WAKE_DONE_EVT);
+                tmos_stop_task(hidEmuTaskId, FP_GATE_EXEC_EVT);
+                tmos_stop_task(hidEmuTaskId, FP_AUTH_EVT);
+#if HAS_RGB_LED
+                tmos_stop_task(s_led_task_id, LOCK_HOLD_EVT);
+                s_lock_pending = 0;
+                tmos_stop_task(s_led_task_id, FP_SLEEP_RETRY_EVT);
+                s_sleep_retry_active = 0;
+                s_sleep_retry_substate = 0;
+                tmos_stop_task(s_led_task_id, PAIR_BTN_TIMEOUT_EVT);
+#endif
+                s_pair_wait_button = 0;
+                // Note: s_fp_notify_pending is NOT cleared here — it survives
+                // disconnect so the notification can be re-sent on reconnect.
+                if(s_low_batt_pending)
+                {
+                    // 低电主动断开：进低电深睡，不重广播（用户设计 2026-09-20）。
+                    // 必须走 enter_low_batt_sleep()——它显式 ADVERT_ENABLED=FALSE，
+                    // 否则 GAPRole 在断开后按内部 adv-enabled=TRUE 自动重广播，设备
+                    // 又被连上（记录里的 bug 2）。下方 END_DISCOVERABLE_DONE 的
+                    // phase==LOW_BATT 守卫是第二道保险。
+                    s_low_batt_pending = 0;
+                    enter_low_batt_sleep();
+                    PRINT("LOW_BATT: disconnected, entering low-batt sleep\n");
+                }
+                else
+                {
+                    // Start fast advertising cycle (FAST 60s → DEEP_SLEEP)
+                    s_adv_phase = ADV_PHASE_FAST;
+                    GAP_SetParamValue(TGAP_DISC_ADV_INT_MIN, ADV_FAST_INT);
+                    GAP_SetParamValue(TGAP_DISC_ADV_INT_MAX, ADV_FAST_INT);
+                    GAP_SetParamValue(TGAP_LIM_ADV_TIMEOUT, 0);  // no timeout
+                    tmos_start_task(hidEmuTaskId, SLOW_ADV_EVT, SLOW_ADV_DELAY);
+                }
+            }
+            else if(pEvent->gap.opcode == GAP_LINK_ESTABLISHED_EVENT)
+            {
+                PRINT("Advertising timeout..\n");
+            }
+            // Enable advertising. Unconditional re-enable on every WAITING
+            // event — including the END_DISCOVERABLE_DONE that our own
+            // "adv off" produces — so the factory hold / self-test / deep
+            // sleep must opt out here or the radio comes straight back on.
+            if(ADV_HOLD_OFF() || s_adv_phase == ADV_PHASE_DEEP_SLEEP
+               || s_adv_phase == ADV_PHASE_LOW_BATT)
+            {
+                PRINT("ADV: re-enable skipped (phase %d)\n", s_adv_phase);
+            }
+            else
+            {
+                uint8_t adv_enable = TRUE;
+                GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &adv_enable);
+            }
+            break;
+
+        case GAPROLE_ERROR:
+            PRINT("Error %x ..\n", pEvent->gap.opcode);
+            break;
+
+        default:
+            break;
+    }
+}
+
+/*********************************************************************
+ * @fn      hidEmuRcvReport
+ *
+ * @brief   Process an incoming HID keyboard report.
+ *
+ * @param   len - Length of report.
+ * @param   pData - Report data.
+ *
+ * @return  status
+ */
+static uint8_t hidEmuRcvReport(uint8_t len, uint8_t *pData)
+{
+    // verify data length
+    if(len == HID_LED_OUT_RPT_LEN)
+    {
+        // set LEDs
+        return SUCCESS;
+    }
+    else
+    {
+        return ATT_ERR_INVALID_VALUE_SIZE;
+    }
+}
+
+/*********************************************************************
+ * @fn      hidEmuRptCB
+ *
+ * @brief   HID Dev report callback.
+ *
+ * @param   id - HID report ID.
+ * @param   type - HID report type.
+ * @param   uuid - attribute uuid.
+ * @param   oper - operation:  read, write, etc.
+ * @param   len - Length of report.
+ * @param   pData - Report data.
+ *
+ * @return  GATT status code.
+ */
+static uint8_t hidEmuRptCB(uint8_t id, uint8_t type, uint16_t uuid,
+                           uint8_t oper, uint16_t *pLen, uint8_t *pData)
+{
+    uint8_t status = SUCCESS;
+
+    // write
+    if(oper == HID_DEV_OPER_WRITE)
+    {
+        if(uuid == REPORT_UUID)
+        {
+            // process write to LED output report; ignore others
+            if(type == HID_REPORT_TYPE_OUTPUT)
+            {
+                status = hidEmuRcvReport(*pLen, pData);
+            }
+        }
+
+        if(status == SUCCESS)
+        {
+            status = Hid_SetParameter(id, type, uuid, *pLen, pData);
+        }
+    }
+    // read
+    else if(oper == HID_DEV_OPER_READ)
+    {
+        status = Hid_GetParameter(id, type, uuid, pLen, pData);
+    }
+    // notifications enabled
+    else if(oper == HID_DEV_OPER_ENABLE)
+    {
+        tmos_start_task(hidEmuTaskId, START_REPORT_EVT, 500);
+    }
+    return status;
+}
+
+/*********************************************************************
+ * @fn      hidEmuEvtCB
+ *
+ * @brief   HID Dev event callback.
+ *
+ * @param   evt - event ID.
+ *
+ * @return  HID response code.
+ */
+static void hidEmuEvtCB(uint8_t evt)
+{
+    switch(evt)
+    {
+    case HID_DEV_SUSPEND_EVT:
+        PRINT("HID Suspend\n");
+        break;
+    case HID_DEV_EXIT_SUSPEND_EVT:
+        PRINT("HID Exit Suspend\n");
+        break;
+    default:
+        PRINT_V("HID evt: %d\n", evt);
+        break;
+    }
+}
+
+/*********************************************************************
+ * @fn      HidEmu_ImmurokCommandCB
+ *
+ * @brief   Process immurok GATT command from host
+ *
+ * @param   connHandle - connection handle
+ * @param   pData - command data [cmd][len][payload...]
+ * @param   len - data length
+ *
+ * @return  none
+ */
+// Check if fingerprint gate is needed for a category (0 = no, 1 = yes).
+// Each category has its own cooldown — verifying for AUTH does NOT free up
+// keystore writes, and vice versa. Rolling within a category.
+static int fp_gate_needed(fp_gate_cat_t cat)
+{
+    if(g_cached_fp_bitmap == 0) return 0;
+    uint32_t last = s_fp_gate_last[cat];
+    if(last == 0) return 1;
+    uint32_t now = TMOS_GetSystemClock();
+    // 1.8.3：换算走 immurok_ticks_to_ms（精确、不回绕）。原来 (now-last)*625/1000
+    // 在 71.6 分钟处乘积回绕，陈旧冷却被读成「10 秒内」直接放行（审计 H1）。
+    uint32_t ms_since = immurok_ticks_to_ms(now - last);
+    if(ms_since > FP_GATE_COOLDOWN_MS) {
+        s_fp_gate_last[cat] = 0;   // 过期即清：不留古老时间戳等 2^32 tick 回绕
+        return 1;
+    }
+    s_fp_gate_last[cat] = now;  // rolling within category
+    return 0;
+}
+
+// Map cmd → category (used at FP-verify pass-through to refresh the right
+// cooldown). Defaults to KEYSTORE for any unlisted KEY_* command.
+static fp_gate_cat_t fp_gate_cat_for_cmd(uint8_t cmd)
+{
+    switch(cmd) {
+    case IMMUROK_CMD_AUTH_REQUEST: return FP_CAT_AUTH;
+    case IMMUROK_CMD_ENROLL_START:
+    case IMMUROK_CMD_DELETE_FP:
+    case IMMUROK_CMD_FACTORY_RESET: return FP_CAT_ADMIN;
+    default: return FP_CAT_KEYSTORE;
+    }
+}
+
+/* Gate enter: light LED + arm gate-pending watchdog. Does NOT power on FP.
+ * The fingerprint sensor only powers on when the user actually touches it
+ * (TOUCH ISR → cold-path FP_WAKE_DONE). This keeps FP at ~0 µA during the
+ * user's reaction-time window instead of 30 mA × 30 s. The 25s watchdog
+ * (FP_POWER_OFF_EVT with FP_GATE_PENDING_TIMEOUT) clears s_pending_cmd /
+ * pending auth + sends SEC_ERR_TIMEOUT if the user never touches.
+ *
+ * If FP happens to already be powered (e.g. very fast back-to-back gate ops
+ * before idle-off fires), reuse it directly so we don't pointlessly cycle. */
+static void fp_gate_enter(void)
+{
+    s_gate_fail_count = 0;
+    s_gate_preheat = 0;  // never preheat — wait for the user's touch
+
+    // Request param update early — ECDSA needs supervision timeout > 2s.
+    // Done now (before the touch) so params are likely accepted by the time
+    // FP_GATE_EXEC_EVT fires, avoiding a blocking wait there.
+    if(!s_latency_accepted) {
+        param_update_kick();
+    }
+
+    // LED tells the user we're waiting for their finger.
+#if HAS_RGB_LED
+    led_blink_start(fp_indicator_color());
+#elif HAS_FP_LED
+    fp_led_flash(FP_LED_GREEN, 20, 0);
+#endif
+
+    /* 「模块还开着」不等于「模块空闲」。1.3.9 (a58a652) 加的复用分支只看
+     * fp_is_powered()，于是这三种「VCC 开着但 UART 已有主」的状态下，一个
+     * AUTH_REQUEST 就能抢跑一次搜索：
+     *   (1) s_touch_reset     —— 模块只是为了补发 PS_Sleep 才上电
+     *   (2) s_sleep_retry_active —— 异步 PS_Sleep 重试中，正在发 0x33
+     *   (3) s_enroll_active   —— 登记流程占着 UART
+     * 抢跑的后果（真机现象「连发两个授权申请，触摸第一个之后指纹失效」）：
+     * FP_AUTH_EVT 发出 GET_IMAGE，30ms 后 touch-reset 的 fp_power_off() 发
+     * CMD_SLEEP，100ms 等待里解出来的却是 GET_IMAGE 的 ack=0x02 → 判 no-ack
+     * → 照样切 VCC → R599S 没进 wake-on-touch standby → 触摸中断永久不再
+     * 触发；且 s_search_active 滞留为 1，之后按按键的恢复也会被同一场撞车
+     * 反复打断（按几次都救不回来）。
+     * 这里一律不抢：挂起 gate、武装 25s 看门狗，等这几条流程自己收尾后由
+     * 用户的下一次触摸走正常冷启动路径。 */
+    uint8_t fp_busy = (s_touch_reset || s_sleep_retry_active || s_enroll_active);
+
+    if(fp_is_powered() && !fp_busy) {
+        // Module already on from a previous op — let it serve this gate too.
+        fp_reset_power_timer();
+#if HAS_R599S
+        // R599S: no touch IRQ while powered — start search immediately.
+        if(fp_is_ready()) {
+            tmos_set_event(hidEmuTaskId, FP_AUTH_EVT);
+        }
+#endif
+        return;
+    }
+
+    if(fp_busy) {
+        PRINT("Gate: FP busy (reset=%d sleep=%d enroll=%d), defer to touch\n",
+              s_touch_reset, s_sleep_retry_active, s_enroll_active);
+    }
+
+    // Arm gate-pending watchdog. FP_POWER_OFF_EVT handler clears
+    // s_pending_cmd / pending auth + emits SEC_ERR_TIMEOUT if it fires
+    // with FP still off (i.e. the user never touched).
+    tmos_stop_task(hidEmuTaskId, FP_POWER_OFF_EVT);
+    tmos_start_task(hidEmuTaskId, FP_POWER_OFF_EVT, FP_GATE_PENDING_TIMEOUT);
+}
+
+static void HidEmu_ImmurokCccChangeCB(uint8_t enabled)
+{
+    // Only use CCCD disable as a disconnect signal.
+    // CCCD enable alone is unreliable — BlueZ restores CCCD for bonded
+    // devices on reconnect even without daemon running.  The real
+    // "app connected" signal is receiving the first GATT command.
+    if(!enabled && s_app_connected) {
+        s_app_connected = 0;
+        PRINT("App disconnected (CCCD notify disabled)\n");
+    }
+
+    // Enable is unreliable as an "app connected" signal (see above), but it IS
+    // exactly the moment notifications start getting through — so it is the
+    // right trigger for replaying the params the App missed. Deferred so we do
+    // not notify from inside the ATT write that enabled the CCC.
+    //
+    // Once per connection: this callback fires more than once per subscribe
+    // (GAPBondMgr restores the persisted CCCD on reconnect in addition to the
+    // App's own setNotifyValue), which produced three duplicate replays in
+    // testing. Anything the App needs after this point arrives through the
+    // normal change notification from hiddev.c.
+    if(enabled && !s_param_replay_done) {
+        s_param_replay_done = 1;
+        tmos_start_task(s_led_task_id, PARAM_NOTIFY_EVT, PARAM_NOTIFY_DELAY);
+    }
+}
+
+static void HidEmu_ImmurokCommandCB(uint16_t connHandle, uint8_t *pData, uint8_t len)
+{
+    static uint8_t rspBuf[IMMUROK_RSP_MAX_LEN];  // static: save 64B stack (only 512B total)
+    uint8_t rspLen = 1;
+
+    if(len < 2 || len < 2 + pData[1]) {
+        rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+        ImmurokService_SendResponse(rspBuf, rspLen);
+        return;
+    }
+
+    uint8_t cmd = pData[0];
+    uint8_t payloadLen = pData[1];
+
+    // First GATT command from daemon marks app as connected.
+    // More reliable than CCCD which BlueZ auto-restores for bonded devices.
+    if(!s_app_connected) {
+        s_app_connected = 1;
+        PRINT("App connected (first cmd 0x%02X)\n", cmd);
+    }
+
+    PRINT("immurok CMD: 0x%02X, len=%d\n", cmd, payloadLen);
+
+    // Reject all immurok commands during OTA or long ECC operation
+    if(s_ota_active || s_long_op_busy) {
+        PRINT("  Rejected (%s)\n", s_ota_active ? "OTA" : "ECC busy");
+        rspBuf[0] = IMMUROK_RSP_BUSY;
+        ImmurokService_SendResponse(rspBuf, rspLen);
+        return;
+    }
+
+    // Pre-pair gate: an unpaired device only exposes the commands that drive
+    // the pairing handshake plus a read-only status query. Without this an
+    // attacker who completes BLE Just-Works pairing can enroll fingerprints,
+    // write keystore entries, or trigger AUTH_REQUEST / FACTORY_RESET on a
+    // device that hasn't been claimed by its legitimate owner yet — leaving
+    // persistent state behind that survives the eventual real PAIR_INIT.
+    //
+    // 判据必须是**活动槽**已配对，不是「任一槽」。设备停在空槽时
+    // apply_ble_pairing_mode() 会 WAIT_FOR_REQ 放行新 bond（登记第二台主机
+    // 所必需），此时若这里用 is_paired()（任一槽），只要另一个槽有货整个
+    // 白名单就被跳过 —— 一个从未配对过的对端 bond 上来后能读 KEY_READ /
+    // KEY_COUNT / FP_LIST，甚至触发无指纹门的 SLOT_CLEAR。改用活动槽后，
+    // 空槽驻留期只放行下面这几条登记握手命令，一条不多。
+    // （曾因 SLOT_PAIR(0x3B) 不在白名单里而不能这么收；那条命令随 PIN 方案
+    //  一起删了，白名单现有的 6 条恰好就是第二台主机登记所需的全部。）
+    if(!immurok_security_active_slot_paired()) {
+        switch(cmd) {
+        case IMMUROK_CMD_GET_STATUS:    // App probes "am I paired?"
+        case IMMUROK_CMD_GET_BATT_RAW:  // read-only batt calibration data
+        case IMMUROK_CMD_GET_CONN_PARAMS: // 链路层参数对连接对端本就可见，零泄露
+        case IMMUROK_CMD_PAIR_INIT:     // start ECDH
+        case IMMUROK_CMD_PAIR_CONFIRM:  // exchange App pubkey
+        case IMMUROK_CMD_PAIR_STATUS:   // read pairing flag
+        case IMMUROK_CMD_SLOT_STATUS:   // 新主机据此得知自己是第几台
+        case IMMUROK_CMD_QC_SELFTEST:   // QC 自检（内部还有 未配对+未质检 门）
+        case IMMUROK_CMD_QC_GET:        // 读 qc_done 标志
+        case IMMUROK_CMD_QC_CLEAR:      // 返修复测清标志（仅未配对，内部拒）
+        case IMMUROK_CMD_QC_SHUTDOWN:   // QC 板读完结果请求关机
+            break;  // allowed pre-pair
+        default:
+            PRINT("  Rejected (slot unpaired): cmd=0x%02X\n", cmd);
+            rspBuf[0] = cmd;
+            rspBuf[1] = SEC_ERR_NOT_PAIRED;
+            rspLen = 2;
+            ImmurokService_SendResponse(rspBuf, rspLen);
+            return;
+        }
+    }
+
+    // Store connection handle for notifications
+    ImmurokService_SetConnHandle(connHandle);
+
+    // No-fingerprint gate: a paired device with zero enrolled fingerprints
+    // must reject anything that would touch the keystore, run an FP gate,
+    // or compute crypto on stored secrets — without an enrolled finger
+    // there is no way to authorise such an action, so accepting them on
+    // implicit cooldown (the prior fp_gate_needed() returning 0 when
+    // bitmap==0) was a hole. App-driven fingerprint-management commands
+    // (FP_LIST, ENROLL_START for first enrollment, FACTORY_RESET, etc.)
+    // and pure read-only / pubkey paths stay allowed.
+    if(g_cached_fp_bitmap == 0) {
+        switch(cmd) {
+        case IMMUROK_CMD_GET_STATUS:
+        case IMMUROK_CMD_GET_BATT_RAW:    // read-only batt data, no FP gate needed
+        case IMMUROK_CMD_GET_CONN_PARAMS: // read-only link params, no FP gate needed
+        case IMMUROK_CMD_FP_LIST:
+        case IMMUROK_CMD_ENROLL_START:    // first-time enrollment must be allowed
+        case IMMUROK_CMD_ENROLL_CANCEL:
+        case IMMUROK_CMD_FP_MATCH_ACK:
+        case IMMUROK_CMD_PAIR_STATUS:
+        case IMMUROK_CMD_SLOT_STATUS:     // read-only slot bitmap
+        case IMMUROK_CMD_PAIR_INIT:       // re-pair (will hit needs_reset gate inside)
+        case IMMUROK_CMD_PAIR_CONFIRM:
+        case IMMUROK_CMD_FACTORY_RESET:   // recovery escape hatch
+        case IMMUROK_CMD_GATE_CANCEL:
+        case IMMUROK_CMD_CHALLENGE:       // device authenticity check, no secrets
+        case IMMUROK_CMD_KEY_GETPUB:      // public keys are not secret
+        case IMMUROK_CMD_KEY_RESULT:      // empty buffer (KEY_SIGN/GENERATE were rejected)
+        case IMMUROK_CMD_QC_GET:          // read-only qc_done flag
+        case IMMUROK_CMD_QC_SELFTEST:     // 量产自检本就在无指纹的出厂态运行
+        case IMMUROK_CMD_QC_CLEAR:        // 返修复测清标志（内部仍要求未配对）
+        case IMMUROK_CMD_QC_SHUTDOWN:     // QC 板读完结果请求关机
+            break;  // allowed without enrolled fingerprint
+        default:
+            PRINT("  Rejected (no FP enrolled): cmd=0x%02X\n", cmd);
+            rspBuf[0] = SEC_ERR_NO_FP_ENROLLED;
+            ImmurokService_SendResponse(rspBuf, 1);
+            return;
+        }
+    }
+
+#if HAS_VBAT_ADC
+    // Low-battery write protection: block long write/erase operations when
+    // the cached battery is below LOW_BATT_REJECT_PCT. A power loss part-way
+    // through a 4KB EEPROM erase leaves the keystore corrupted (entries
+    // half-erased, headers stale). KEY_SIGN / AUTH / OTP-GET keep working
+    // so the user can still authenticate on a dying battery; only the
+    // operations that *modify* persistent state are gated.
+    {
+        #define LOW_BATT_REJECT_PCT 5
+        uint8_t batt_lvl = 100;
+        Batt_GetParameter(BATT_PARAM_LEVEL, &batt_lvl);
+        if(batt_lvl < LOW_BATT_REJECT_PCT) {
+            switch(cmd) {
+            case IMMUROK_CMD_KEY_WRITE:
+            case IMMUROK_CMD_KEY_COMMIT:
+            case IMMUROK_CMD_KEY_DELETE:
+            case IMMUROK_CMD_KEY_GENERATE:
+                PRINT("  Rejected (low batt %d%%): cmd=0x%02X\n", batt_lvl, cmd);
+                rspBuf[0] = SEC_ERR_LOW_BATTERY;
+                ImmurokService_SendResponse(rspBuf, 1);
+                return;
+            default:
+                break;
+            }
+        }
+    }
+#endif
+
+#if HAS_RGB_LED
+    // Bulk-read commands light the RGB LED yellow (R+G) so the user can
+    // see when the device is being accessed during a batch read. Each
+    // qualifying command turns R+G on inline and (re)arms a 100ms off
+    // timer; back-to-back commands keep restarting it, so during a batch
+    // the LED stays continuously on rather than fluttering with each
+    // GATT round-trip (which produced a too-dim PWM-looking effect).
+    // After the last command in the batch, the LED dies 100ms later.
+    // Limited to fast single-shot reads — long-blocking commands (KEY_SIGN
+    // / OTP_GET / etc.) have their own LED feedback already.
+    const uint8_t led_indicate =
+        (cmd == IMMUROK_CMD_KEY_COUNT  ||
+         cmd == IMMUROK_CMD_KEY_READ   ||
+         cmd == IMMUROK_CMD_KEY_GETPUB ||
+         cmd == IMMUROK_CMD_KEY_RESULT) ? 1 : 0;
+    if(led_indicate) {
+        LED_RED_On();
+        LED_GREEN_On();
+        tmos_stop_task(s_led_task_id, LED_ACCESS_OFF_EVT);
+        tmos_start_task(s_led_task_id, LED_ACCESS_OFF_EVT, LED_ACCESS_HOLD_TICKS);
+    }
+#endif
+
+    switch(cmd) {
+    case IMMUROK_CMD_QC_SELFTEST:
+        PRINT_V("  QC_SELFTEST\n");
+        rspBuf[0] = IMMUROK_CMD_QC_SELFTEST;
+        if(g_qc_running || g_qc_start_req)
+            rspBuf[1] = IMMUROK_RSP_BUSY;
+        else if(immurok_security_is_paired())
+            rspBuf[1] = IMMUROK_RSP_QC_REFUSED;   // 已出货（已配对）设备一律拒
+        else {
+            // 已过检（qc_done=1）也接受：qc_test_run 里不重跑自检，直接进 DONE
+            // 亮绿灯让 QC 板读走后收尾（产线「允许复检」= 只确认不重测，1.8.0+）
+            rspBuf[1] = IMMUROK_RSP_OK;
+            g_qc_start_req = 1;   // 主循环消费，回调里绝不跑自检
+        }
+        rspLen = 2;
+        break;
+
+    case IMMUROK_CMD_QC_SHUTDOWN:
+        rspBuf[0] = IMMUROK_CMD_QC_SHUTDOWN;
+        rspBuf[1] = IMMUROK_RSP_OK;
+        rspLen = 2;
+        if(g_qc_running) g_qc_shutdown_req = 1;   // 主循环 tick 收尾关机
+        break;
+
+    case IMMUROK_CMD_QC_GET:
+        // [0x42][OK][qc_done][phase][bitmap][mv_lo][mv_hi]
+        // QC 板据此轮询自检状态与结果（phase=DONE 时 bitmap/mv 有效）。
+        rspBuf[0] = IMMUROK_CMD_QC_GET;
+        rspBuf[1] = IMMUROK_RSP_OK;
+        rspBuf[2] = qc_done_read();
+        rspBuf[3] = g_qc_phase;
+        rspBuf[4] = g_qc_result_bitmap;
+        rspBuf[5] = g_qc_result_mv & 0xFF;
+        rspBuf[6] = (g_qc_result_mv >> 8) & 0xFF;
+        rspBuf[7] = g_qc_fail_code;   // fail-fast 首个失败项，0=无（1.7.6+）
+        rspLen = 8;
+        if(g_qc_phase == QC_PHASE_DONE) g_qc_read_done = 1;  // QC 板已读到结果
+        break;
+
+    case IMMUROK_CMD_QC_CLEAR:
+        rspBuf[0] = IMMUROK_CMD_QC_CLEAR;
+        if(immurok_security_is_paired())
+            rspBuf[1] = IMMUROK_RSP_QC_REFUSED;
+        else {
+            qc_done_clear();
+            HidEmu_QcAdvFlagUpdate(0);
+            rspBuf[1] = IMMUROK_RSP_OK;
+        }
+        rspLen = 2;
+        break;
+
+    case IMMUROK_CMD_GET_STATUS:
+        PRINT_V("  GET_STATUS\n");
+        {
+            // Use user bitmap — no blocking UART ops in GATT callback
+            // (fp_wake blocks ~300ms which overflows the 512B stack in sleep mode)
+            rspBuf[0] = IMMUROK_RSP_OK;
+            rspBuf[1] = (uint8_t)fp_user_bitmap();  // 5 slots fit in 1 byte
+            // 活动槽，不是「任一槽」：连进来的主机问的是「我配对了没有」。
+            rspBuf[2] = immurok_security_active_slot_paired() ? 1 : 0;
+            // Read battery from the cache populated by the 5-min periodic
+            // measurement (BATT_PERIODIC_EVT in hiddev.c). Inline
+            // Batt_MeasLevel() blocks ~250-500ms in vbat_settle_delay (5τ
+            // RC settle on the IN_PD↔Floating transition) — that queues
+            // every other GATT request behind it, including KEY_SIGN, and
+            // combined with the ECDSA ~2s blocking pushes BLE timing to
+            // the supervision-timeout edge. The user-initiated refresh
+            // button uses HidDev_BattForceUpdate() which is safe (out of
+            // band, not stacked behind a sign). Stale cache (up to 5 min)
+            // is fine for the status icon.
+            uint8_t batt = 0;
+            Batt_GetParameter(BATT_PARAM_LEVEL, &batt);
+            rspBuf[3] = batt;
+            // Firmware version (macOS blocks standard Device Info Service for HID)
+            rspBuf[4] = FW_VERSION_MAJOR;
+            rspBuf[5] = FW_VERSION_MINOR;
+            rspBuf[6] = FW_VERSION_PATCH;
+            rspBuf[7] = (FW_BUILD_NUMBER >> 8) & 0xFF;
+            rspBuf[8] = FW_BUILD_NUMBER & 0xFF;
+            rspLen = 9;
+
+            // If there's a pending FP match (notification lost during disconnect),
+            // piggyback the signed data onto GET_STATUS response.
+            // App checks byte[9]: 0x21 = pending match, followed by 10 bytes of signed data.
+            rspBuf[9] = 0;  // clear separator byte
+            if(s_fp_notify_pending && s_fp_notify_len > 0) {
+                uint32_t elapsed = immurok_ticks_to_ms(TMOS_GetSystemClock() - s_fp_notify_start_time);
+                if(elapsed <= 30000) {
+                    memcpy(&rspBuf[10], s_fp_notify_data, s_fp_notify_len);
+                    rspLen = 10 + s_fp_notify_len;
+                    PRINT("  GET_STATUS: appending pending FP match (%dms old)\n", (int)elapsed);
+                } else {
+                    PRINT("  GET_STATUS: pending FP match expired (%dms)\n", (int)elapsed);
+                }
+                s_fp_notify_pending = 0;
+            }
+        }
+        break;
+
+    case IMMUROK_CMD_FP_LIST:
+        {
+            uint16_t ubm = fp_user_bitmap();
+            rspBuf[0] = IMMUROK_RSP_OK;
+            rspBuf[1] = (uint8_t)ubm;  // 5 slots fit in 1 byte
+            rspLen = 2;
+            PRINT_V("  FP_LIST: bitmap=0x%02X\n", ubm);
+        }
+        break;
+
+#if HAS_VBAT_ADC
+    case IMMUROK_CMD_GET_BATT_RAW:
+        // Optional 1-byte payload flag:
+        //   absent / 0x00 → force a fresh Batt_MeasLevel (user-initiated
+        //                   refresh — "click to refresh" UX needs immediate
+        //                   updates, especially while charging).
+        //   0x01          → cached-only — return whatever the most recent
+        //                   ADC sample produced. Used by the App's 5-min
+        //                   periodic battery-log timer to avoid doubling
+        //                   the device's natural BATT_PERIODIC_EVT cadence
+        //                   (which already runs every 5 min).
+        //
+        // SKIP the active measurement when the FP module is powered (touch /
+        // search / enroll in progress) — same reasoning as the BATT_PERIODIC
+        // path in hiddev.c: vbat_settle's TMOS yields can starve UART1 RX
+        // enough to miss a ZW3021 lift ack, leaving R599S with DETECT
+        // latched (sensor unresponsive). In that case return the most recent
+        // cached values; the App will still see a useful update on next call.
+        {
+            uint8_t cached_only = (payloadLen >= 1 && pData[2] == 0x01) ? 1 : 0;
+            if(!cached_only && !fp_is_powered()) {
+                Batt_MeasLevel();
+            }
+            uint8_t pct = 0;
+            Batt_GetParameter(BATT_PARAM_LEVEL, &pct);
+            rspBuf[0] = IMMUROK_RSP_OK;
+            rspBuf[1] = s_last_batt_mv & 0xFF;
+            rspBuf[2] = (s_last_batt_mv >> 8) & 0xFF;
+            rspBuf[3] = pct;
+            rspBuf[4] = s_last_batt_adc & 0xFF;
+            rspBuf[5] = (s_last_batt_adc >> 8) & 0xFF;
+            rspLen = 6;
+            PRINT_V("  GET_BATT_RAW: mv=%u pct=%u adc=%u%s\n",
+                  s_last_batt_mv, pct, s_last_batt_adc,
+                  cached_only ? " (cached-only)" :
+                  (fp_is_powered() ? " (FP busy, cached)" : ""));
+            // 刚做了新鲜测量时顺带判低电：连上/用户点刷新即时检测（不必等 30min
+            // 周期）。TerminateLink 是异步（下个 GAP tick 才断），本响应先发出去。
+            if(!cached_only && !fp_is_powered()) HidEmu_CheckLowBatt();
+        }
+        break;
+#endif
+
+    case IMMUROK_CMD_GET_CONN_PARAMS:
+        // 实际连接参数：s_conn_* 在 GAP 链路建立事件时用 central 给的初始值
+        // 填充（hiddev.c），此后每次 param update 刷新，所以任何时刻读到的
+        // 都是链路层当前生效值，与 PPCP（0x2A04 愿望值）无关。
+        {
+            rspBuf[0] = IMMUROK_CMD_GET_CONN_PARAMS;
+            rspBuf[1] = IMMUROK_RSP_OK;
+            rspBuf[2] = (uint8_t)(s_conn_interval >> 8);
+            rspBuf[3] = (uint8_t)(s_conn_interval & 0xFF);
+            rspBuf[4] = (uint8_t)(s_conn_latency >> 8);
+            rspBuf[5] = (uint8_t)(s_conn_latency & 0xFF);
+            rspBuf[6] = (uint8_t)(s_conn_timeout >> 8);
+            rspBuf[7] = (uint8_t)(s_conn_timeout & 0xFF);
+            rspLen = 8;
+            PRINT_V("  GET_CONN_PARAMS: interval=%d latency=%d timeout=%dms\n",
+                  s_conn_interval, s_conn_latency, s_conn_timeout * 10);
+        }
+        break;
+
+    case IMMUROK_CMD_ENROLL_START:
+        // Payload: [fingerId:1]
+        if(payloadLen < 1) {
+            rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            break;
+        }
+        {
+            uint8_t fingerId = pData[2];
+            PRINT_V("  ENROLL_START finger=%d\n", fingerId);
+
+            if(s_enroll_active) {
+                rspBuf[0] = IMMUROK_RSP_BUSY;
+            } else if(fingerId >= FP_USER_MAX) {
+                rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            } else {
+                uint16_t ubm = fp_user_bitmap();
+                if(ubm & (1 << fingerId)) {
+                    PRINT("  Finger %d already enrolled (user_bitmap=0x%02X)\n", fingerId, ubm);
+                    rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+                    break;
+                }
+                // 1.8.3（审计 M4）：没有认证指纹时不许录切换指纹，否则设备
+                // 只剩一枚永不进门的指纹，管理命令全部 WAIT_FP。见 fp_policy.h。
+                if(!fp_policy_enroll_allowed(ubm, fingerId)) {
+                    PRINT("  ENROLL_START refused: switch finger needs an auth finger first (ubm=0x%02X)\n", ubm);
+                    rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+                    break;
+                }
+
+                // Fingerprint gate: only an auth finger can pass it, so only
+                // require it when one exists（fp_policy.h：只剩切换指纹时挂门等于锁死）
+                if(fp_policy_gate_required(ubm)) {
+                    PRINT("  FP gate: caching ENROLL_START, waiting for FP verify\n");
+                    s_pending_cmd = IMMUROK_CMD_ENROLL_START;
+                    s_pending_cmd_start = TMOS_GetSystemClock();
+                    s_pending_payload[0] = fingerId;
+                    s_pending_payload_len = 1;
+                    fp_gate_enter();
+                    rspBuf[0] = IMMUROK_RSP_WAIT_FP;
+                } else {
+                    // No fingerprints yet, allow directly
+                    s_enroll_page_id = fingerId;
+                    s_enroll_step = 0;
+                    s_enroll_substate = 0;
+                    s_enroll_capture = 0;
+                    s_enroll_from_gate = 0;  // first enrollment: no verify finger on sensor
+                    s_enroll_active = 1;
+                    tmos_set_event(hidEmuTaskId, FP_ENROLL_EVT);
+                    rspBuf[0] = IMMUROK_RSP_OK;
+                }
+            }
+        }
+        break;
+
+    case IMMUROK_CMD_ENROLL_CANCEL:
+        PRINT_V("  ENROLL_CANCEL active=%d\n", s_enroll_active);
+        if(s_enroll_active) {
+            // No PS_Cancel needed — manual enrollment has no long-running module command
+            s_enroll_active = 0;
+            s_enroll_step = 0;
+            s_enroll_substate = 0;
+            s_enroll_capture = 0;
+            tmos_stop_task(hidEmuTaskId, FP_ENROLL_EVT);
+#if HAS_RGB_LED
+            led_solid('R', LED_FLASH_TICKS);
+#elif HAS_FP_LED
+            fp_led_flash(FP_LED_RED, 25, 1);
+#endif
+            fp_reset_power_timer();
+        }
+        rspBuf[0] = IMMUROK_RSP_OK;
+        break;
+
+    case IMMUROK_CMD_DELETE_FP:
+        // Payload: [fingerId:1]
+        if(payloadLen < 1) {
+            rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            break;
+        }
+        {
+            uint8_t fingerId = pData[2];
+            PRINT_V("  DELETE_FP finger=%d\n", fingerId);
+
+            if(fingerId >= FP_USER_MAX) {
+                rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+                break;
+            }
+
+            uint8_t ubm = fp_user_bitmap();
+            // 1.8.3（审计 M4）：切换指纹还在时不许删最后一枚认证指纹，否则
+            // 之后没有任何指纹能过门。在收到命令时就拒，不让用户白摸。
+            if(!fp_policy_delete_allowed(ubm, fingerId)) {
+                PRINT("  DELETE_FP refused: last auth finger while switch finger exists (ubm=0x%02X)\n", ubm);
+                rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+                break;
+            }
+            if(fp_policy_gate_required(ubm)) {
+                PRINT("  FP gate: caching DELETE_FP, waiting for FP verify\n");
+                s_pending_cmd = IMMUROK_CMD_DELETE_FP;
+                s_pending_cmd_start = TMOS_GetSystemClock();
+                s_pending_payload[0] = fingerId;
+                s_pending_payload_len = 1;
+                fp_gate_enter();
+                rspBuf[0] = IMMUROK_RSP_WAIT_FP;
+            } else if(ubm & (1u << fingerId)) {
+                // 没有认证指纹能过门、但目标指纹存在（只剩切换指纹，1.8.2 升上来的
+                // 设备可能就是这样）：不挂门，直接走门后同一条延迟删除路径
+                // （TMOS 上下文，不在这个回调里碰 UART）。
+                PRINT("  DELETE_FP: no auth finger to gate with, deferring delete of %d\n", fingerId);
+                s_deferred_delete_id = fingerId;
+                tmos_start_task(hidEmuTaskId, FP_GATE_EXEC_EVT, 16);  // 10ms yield
+                rspBuf[0] = IMMUROK_RSP_OK;
+            } else {
+                // No such fingerprint — nothing to delete
+                rspBuf[0] = IMMUROK_RSP_OK;
+            }
+        }
+        break;
+
+    case IMMUROK_CMD_AUTH_REQUEST:
+        // No payload needed
+        PRINT_V("  AUTH_REQUEST\n");
+        {
+            immurok_security_set_auth_state(AUTH_STATE_WAIT_FINGERPRINT);
+            s_pending_cmd_start = TMOS_GetSystemClock();  // shared gate timer
+            fp_gate_enter();
+            rspBuf[0] = IMMUROK_RSP_WAIT_FP;
+        }
+        break;
+
+    case IMMUROK_CMD_PAIR_INIT:
+        PRINT_V("  PAIR_INIT\n");
+        {
+            // Refuse re-pair while fingerprints are still enrolled. Prevents
+            // orphan templates from a previous user surviving into a session
+            // with new shared keys. App must factory-reset first.
+            // (The pre-pair dispatch gate above prevents an attacker from
+            // writing keystore entries on an unpaired device, so the only way
+            // to reach this case with non-empty keystore is post-pair user
+            // action — re-pair from that state still requires factory_reset
+            // because the FP bitmap check below covers the common case.)
+            /* 双主机例外：PIN 登记窗口开着、且槽 2 还空，说明物主已在
+             * 主机 1 上授权新增一台主机。此时设备显然没换主人，原注释
+             * 担心的「孤儿指纹模板」不成立，放行 ECDH 并把落盘目标指向
+             * 槽 2。其余情况维持原样：有指纹就必须先 factory reset。 */
+            /* 「本槽是空的，但设备已经被别的槽认领过」== 正在登记第二台主机。
+             * 判据不再依赖 PIN 窗口 —— 2026-08-03 起登记改为指纹 + 按键，
+             * PIN 整条链路已移除。要走到空槽本身就得按切换指纹，那已经是
+             * 一道生物特征门；这里再加指纹 + 按键两道物理在场门。 */
+            /* 1.8.3（审计 M2）：三条判定收进 pair_policy.h。落盘目标恒为活动
+             * 槽 —— 原来 `slot2_enroll ? 活动槽 : 槽 1` 在「活动槽 2 已配对」时
+             * 把主机 2 的新密钥写进槽 1，毁掉主机 1。 */
+            pair_decision_t pd = pair_policy_decide(immurok_security_active_slot(),
+                                                    immurok_security_active_slot_paired(),
+                                                    immurok_security_is_paired(),
+                                                    fp_user_bitmap() != 0);
+            uint8_t slot2_enroll = pd.second_host;
+            if(pd.needs_reset) {
+                PRINT("  PAIR_INIT rejected: FP bitmap=0x%02X (need factory reset)\n",
+                      fp_user_bitmap());
+                rspBuf[0] = IMMUROK_CMD_PAIR_INIT;
+                rspBuf[1] = SEC_ERR_NEEDS_RESET;
+                rspLen = 2;
+                break;
+            }
+            immurok_security_pair_set_target_slot(pd.target_slot);
+
+            // ECDH needs an adequate supervision timeout; request one early.
+            // (On macOS 27 this request is granted and then overridden ~1.7s
+            // later by the central's own HID params — see LONG_OP_MIN_CONN_TIMEOUT.)
+            //
+            // 阈值用 PAIR_PREFERRED 而不是 LONG_OP_MIN：后者是 ECC 的**下限**
+            // (1000ms)，链路停在 2000ms 时不触发请求，ECDH 就在薄余量上跑，
+            // 算完随即 supervision timeout 断开。配对后面还有指纹 + 按键两道
+            // 人类操作，请求早发出去有的是时间落地。
+            if(s_conn_timeout < PAIR_PREFERRED_CONN_TIMEOUT) {
+                param_update_kick();
+            }
+
+            /* 登记第二台主机：先指纹（证明是物主），再按键（证明在场）。
+             * 指纹通过后 FP 匹配分发里的 case PAIR_INIT 会接着挂按键门，
+             * 按下才跑 ECDH。
+             *
+             * 这里回 WAIT_BUTTON 而不是 WAIT_FP：app 拿它作为「装上 pubkey
+             * 等待器」的信号，真正解除等待的是 ECDH 算完发出的
+             * [0x30][33B pubkey] 通知，与首次配对路径完全一致。 */
+            if(slot2_enroll) {
+                PRINT("  PAIR_INIT: enrolling this slot, FP gate first\n");
+                s_pending_cmd = IMMUROK_CMD_PAIR_INIT;
+                s_pending_cmd_start = TMOS_GetSystemClock();
+                s_pending_payload_len = 0;
+                fp_gate_enter();
+                rspBuf[0] = IMMUROK_CMD_PAIR_INIT;
+                rspBuf[1] = SEC_ERR_WAIT_BUTTON;
+                rspLen = 2;
+                break;
+            }
+
+            // Require a physical button press before running ECDH. Tells the
+            // App to display "press the device button" and starts a 30s
+            // window. ECDH actually kicks off in the BUTTON_SCAN_EVT handler
+            // when s_pair_wait_button == 1 and a short press is observed.
+            s_pair_wait_button = 1;
+#if HAS_RGB_LED
+            // Slow white blink to draw attention to the device
+            led_blink_start_ex('W', 320, 320);
+            tmos_stop_task(s_led_task_id, PAIR_BTN_TIMEOUT_EVT);
+            tmos_start_task(s_led_task_id, PAIR_BTN_TIMEOUT_EVT, PAIR_BTN_TIMEOUT_TICKS);
+#endif
+            rspBuf[0] = IMMUROK_CMD_PAIR_INIT;
+            rspBuf[1] = SEC_ERR_WAIT_BUTTON;
+            rspLen = 2;
+        }
+        break;
+
+    case IMMUROK_CMD_PAIR_CONFIRM:
+        PRINT_V("  PAIR_CONFIRM\n");
+        if(payloadLen != 33) {
+            rspBuf[0] = IMMUROK_CMD_PAIR_CONFIRM;
+            rspBuf[1] = SEC_ERR_INVALID_PARAM;
+            rspLen = 2;
+            break;
+        }
+        {
+            // Receive App compressed pubkey, start shared_secret via TMOS event
+            if(immurok_security_pair_confirm(&pData[2]) == 0) {
+                tmos_set_event(hidEmuTaskId, FP_GATE_EXEC_EVT);
+                // No immediate response — response sent from TMOS event handler
+                return;
+            } else {
+                rspBuf[0] = IMMUROK_CMD_PAIR_CONFIRM;
+                rspBuf[1] = SEC_ERR_INVALID_STATE;
+                rspLen = 2;
+            }
+        }
+        break;
+
+    case IMMUROK_CMD_PAIR_STATUS:
+        PRINT_V("  PAIR_STATUS\n");
+        {
+            rspBuf[0] = IMMUROK_CMD_PAIR_STATUS;
+            rspBuf[1] = immurok_security_active_slot_paired() ? 0x01 : 0x00;
+            rspLen = 2;
+        }
+        break;
+
+    case IMMUROK_CMD_CHALLENGE:
+        PRINT_V("  CHALLENGE\n");
+        if(payloadLen < 8) {
+            rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            break;
+        }
+        {
+            rspBuf[0] = IMMUROK_CMD_CHALLENGE;
+            if(immurok_security_challenge_response(&pData[2], &rspBuf[1]) == 0) {
+                rspLen = 9;  // [0x38][hmac:8B]
+            } else {
+                rspBuf[1] = 0xFF;  // not paired
+                rspLen = 2;
+            }
+        }
+        break;
+
+    case IMMUROK_CMD_SLOT_STATUS:
+        {
+            uint8_t bitmap = 0;
+            if(immurok_security_slot_occupied(IMMUROK_SLOT_1)) bitmap |= 0x01;
+            if(immurok_security_slot_occupied(IMMUROK_SLOT_2)) bitmap |= 0x02;
+            rspBuf[0] = IMMUROK_CMD_SLOT_STATUS;
+            rspBuf[1] = IMMUROK_RSP_OK;
+            rspBuf[2] = bitmap;
+            rspBuf[3] = immurok_security_active_slot();
+            rspLen = 4;
+            PRINT_V("  SLOT_STATUS bitmap=0x%02X active=%d\n", bitmap, rspBuf[3]);
+        }
+        break;
+
+    /* 曾有 case SLOT_PIN_ISSUE(0x3A) / SLOT_PAIR(0x3B) —— 双主机登记的
+     * 临时 PIN 签发与 proof 提交。2026-08-03 登记简化为「指纹 + 设备
+     * 按键」后整条 PIN 链路移除，两个命令码不再实现（app 也不再发）。 */
+
+    case IMMUROK_CMD_SLOT_CLEAR:
+        /* payload 可选 [slot]；缺省清自己所在的槽。
+         *
+         * 清**另一个**槽要按一次已登记指纹。原设计是「只能清自己的槽，主机
+         * 之间不能互相吊销」（spec D4），但登记流程 2026-08-03 改成指纹 +
+         * 按键之后那条立论就塌了：任何持有指纹的人拿着设备走到任意一台电脑
+         * 前都能**加**一台主机，唯独删除还卡着「必须那台机器自己来」，不一致
+         * 且没保护到什么。丢了主机 2 却只能 factory reset（连带毁掉全部 SSH
+         * 私钥）才是真实伤害。统一到「指纹 + 在场」。 */
+        {
+            uint8_t active = immurok_security_active_slot();
+            uint8_t target = (payloadLen >= 1) ? pData[2] : active;
+
+            if(target != IMMUROK_SLOT_1 && target != IMMUROK_SLOT_2) {
+                rspBuf[0] = IMMUROK_CMD_SLOT_CLEAR;
+                rspBuf[1] = IMMUROK_RSP_INVALID_PARAM;
+                rspLen = 2;
+                break;
+            }
+
+            if(target != active) {
+                PRINT("  SLOT_CLEAR slot=%d (other), FP gate\n", target);
+                s_pending_cmd = IMMUROK_CMD_SLOT_CLEAR;
+                s_pending_cmd_start = TMOS_GetSystemClock();
+                s_pending_payload[0] = target;
+                s_pending_payload_len = 1;
+                fp_gate_enter();
+                rspBuf[0] = IMMUROK_RSP_WAIT_FP;
+                rspLen = 1;
+                break;
+            }
+
+            /* 清自己的槽：不要指纹。本槽的密钥马上就没了，再要一次生物
+             * 特征也拦不住任何人 —— 命令本身已经走在这条槽的加密链路上。
+             *
+             * 回收顺序见 spec §7.1：ERASE_SINGLEBOND(当前 peer) → slot_clear
+             * → bump gen → 重启。任一步中断都不会停在「新地址 + 旧密钥」的
+             * 死状态 —— bump gen 只在 slot_clear 确认成功后才做，否则密钥
+             * 还在但地址已经换了，重启后老主机反而连不上仍然有效的密钥。
+             *
+             * peer 地址从 slot_meta（flash）取，不缓存在 RAM：本连接建立
+             * 时已经用 slot_meta_set_peer() 记过（见 GAP_LINK_ESTABLISHED_
+             * EVENT 处理），active 槽此刻就是这条连接，理论上必中；仍做
+             * -1 兜底防御性跳过，不让一次读失败拖累 slot_clear 本身。 */
+            int ret = immurok_security_slot_clear(active);
+            PRINT("  SLOT_CLEAR slot=%d (own) ret=%d\n", active, ret);
+            if(ret == 0 && !immurok_security_is_paired()) {
+                /* 刚清掉的是最后一个已配对槽：设备从此无主。指纹和密钥库
+                 * 是两槽共用、为「另一台还在用」而保留的，现在没有任何主机
+                 * 能用它们；而 PAIR_INIT 对「无主 + 有指纹」一律回
+                 * SEC_ERR_NEEDS_RESET（防前任的模板带进新会话），用户下一步
+                 * 只能出厂重置。与其把设备留在这条死路上，解绑唯一主机就
+                 * 直接等价于出厂重置：清指纹、清安全数据 + 密钥库 + 槽 2、
+                 * 延迟擦全部 bond 后复位（复用 FACTORY_RESET 的
+                 * s_factory_reset_pending = 1 路径）。2026-09-19 用户选定。 */
+                PRINT("  SLOT_CLEAR: last paired slot -> full factory reset\n");
+                if(fp_ensure_ready() == FP_OK) {
+                    fp_clear_all();
+                }
+                g_cached_fp_bitmap = 0;
+                immurok_security_factory_reset();
+                rspBuf[0] = IMMUROK_CMD_SLOT_CLEAR;
+                rspBuf[1] = IMMUROK_RSP_OK;
+                ImmurokService_SendResponse(rspBuf, 2);
+                s_factory_reset_pending = 1;
+                tmos_start_task(hidEmuTaskId, FP_POWER_OFF_EVT, 320);  // 200ms
+                return;
+            }
+            rspBuf[0] = IMMUROK_CMD_SLOT_CLEAR;
+            rspBuf[1] = (ret == 0) ? IMMUROK_RSP_OK : IMMUROK_RSP_INVALID_PARAM;
+            ImmurokService_SendResponse(rspBuf, 2);
+            if(ret == 0) {
+                /* 密钥已清、bump gen 换地址；SNV bond 的回收和复位交给
+                 * FP_POWER_OFF_EVT 两段式（借 s_factory_reset_pending=2/3
+                 * 表达阶段，不新增 RAM）：阶段 1 擦 bond + 主动断链，阶段 2
+                 * 等终止事件处理完再复位。直接在这里复位，bond 永远擦不掉
+                 * （见 bond_erase_peer 注释）。 */
+                slot_meta_bump_gen(active);
+                s_factory_reset_pending = 2;
+                tmos_start_task(hidEmuTaskId, FP_POWER_OFF_EVT, MS1_TO_SYSTEM_TIME(200));
+            }
+            return;
+        }
+
+    case IMMUROK_CMD_FP_MATCH_ACK:
+        PRINT_V("  FP_MATCH_ACK received\n");
+        if(s_fp_notify_pending)
+        {
+            s_fp_notify_pending = 0;
+            tmos_stop_task(hidEmuTaskId, FP_NOTIFY_RETRY_EVT);
+            PRINT_V("  Notify retry cancelled (ACK OK)\n");
+        }
+        rspBuf[0] = IMMUROK_RSP_OK;
+        break;
+
+    case IMMUROK_CMD_FACTORY_RESET:
+        PRINT_V("  FACTORY_RESET\n");
+        {
+            // 只有认证指纹能过门；只剩切换指纹时不挂门（fp_policy.h），模板由
+            // FP_POWER_OFF_EVT 的延迟重置收尾在 TMOS 上下文里清掉。
+            if(fp_policy_gate_required(fp_user_bitmap())) {
+                PRINT("  FP gate: caching FACTORY_RESET, waiting for FP verify\n");
+                s_pending_cmd = IMMUROK_CMD_FACTORY_RESET;
+                s_pending_cmd_start = TMOS_GetSystemClock();
+                s_pending_payload_len = 0;
+                fp_gate_enter();
+                rspBuf[0] = IMMUROK_RSP_WAIT_FP;
+            } else {
+                // No fingerprints — clear security, send OK, defer bond erase + reboot
+                immurok_security_factory_reset();
+                rspBuf[0] = IMMUROK_RSP_OK;
+                // Response sent below via break; defer bond erase after BLE transmits
+                s_factory_reset_pending = 1;
+                tmos_start_task(hidEmuTaskId, FP_POWER_OFF_EVT, 320);  // 200ms
+            }
+        }
+        break;
+
+    // ---- Keystore commands ----
+
+    case IMMUROK_CMD_KEY_COUNT:
+        // Payload: [cat:1B]
+        // Response: [OK][count:1B][checksum:4B LE] = 6 bytes
+        // (Old clients reading just the first 2 bytes still work — checksum
+        //  is appended; on a checksum-aware client a mismatch with the
+        //  cached digest triggers a full list re-fetch.)
+        if(payloadLen < 1) {
+            rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            break;
+        }
+        {
+            uint8_t cat = pData[2];
+            int cnt = immurok_keystore_count(cat);
+            if(cnt < 0) {
+                rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            } else {
+                uint32_t cs = immurok_keystore_checksum(cat);
+                rspBuf[0] = IMMUROK_RSP_OK;
+                rspBuf[1] = (uint8_t)cnt;
+                rspBuf[2] = (uint8_t)(cs & 0xFF);
+                rspBuf[3] = (uint8_t)((cs >> 8) & 0xFF);
+                rspBuf[4] = (uint8_t)((cs >> 16) & 0xFF);
+                rspBuf[5] = (uint8_t)((cs >> 24) & 0xFF);
+                rspLen = 6;
+            }
+            PRINT_V("  KEY_COUNT cat=%d count=%d cs=0x%08X\n", cat, cnt,
+                  (cnt < 0) ? 0 : (unsigned)immurok_keystore_checksum(cat));
+        }
+        break;
+
+    case IMMUROK_CMD_KEY_READ:
+        // Payload: [cat:1B][idx:1B][off:1B]
+        if(payloadLen < 3) {
+            rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            break;
+        }
+        {
+            uint8_t cat = pData[2];
+            uint8_t idx = pData[3];
+            uint8_t off = pData[4];
+
+            // Determine readable limit for this category.
+            // Secret portions are never exposed via KEY_READ.
+            uint16_t readable_size = 0;
+            switch(cat) {
+            case KEYSTORE_CAT_SSH:
+                readable_size = 80;                      // name[16] + pubkey[64], hide privkey
+                break;
+            case KEYSTORE_CAT_OTP:
+                readable_size = 60;                      // name[30] + service[30], hide secret
+                break;
+            case KEYSTORE_CAT_API:
+                readable_size = KEYSTORE_API_ENTRY_SIZE; // full read allowed (FP gate below)
+                break;
+            default:
+                rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+                ImmurokService_SendResponse(rspBuf, rspLen);
+                return;  // LED_ACCESS_OFF_EVT handles trailing off
+            }
+
+            // API entries (name[32] + key[128]): two-level gate to allow
+            // QuickFill / list display to read names without FP, while still
+            // protecting secret bytes.
+            //   - off >= 32 (pure secret read): must be FP-gated. Either
+            //     KEYSTORE or AUTH cooldown satisfies (asymmetric — AUTH
+            //     grants secret access, but secret read does NOT grant AUTH).
+            //   - off < 32 (name read): always allowed, but chunk is capped
+            //     at 32-off below to prevent spilling into secret region.
+            // Original 1.2.5 fix gated EVERY API read which broke QuickFill
+            // (no way to display names without first triggering FP). This
+            // restores name reads while keeping secret protection.
+            if(cat == KEYSTORE_CAT_API && off >= 32
+               && fp_gate_needed(FP_CAT_KEYSTORE)
+               && fp_gate_needed(FP_CAT_AUTH)) {
+                rspBuf[0] = SEC_ERR_WAIT_FP;
+                break;
+            }
+
+            if(off >= readable_size) {
+                rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+                break;
+            }
+
+            uint16_t remaining = readable_size - off;
+            uint8_t chunk = (remaining > 59) ? 59 : (uint8_t)remaining;
+
+            // API: cap name-region read so it never spills into secret.
+            // Caller must do a separate off>=32 request (FP-gated above) to
+            // read secret bytes.
+            if(cat == KEYSTORE_CAT_API && off < 32 && off + chunk > 32) {
+                chunk = 32 - off;
+            }
+
+            // Response: [OK][total_lo:1B][off:1B][data...<=59B]
+            // Note: total_lo = readable_size & 0xFF (App uses known size)
+            if(immurok_keystore_read(cat, idx, off, &rspBuf[3], chunk) == 0) {
+                rspBuf[0] = IMMUROK_RSP_OK;
+                rspBuf[1] = (uint8_t)(readable_size & 0xFF);
+                rspBuf[2] = off;
+                rspLen = 3 + chunk;
+            } else {
+                rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            }
+            PRINT_V("  KEY_READ cat=%d idx=%d off=%d chunk=%d\n", cat, idx, off, chunk);
+        }
+        break;
+
+    case IMMUROK_CMD_KEY_WRITE:
+        // Payload: [cat:1B][idx:1B][off:1B][data...<=59B]
+        if(payloadLen < 3) {
+            rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            break;
+        }
+        {
+            uint8_t cat = pData[2];
+            uint8_t idx = pData[3];
+            uint8_t off = pData[4];
+            uint8_t data_len = payloadLen - 3;
+
+            if(immurok_keystore_stage(cat, idx, off, &pData[5], data_len) == 0) {
+                rspBuf[0] = IMMUROK_RSP_OK;
+            } else {
+                rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            }
+            PRINT_V("  KEY_WRITE cat=%d idx=%d off=%d len=%d\n", cat, idx, off, data_len);
+        }
+        break;
+
+    case IMMUROK_CMD_KEY_DELETE:
+        // Payload: [cat:1B][idx:1B]
+        if(payloadLen < 2) {
+            rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            break;
+        }
+        {
+            uint8_t cat = pData[2];
+            uint8_t idx = pData[3];
+            PRINT_V("  KEY_DELETE cat=%d idx=%d\n", cat, idx);
+
+            // Fingerprint gate (with cooldown for batch ops)
+            if(fp_gate_needed(FP_CAT_KEYSTORE)) {
+                PRINT("  FP gate: caching KEY_DELETE\n");
+                s_pending_cmd = IMMUROK_CMD_KEY_DELETE;
+                s_pending_cmd_start = TMOS_GetSystemClock();
+                s_pending_payload[0] = cat;
+                s_pending_payload[1] = idx;
+                s_pending_payload_len = 2;
+                fp_gate_enter();
+                rspBuf[0] = IMMUROK_RSP_WAIT_FP;
+            } else {
+                rspBuf[0] = (immurok_keystore_delete(cat, idx) == 0)
+                            ? IMMUROK_RSP_OK : SEC_ERR_INTERNAL;
+            }
+        }
+        break;
+
+    case IMMUROK_CMD_KEY_COMMIT:
+        // Payload: [cat:1B][idx:1B]
+        if(payloadLen < 2) {
+            rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            break;
+        }
+        {
+            uint8_t cat = pData[2];
+            uint8_t idx = pData[3];
+            PRINT_V("  KEY_COMMIT cat=%d idx=%d\n", cat, idx);
+
+            // Fingerprint gate (with cooldown for batch ops)
+            if(fp_gate_needed(FP_CAT_KEYSTORE)) {
+                PRINT("  FP gate: caching KEY_COMMIT\n");
+                s_pending_cmd = IMMUROK_CMD_KEY_COMMIT;
+                s_pending_cmd_start = TMOS_GetSystemClock();
+                s_pending_payload[0] = cat;
+                s_pending_payload[1] = idx;
+                s_pending_payload_len = 2;
+                fp_gate_enter();
+                rspBuf[0] = IMMUROK_RSP_WAIT_FP;
+            } else {
+                rspBuf[0] = (immurok_keystore_commit(cat, idx) == 0)
+                            ? IMMUROK_RSP_OK : SEC_ERR_INTERNAL;
+            }
+        }
+        break;
+
+    // ---- SSH crypto commands ----
+
+    case IMMUROK_CMD_KEY_SIGN:
+        // Payload: [cat:1B(0)][idx:1B][hash_off:1B][hash_data...]
+        if(payloadLen < 3) {
+            rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            break;
+        }
+        {
+            uint8_t idx = pData[3];
+            uint8_t hash_off = pData[4];
+            uint8_t data_len = payloadLen - 3;
+            PRINT_V("  KEY_SIGN idx=%d off=%d len=%d\n", idx, hash_off, data_len);
+
+            // Store hash fragment into pending_payload
+            if(hash_off + data_len <= 32) {
+                memcpy(&s_pending_payload[2 + hash_off], &pData[5], data_len);
+            }
+
+            // Only proceed when we have the complete hash (off=0 with 32B is single-shot)
+            if(hash_off == 0 && data_len >= 32) {
+                // Fingerprint gate (with cooldown for batch ops)
+                // Always defer ECDSA sign to TMOS event (~2s blocks BLE if done here)
+                s_pending_cmd = IMMUROK_CMD_KEY_SIGN;
+                s_pending_cmd_start = TMOS_GetSystemClock();
+                s_pending_payload[0] = 0;  // cat (SSH)
+                s_pending_payload[1] = idx;
+                memcpy(&s_pending_payload[2], &pData[5], 32);
+                s_pending_payload_len = 34;
+
+                // Asymmetric grant: AUTH cooldown also satisfies KEY_SIGN —
+                // matches the API secret-read pattern (cat=API off>=32).
+                // Lets `imk run --agent` cover ssh-key signing with a single
+                // touch: AGENT_APPROVE → AUTH cooldown set → git pull's
+                // ssh-sign within 10 s rides the cooldown without re-FP.
+                // (Reverse direction stays gated — KEY_SIGN does NOT grant
+                // AUTH, so secret access can't escalate to sudo.)
+                if(fp_gate_needed(FP_CAT_KEYSTORE) && fp_gate_needed(FP_CAT_AUTH)) {
+                    PRINT("  FP gate: caching KEY_SIGN\n");
+                    fp_gate_enter();
+                    rspBuf[0] = IMMUROK_RSP_WAIT_FP;
+                } else {
+                    // Cooldown — approved implicitly, defer ECDSA to TMOS
+                    // Send 0x10 explicitly + 80ms delay (like FP gate path)
+                    // so BLE flushes notification before ECC blocks (~2s)
+                    PRINT("  KEY_SIGN cooldown, deferred to TMOS\n");
+                    // Pre-request param update if needed (no FP wait to buy time)
+                    if(!s_latency_accepted) {
+                        param_update_kick();
+                    }
+                    uint8_t fpApproved[1] = { 0x10 };
+                    ImmurokService_SendResponse(fpApproved, 1);
+                    tmos_start_task(hidEmuTaskId, FP_GATE_EXEC_EVT, 128);  // 80ms
+                    return;
+                }
+            } else {
+                // Partial hash received, ACK
+                rspBuf[0] = IMMUROK_RSP_OK;
+            }
+        }
+        break;
+
+    case IMMUROK_CMD_KEY_GETPUB:
+        // Payload: [cat:1B(0)][idx:1B]
+        if(payloadLen < 2) {
+            rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            break;
+        }
+        {
+            uint8_t idx = pData[3];
+            PRINT_V("  KEY_GETPUB idx=%d\n", idx);
+
+            if(immurok_keystore_getpub(idx, immurok_keystore_result_buf()) == 0) {
+                immurok_keystore_set_result(immurok_keystore_result_buf(), 64);
+                rspBuf[0] = IMMUROK_RSP_OK;
+                rspBuf[1] = 64;
+                rspLen = 2;
+            } else {
+                rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            }
+        }
+        break;
+
+    case IMMUROK_CMD_KEY_GENERATE:
+        // Payload: [cat:1B(0)][name_data_16B]
+        if(payloadLen < 17) {
+            rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            break;
+        }
+        {
+            PRINT_V("  KEY_GENERATE\n");
+
+            // Always defer ECC keygen to TMOS event (~2s blocks BLE if done here)
+            s_pending_cmd = IMMUROK_CMD_KEY_GENERATE;
+            s_pending_cmd_start = TMOS_GetSystemClock();
+            memcpy(s_pending_payload, &pData[2], 17);  // cat + 16B name
+            s_pending_payload_len = 17;
+
+            if(fp_gate_needed(FP_CAT_KEYSTORE)) {
+                PRINT("  FP gate: caching KEY_GENERATE\n");
+                fp_gate_enter();
+                rspBuf[0] = IMMUROK_RSP_WAIT_FP;
+            } else {
+                PRINT("  KEY_GENERATE deferred to TMOS\n");
+                if(!s_latency_accepted) {
+                    param_update_kick();
+                }
+                tmos_set_event(hidEmuTaskId, FP_GATE_EXEC_EVT);
+                return;  // Response sent from TMOS event handler
+            }
+        }
+        break;
+
+    case IMMUROK_CMD_KEY_RESULT:
+        // Payload: [off:1B]
+        if(payloadLen < 1) {
+            rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            break;
+        }
+        {
+            uint8_t off = pData[2];
+            uint8_t total = immurok_keystore_result_len();
+            PRINT_V("  KEY_RESULT off=%d total=%d\n", off, total);
+
+            if(off >= total) {
+                rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+                break;
+            }
+
+            uint8_t remaining = total - off;
+            uint8_t chunk = (remaining > 59) ? 59 : remaining;
+            uint8_t *rbuf = immurok_keystore_result_buf();
+
+            rspBuf[0] = IMMUROK_RSP_OK;
+            rspBuf[1] = total;
+            rspBuf[2] = off;
+            memcpy(&rspBuf[3], &rbuf[off], chunk);
+            rspLen = 3 + chunk;
+        }
+        break;
+
+    case IMMUROK_CMD_KEY_OTP_GET:
+        // Payload: [idx:1B][timestamp:4B LE]
+        if(payloadLen < 5) {
+            rspBuf[0] = IMMUROK_RSP_INVALID_PARAM;
+            break;
+        }
+        {
+            uint8_t idx = pData[2];
+            uint32_t ts = (uint32_t)pData[3]
+                        | ((uint32_t)pData[4] << 8)
+                        | ((uint32_t)pData[5] << 16)
+                        | ((uint32_t)pData[6] << 24);
+            PRINT_V("  KEY_OTP_GET idx=%d ts=%lu\n", idx, ts);
+
+            // Fingerprint gate (with cooldown for batch ops). Same asymmetric
+            // grant as KEY_SIGN / API secret read: AUTH cooldown also
+            // satisfies — `imk run --agent` covers the whole agent session
+            // including OTP code generation without re-FP. Reverse direction
+            // stays gated.
+            if(fp_gate_needed(FP_CAT_KEYSTORE) && fp_gate_needed(FP_CAT_AUTH)) {
+                PRINT("  FP gate: caching KEY_OTP_GET\n");
+                s_pending_cmd = IMMUROK_CMD_KEY_OTP_GET;
+                s_pending_cmd_start = TMOS_GetSystemClock();
+                s_pending_payload[0] = idx;
+                s_pending_payload[1] = pData[3];
+                s_pending_payload[2] = pData[4];
+                s_pending_payload[3] = pData[5];
+                s_pending_payload[4] = pData[6];
+                s_pending_payload_len = 5;
+                fp_gate_enter();
+                rspBuf[0] = IMMUROK_RSP_WAIT_FP;
+            } else {
+                // No fingerprints enrolled, compute directly
+                uint8_t code[6];
+                STACK_PROBE_BEGIN();
+                int totp_rc = immurok_keystore_totp(idx, ts, code);
+                STACK_PROBE_REPORT("otp");
+                if(totp_rc == 0) {
+                    rspBuf[0] = IMMUROK_RSP_OK;
+                    memcpy(&rspBuf[1], code, 6);
+                    rspLen = 7;
+                } else {
+                    rspBuf[0] = SEC_ERR_INTERNAL;
+                }
+            }
+        }
+        break;
+
+    case IMMUROK_CMD_GATE_CANCEL:
+        PRINT_V("  GATE_CANCEL\n");
+        {
+            // Was a gate actually pending? The App's gate controller calls
+            // cancelGateAndRelease() (→ GATE_CANCEL) on its reset() path even
+            // after a gate resolved SUCCESSFULLY — e.g. right after ENROLL_START
+            // unlocks (the FP match already cleared s_pending_cmd), or for a
+            // first enrollment where no gate was ever opened. In those cases
+            // there is nothing to cancel, so the red "cancelled" flash is wrong
+            // feedback. Worse: during enrollment it stomps the green capture
+            // blink with a solid 1s red and leaves the LED dark through the
+            // first capture (root cause of "验证后闪红 + 第1次无绿闪").
+            uint8_t had_gate = (s_pending_cmd != 0
+                                || immurok_security_has_pending_auth()
+                                || s_gate_preheat);
+            if(s_pending_cmd != 0) {
+                PRINT("  Clearing pending cmd 0x%02X\n", s_pending_cmd);
+                s_pending_cmd = 0;
+                s_pending_payload_len = 0;
+            }
+            if(immurok_security_has_pending_auth()) {
+                immurok_security_auth_cancel();
+            }
+            // Stop all gate-related activity (no-ops during enroll: search is
+            // not running and FP_POWER_OFF_EVT is gated on !s_enroll_active).
+            s_gate_fail_count = 0;
+            s_gate_preheat = 0;
+            s_search_active = 0;
+            s_wait_finger_lift = 0;
+            tmos_stop_task(hidEmuTaskId, FP_SEARCH_EVT);
+            tmos_stop_task(hidEmuTaskId, FP_AUTH_EVT);
+            /* touch-reset 不是 gate 活动，是传感器卫生 —— 它正驱动着
+             * FP_WAKE_DONE_EVT 去补发 PS_Sleep。在这里停掉会让
+             * s_touch_reset 永远停在 1：TOUCH_SCAN_EVT 从此吞掉每一次触摸，
+             * 而 FP_POWER_OFF_EVT 的空闲断电又被上面那道 !s_touch_reset
+             * 门跳过 → 模块 30mA 一直烧着。让它自己跑完。 */
+            if(!s_touch_reset) {
+                tmos_stop_task(hidEmuTaskId, FP_WAKE_DONE_EVT);
+            } else {
+                PRINT("  GATE_CANCEL: touch-reset in flight, left running\n");
+            }
+#if HAS_RGB_LED
+            // Red "cancelled" flash only when a gate was truly pending and we
+            // are not mid-enrollment — otherwise leave the LED alone so the
+            // enroll green-blink (or whatever owns it) survives.
+            if(had_gate && !s_enroll_active) {
+                led_solid('R', 1600);  // red 1s
+            }
+#endif
+            fp_reset_power_timer();
+            rspBuf[0] = IMMUROK_RSP_OK;
+        }
+        break;
+
+    default:
+        PRINT("  Unknown command\n");
+        rspBuf[0] = IMMUROK_RSP_UNKNOWN_CMD;
+        break;
+    }
+
+    // Send response
+    ImmurokService_SendResponse(rspBuf, rspLen);
+    // (LED off is handled by LED_ACCESS_OFF_EVT 100ms after the last cmd.)
+}
+
+/*********************************************************************
+ * OTA IAP Functions
+ *********************************************************************/
+
+// Reset the OTA inactivity watchdog. Called at OTA entry and on every OTA
+// IAP command. Reuses FP_POWER_OFF_EVT because FP is powered off during OTA
+// so the FP idle path is dormant; the same event slot dispatches by
+// s_ota_active in HidEmu_ProcessEvent.
+static void ota_kick_timeout(void)
+{
+    tmos_stop_task(hidEmuTaskId, FP_POWER_OFF_EVT);
+    tmos_start_task(hidEmuTaskId, FP_POWER_OFF_EVT, OTA_IDLE_TIMEOUT_TICKS);
+}
+
+// Tear down OTA state and restore the device to its pre-OTA appearance.
+// Called from (a) disconnect cleanup, (b) OTA inactivity timeout. Idempotent
+// — safe to call when s_ota_active is already 0.
+static void ota_abort_to_idle(void)
+{
+    if(!s_ota_active) return;
+
+    PRINT("OTA: abort to idle\n");
+    s_ota_active = 0;
+    tmos_stop_task(hidEmuTaskId, OTA_FLASH_ERASE_EVT);
+    tmos_stop_task(hidEmuTaskId, FP_POWER_OFF_EVT);
+    tmos_memset(&s_ota_sec, 0, sizeof(s_ota_sec));
+    s_ota_verify_status = 0;
+
+    // Stop the fast blue progress blink left over from OTA HEADER. The
+    // disconnect path takes care of starting advertising blink afterwards;
+    // for the inactivity-timeout case (BLE still up), LED-off matches the
+    // normal connected-idle state, so no further action needed here.
+#if HAS_RGB_LED
+    led_stop();
+#elif HAS_FP_LED
+    fp_led_off();
+#endif
+
+    // Restore connection parameters (OTA entry requested latency 0 for
+    // throughput; back to the normal power-saving latency).
+    if(s_ble_connected) {
+        GAPRole_PeripheralConnParamUpdateReq(hidEmuConnHandle,
+            DEFAULT_DESIRED_MIN_CONN_INTERVAL,
+            DEFAULT_DESIRED_MAX_CONN_INTERVAL,
+            DEFAULT_DESIRED_SLAVE_LATENCY,
+            DEFAULT_DESIRED_CONN_TIMEOUT,
+            hidEmuTaskId);
+    }
+}
+
+/*********************************************************************
+ * @fn      OTA_IAP_SendStatus
+ * @brief   Send OTA command status response
+ */
+static void OTA_IAP_SendStatus(uint8_t status)
+{
+    uint8_t buf[2];
+    buf[0] = status;
+    buf[1] = 0;
+    OTAProfile_SendData(OTAPROFILE_CHAR, buf, 2);
+}
+
+/*********************************************************************
+ * @fn      OTA_IAP_DataDeal
+ * @brief   Process received OTA IAP command
+ */
+static void OTA_IAP_DataDeal(void)
+{
+    uint8_t cmd = s_ota_iap_data.other.buf[0];
+    uint32_t addr, len;
+    uint8_t status;
+
+    // Reject re-entrant OTA commands while the deferred ECDSA verify runs: it
+    // pumps TMOS, which can dispatch a freshly-arrived OTA write back into here,
+    // and sha256/uECC use non-reentrant static state. Legit peers are idle
+    // (waiting for the END response) during this window.
+    if(s_ota_verifying)
+    {
+        OTA_IAP_SendStatus(0xEE);  // busy — verify in progress
+        return;
+    }
+
+    // Refresh inactivity watchdog on every OTA cmd received during an
+    // active session. The CMD_IAP_ERASE case arms the timer on first entry;
+    // subsequent HEADER/PROM/VERIFY/END refresh it here. CMD_IAP_INFO
+    // before s_ota_active is set (App probing device info) skips this.
+    if(s_ota_active) {
+        ota_kick_timeout();
+    }
+
+    // OTA does NOT require an enrolled fingerprint:
+    // - The ECDSA P-256 signature over the .imfw header is the actual security
+    //   gate; anything not signed by the offline private key is rejected at
+    //   the deferred verify (flash-readback SHA256 + ECDSA + anti-rollback).
+    // - Fresh device (just unboxed, no FP enrolled yet) needs to be able to
+    //   take a server-pushed firmware update before the user finishes
+    //   provisioning — the prior FP gate broke that OOBE flow.
+    // - Worst case without the private key: attacker erases Image B (B is the
+    //   inactive image; A keeps running) and never finishes — recoverable
+    //   by disconnect. Image A is never touched mid-OTA.
+
+#if HAS_VBAT_ADC
+    // Low-battery write protection: an OTA mid-write losing power leaves
+    // Image B partially erased / partially programmed → JumpIAP picks the
+    // wrong image on next boot. INFO read stays allowed (App-side probe).
+    if(cmd != CMD_IAP_INFO) {
+        uint8_t batt_lvl = 100;
+        Batt_GetParameter(BATT_PARAM_LEVEL, &batt_lvl);
+        if(batt_lvl < 5) {
+            PRINT("OTA rejected: low battery %d%% (cmd=0x%02X)\n", batt_lvl, cmd);
+            OTA_IAP_SendStatus(0xF4);  // SEC_ERR_LOW_BATTERY
+            return;
+        }
+    }
+#endif
+
+    switch(cmd)
+    {
+        case CMD_IAP_PROM:
+        {
+            // Program flash data
+            len = s_ota_iap_data.program.len;
+            addr = (uint32_t)(s_ota_iap_data.program.addr[0]);
+            addr |= ((uint32_t)(s_ota_iap_data.program.addr[1]) << 8);
+            addr = addr * 16;  // Address is 16-byte aligned
+            addr += IMAGE_B_START_ADD;  // Offset to Image B
+
+            PRINT_V("OTA PROM: addr=%08x len=%d\n", (int)addr, (int)len);
+
+            // Reject lengths that don't fit program.buf — caller-controlled
+            // attacker can otherwise drive aes128_ctr_xcrypt / sha256_update /
+            // FLASH_ROM_WRITE past the 243-byte buffer into adjacent BSS
+            // (s_ota_sec, s_pending_payload, shared_key state).
+            if(len == 0 || len > sizeof(s_ota_iap_data.program.buf))
+            {
+                PRINT("OTA PROM: invalid len %d\n", (int)len);
+                OTA_IAP_SendStatus(0xFD);
+                break;
+            }
+
+            // Verify address is within Image B
+            if(addr < IMAGE_B_START_ADD || (addr + len) > IMAGE_IAP_START_ADD)
+            {
+                PRINT("OTA PROM: address out of range\n");
+                OTA_IAP_SendStatus(0xFF);
+                break;
+            }
+
+            // Require HEADER before WRITE (no plaintext OTA)
+            if(!s_ota_sec.active)
+            {
+                PRINT("OTA PROM: rejected - no HEADER\n");
+                OTA_IAP_SendStatus(0xFE);
+                break;
+            }
+
+            {
+                // Decrypt in-place. (No streamed SHA256 here — END verifies the
+                // hash by reading Image B back from flash, which also catches a
+                // silent flash-write failure. s_ota_sec.sha256_ctx is reused as
+                // scratch by that verify.)
+                uint32_t stream_offset = s_ota_sec.bytes_written;
+                aes128_ctr_xcrypt(&s_ota_sec.aes_ctx, s_ota_sec.header.iv,
+                                  stream_offset,
+                                  s_ota_iap_data.program.buf, (size_t)len);
+                s_ota_sec.bytes_written += len;
+            }
+
+            status = FLASH_ROM_WRITE(addr, s_ota_iap_data.program.buf, (uint16_t)len);
+            if(status != SUCCESS)
+            {
+                PRINT("OTA PROM failed: %d\n", status);
+            }
+            OTA_IAP_SendStatus(status);
+            break;
+        }
+
+        case CMD_IAP_HEADER:
+        {
+            // Receive .imfw header (96 bytes in program.buf area)
+            // Raw data starts at buf[2] (skip cmd + len)
+            uint8_t *hdr_data = &s_ota_iap_data.other.buf[2];
+            uint8_t hdr_len = s_ota_iap_data.other.buf[1];
+
+            PRINT_V("OTA HEADER: len=%d (expected %d)\n", hdr_len, IMFW_HEADER_SIZE);
+
+            if(hdr_len != IMFW_HEADER_SIZE)
+            {
+                PRINT("OTA HEADER: invalid size\n");
+                OTA_IAP_SendStatus(0xFE);
+                break;
+            }
+
+            // Copy header
+            memcpy(&s_ota_sec.header, hdr_data, IMFW_HEADER_SIZE);
+
+            // Validate magic and hardware ID
+            if(s_ota_sec.header.magic != IMFW_MAGIC)
+            {
+                PRINT("OTA HEADER: bad magic 0x%08lx\n", (unsigned long)s_ota_sec.header.magic);
+                OTA_IAP_SendStatus(0xFD);
+                break;
+            }
+            // Reject any non-v2 (e.g. v1/HMAC) package. Also the anti-downgrade
+            // gate: a 1.6.0+ device never accepts a symmetric-era image, so a
+            // leaked HMAC key cannot push firmware to it.
+            if(s_ota_sec.header.version != IMFW_VERSION)
+            {
+                PRINT("OTA HEADER: bad format version %d (need %d)\n",
+                      s_ota_sec.header.version, IMFW_VERSION);
+                OTA_IAP_SendStatus(OTA_ERR_BAD_FORMAT);
+                break;
+            }
+            if(s_ota_sec.header.hw_id != IMFW_HARDWARE_ID)
+            {
+                PRINT("OTA HEADER: bad hw_id 0x%04x\n", s_ota_sec.header.hw_id);
+                OTA_IAP_SendStatus(0xFC);
+                break;
+            }
+            if(s_ota_sec.header.fw_size > IMAGE_SIZE)
+            {
+                PRINT("OTA HEADER: fw too large %lu\n", (unsigned long)s_ota_sec.header.fw_size);
+                OTA_IAP_SendStatus(0xFB);
+                break;
+            }
+
+            // Initialize AES and SHA256 contexts
+            aes128_init(&s_ota_sec.aes_ctx, OTA_AES_KEY);
+            sha256_init(&s_ota_sec.sha256_ctx);
+            s_ota_sec.bytes_written = 0;
+            s_ota_sec.active = 1;
+
+            PRINT_V("OTA HEADER: secure OTA initialized, fw_size=%lu\n",
+                  (unsigned long)s_ota_sec.header.fw_size);
+
+            // Visible OTA progress indicator: fast blue blink starts at HEADER,
+            // runs through all PROM/ERASE writes (~50s), and is replaced by
+            // green/red at END based on verify result. Helps the user know
+            // "device is busy, do not power off".
+#if HAS_RGB_LED
+            led_blink_start_ex('B', 80, 80);  // ~12.5 Hz, 50ms on / 50ms off
+#elif HAS_FP_LED
+            fp_led_flash(FP_LED_BLUE, 5, 0);  // continuous fast blue blink
+#endif
+
+            OTA_IAP_SendStatus(SUCCESS);
+            break;
+        }
+
+        case CMD_IAP_ERASE:
+        {
+            // Erase flash blocks (async to avoid BLE timeout)
+            addr = (uint32_t)(s_ota_iap_data.erase.addr[0]);
+            addr |= ((uint32_t)(s_ota_iap_data.erase.addr[1]) << 8);
+            addr = addr * 16;
+            addr += IMAGE_B_START_ADD;
+
+            uint32_t block_num = (uint32_t)(s_ota_iap_data.erase.block_num[0]);
+            block_num |= ((uint32_t)(s_ota_iap_data.erase.block_num[1]) << 8);
+
+            PRINT_V("OTA ERASE: addr=%08x blocks=%d\n", (int)addr, (int)block_num);
+
+            // Verify address range. block_num==0 must be rejected explicitly:
+            // the old (block_num-1) form underflowed to 0xFFFFFFFF and the
+            // multiply wrapped uint32, passing the check — and the erase event
+            // erases one block *before* testing count>=blocks, so a "0 block"
+            // request still wiped one Image B block. Use an overflow-safe form:
+            // guard addr inside [B_START, IAP_START) first, then bound the
+            // count by how many whole blocks fit (no multiply that can wrap).
+            if(block_num == 0 ||
+               addr < IMAGE_B_START_ADD || addr >= IMAGE_IAP_START_ADD ||
+               block_num > (IMAGE_IAP_START_ADD - addr) / FLASH_BLOCK_SIZE)
+            {
+                PRINT("OTA ERASE: invalid range (addr=%08x blocks=%d)\n",
+                      (int)addr, (int)block_num);
+                OTA_IAP_SendStatus(0xFF);
+                break;
+            }
+
+            s_ota_erase_addr = addr;
+            s_ota_erase_blocks = block_num;
+            s_ota_erase_count = 0;
+            s_ota_verify_status = 0;
+
+            // Enter OTA mode: suppress fingerprint, HID, etc.
+            if(!s_ota_active)
+            {
+                s_ota_active = 1;
+                ota_kick_timeout();  // arm 10s inactivity watchdog
+                PRINT("OTA mode active - all other functions suppressed\n");
+                // OTA takes over OTA_FLASH_ERASE_EVT (== FP_GATE_EXEC_EVT).
+                // If a KEY_SIGN/KEY_GENERATE FP-match dispatch set busy=1 and
+                // scheduled the event in the last 200ms, OTA will consume the
+                // event in its own branch — clear the leftover lock here so
+                // the post-OTA reboot path doesn't matter and immurok cmds
+                // aren't permanently shut out if OTA aborts mid-flow.
+                s_long_op_busy = 0;
+                s_pending_cmd = 0;
+                s_pending_payload_len = 0;
+                tmos_stop_task(hidEmuTaskId, FP_GATE_EXEC_EVT);
+                // Power off fingerprint if running
+                fp_power_off();
+                // Stop param update timer so it won't override OTA latency
+                tmos_stop_task(hidEmuTaskId, START_PARAM_UPDATE_EVT);
+                // Request latency 0 for fast OTA data transfer
+                GAPRole_PeripheralConnParamUpdateReq(hidEmuConnHandle,
+                    DEFAULT_DESIRED_MIN_CONN_INTERVAL,
+                    DEFAULT_DESIRED_MAX_CONN_INTERVAL,
+                    0,  // latency 0 during OTA
+                    DEFAULT_DESIRED_CONN_TIMEOUT,
+                    hidEmuTaskId);
+                PRINT("OTA: requested latency 0\n");
+            }
+
+            // Start async erase
+            tmos_set_event(hidEmuTaskId, OTA_FLASH_ERASE_EVT);
+            break;
+        }
+
+        case CMD_IAP_VERIFY:
+        {
+            // Verify flash data
+            len = s_ota_iap_data.verify.len;
+            addr = (uint32_t)(s_ota_iap_data.verify.addr[0]);
+            addr |= ((uint32_t)(s_ota_iap_data.verify.addr[1]) << 8);
+            addr = addr * 16;
+            addr += IMAGE_B_START_ADD;
+
+            PRINT_V("OTA VERIFY: addr=%08x len=%d\n", (int)addr, (int)len);
+
+            // Same OOB-read defence as PROM: caller-controlled len can drive
+            // FLASH_ROM_VERIFY past verify.buf (243B) into adjacent BSS.
+            if(len == 0 || len > sizeof(s_ota_iap_data.verify.buf))
+            {
+                PRINT("OTA VERIFY: invalid len %d\n", (int)len);
+                OTA_IAP_SendStatus(0xFD);
+                break;
+            }
+
+            // Verify address is within Image B (PROM had this; VERIFY did not,
+            // letting an attacker turn FLASH_ROM_VERIFY into a 1-bit oracle
+            // for arbitrary flash/IAP regions).
+            if(addr < IMAGE_B_START_ADD || (addr + len) > IMAGE_IAP_START_ADD)
+            {
+                PRINT("OTA VERIFY: address out of range\n");
+                OTA_IAP_SendStatus(0xFF);
+                break;
+            }
+
+            status = FLASH_ROM_VERIFY(addr, s_ota_iap_data.verify.buf, len);
+            if(status != SUCCESS)
+            {
+                PRINT("OTA VERIFY failed\n");
+            }
+            s_ota_verify_status |= status;
+            OTA_IAP_SendStatus(s_ota_verify_status);
+            break;
+        }
+
+        case CMD_IAP_END:
+        {
+            PRINT_V("OTA END\n");
+
+            // Require HEADER before END (no plaintext OTA)
+            if(!s_ota_sec.active)
+            {
+                PRINT("OTA END: rejected - no HEADER\n");
+                s_ota_active = 0;
+                // Restore original latency
+                GAPRole_PeripheralConnParamUpdateReq(hidEmuConnHandle,
+                    DEFAULT_DESIRED_MIN_CONN_INTERVAL,
+                    DEFAULT_DESIRED_MAX_CONN_INTERVAL,
+                    DEFAULT_DESIRED_SLAVE_LATENCY,
+                    DEFAULT_DESIRED_CONN_TIMEOUT,
+                    hidEmuTaskId);
+                OTA_IAP_SendStatus(0xFE);
+                break;
+            }
+
+            // Heavy verification — flash-readback SHA256 + ECDSA P-256 over
+            // the header + anti-rollback SVN check — runs hundreds of ms and
+            // pumps TMOS to stay alive, neither of which is safe in this GATT
+            // write callback. Defer it to OTA_FLASH_ERASE_EVT, which sends the
+            // status response on failure or commits the flag + reboots on
+            // success.
+            //
+            // Stop the OTA inactivity watchdog now (FP_POWER_OFF_EVT): the
+            // deferred verify can exceed the 10s window, and the watchdog would
+            // otherwise call ota_abort_to_idle() mid-verify.
+            tmos_stop_task(hidEmuTaskId, FP_POWER_OFF_EVT);
+            s_ota_verify_pending = 1;
+            tmos_set_event(hidEmuTaskId, OTA_FLASH_ERASE_EVT);
+            break;
+        }
+
+        case CMD_IAP_INFO:
+        {
+            uint8_t info_buf[20];
+
+            PRINT_V("OTA INFO\n");
+
+            // Image flag (currently running Image A)
+            info_buf[0] = IMAGE_B_FLAG;
+
+            // Image size (little-endian)
+            info_buf[1] = (uint8_t)(IMAGE_SIZE & 0xFF);
+            info_buf[2] = (uint8_t)((IMAGE_SIZE >> 8) & 0xFF);
+            info_buf[3] = (uint8_t)((IMAGE_SIZE >> 16) & 0xFF);
+            info_buf[4] = (uint8_t)((IMAGE_SIZE >> 24) & 0xFF);
+
+            // Block size
+            info_buf[5] = (uint8_t)(FLASH_BLOCK_SIZE & 0xFF);
+            info_buf[6] = (uint8_t)((FLASH_BLOCK_SIZE >> 8) & 0xFF);
+
+            // Chip ID
+            info_buf[7] = CHIP_ID & 0xFF;
+            info_buf[8] = (CHIP_ID >> 8) & 0xFF;
+
+            // Reserved
+            for(int i = 9; i < 20; i++) {
+                info_buf[i] = 0;
+            }
+
+            OTAProfile_SendData(OTAPROFILE_CHAR, info_buf, 20);
+            break;
+        }
+
+        default:
+            PRINT("OTA: unknown cmd 0x%02X\n", cmd);
+            OTA_IAP_SendStatus(0xFE);
+            break;
+    }
+}
+
+/*********************************************************************
+ * @fn      OTA_IAPReadDataComplete
+ * @brief   OTA read complete callback
+ */
+static void OTA_IAPReadDataComplete(uint8_t paramID)
+{
+    PRINT_V("OTA read complete\n");
+}
+
+/*********************************************************************
+ * @fn      OTA_IAPWriteData
+ * @brief   OTA write callback - process received data
+ */
+static void OTA_IAPWriteData(uint8_t paramID, uint8_t *pData, uint8_t len)
+{
+    if(len > IAP_LEN)
+    {
+        PRINT("OTA write: data too long\n");
+        return;
+    }
+#if HAS_QC_TEST
+    if(g_qc_running)
+    {
+        PRINT("OTA write: rejected (qc test)\n");
+        return;
+    }
+#endif
+
+    tmos_memcpy((uint8_t *)&s_ota_iap_data, pData, len);
+    OTA_IAP_DataDeal();
+}
+
+/*********************************************************************
+ * @fn      BTN_TOUCH_IRQHandler
+ * @brief   GPIO interrupt - set flags for TMOS event loop to consume.
+ *          MUST NOT call tmos_set_event() here (race with TMOS_SystemProcess).
+ */
+__INTERRUPT
+__HIGH_CODE
+void BTN_TOUCH_IRQHandler(void)
+{
+    if(TOUCH_ReadITFlag())
+    {
+        TOUCH_ClearITFlag();
+        g_touch_irq_flag = 1;
+    }
+    if(BTN_ReadITFlag())
+    {
+        BTN_ClearITFlag();
+        g_btn_irq_flag = 1;
+    }
+#if HAS_TAMPER_DETECT
+    if(ANTI_OPEN_ReadITFlag())
+    {
+        ANTI_OPEN_ClearITFlag();
+        g_tamper_irq_flag = 1;   // ISR 只置标志，擦写在主循环执行
+    }
+#endif
+}
+
+
+#if defined(HARDWARE_VER1) || defined(HARDWARE_VER2) || defined(HARDWARE_VER3) || defined(HARDWARE_VER5) || defined(HARDWARE_VER6)
+// VER1/VER2/VER3/VER5/VER6: BTN/TOUCH on GPIOB - stub GPIOA handler prevents
+// stray GPIOA interrupts hitting default infinite-loop -> watchdog reset
+__INTERRUPT
+__HIGH_CODE
+void GPIOA_IRQHandler(void)
+{
+    R16_PA_INT_IF = R16_PA_INT_IF;  // clear all flags
+}
+#endif
+/*********************************************************************
+*********************************************************************/

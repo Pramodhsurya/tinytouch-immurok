@@ -1,0 +1,329 @@
+# immurok CH592F Firmware Makefile
+# Using official SDK HID_Keyboard example
+#
+# Build modes:
+#   make          - Debug build (with serial output, no sleep)
+#   make release  - Release build (no serial, low power sleep)
+#   make ota      - OTA V1 build (starts at 0x1000, 216KB max)
+#   make ota-release - OTA V1 release build
+#   make ota-v2   - OTA V2 build (starts at 0x4000, IAP at 0x0000)
+#   make ota-v2-release - OTA V2 release build
+
+# Project name
+TARGET = immurok_CH592F
+
+# Toolchain (path with spaces requires quoting in commands)
+TOOLCHAIN_PATH ?= /opt/riscv-wch-gcc
+TOOLCHAIN_BIN = $(TOOLCHAIN_PATH)/bin
+CC = "$(TOOLCHAIN_BIN)/riscv-wch-elf-gcc"
+OBJCOPY = "$(TOOLCHAIN_BIN)/riscv-wch-elf-objcopy"
+OBJDUMP = "$(TOOLCHAIN_BIN)/riscv-wch-elf-objdump"
+SIZE = "$(TOOLCHAIN_BIN)/riscv-wch-elf-size"
+
+# SDK paths
+SDK_PATH = SDK/EVT/EXAM
+SRC_PATH = $(SDK_PATH)/SRC
+BLE_PATH = $(SDK_PATH)/BLE
+
+# Directories
+BUILD_DIR = build
+APP_DIR = APP
+PROFILE_DIR = Profile
+
+# Source files (pure SDK HID_Keyboard)
+C_SOURCES = \
+	$(APP_DIR)/main.c \
+	$(APP_DIR)/hidkbd.c \
+	$(APP_DIR)/fingerprint.c \
+	$(APP_DIR)/immurok_security.c \
+	$(APP_DIR)/immurok_keystore.c \
+	$(APP_DIR)/tamper.c \
+	$(APP_DIR)/factory_test.c \
+	$(APP_DIR)/qc_test.c \
+	$(APP_DIR)/ws2812.c \
+	$(APP_DIR)/immurok_slots.c \
+	$(APP_DIR)/slot_meta.c \
+	$(APP_DIR)/immurok_ble_init.c \
+	$(APP_DIR)/immurok_snv.c \
+	$(APP_DIR)/immurok_rng.c \
+	$(APP_DIR)/immurok_entropy.c \
+	$(APP_DIR)/totp_core.c \
+	LIB/sha1.c \
+	LIB/sha256.c \
+	LIB/aes128.c \
+	LIB/uECC.c \
+	$(PROFILE_DIR)/hidkbdservice.c \
+	$(PROFILE_DIR)/hiddev.c \
+	$(PROFILE_DIR)/battservice.c \
+	$(PROFILE_DIR)/devinfoservice.c \
+	$(PROFILE_DIR)/scanparamservice.c \
+	$(PROFILE_DIR)/immurokservice.c \
+	$(PROFILE_DIR)/otaprofile.c \
+	$(SRC_PATH)/StdPeriphDriver/CH59x_gpio.c \
+	$(SRC_PATH)/StdPeriphDriver/CH59x_sys.c \
+	$(SRC_PATH)/StdPeriphDriver/CH59x_clk.c \
+	$(SRC_PATH)/StdPeriphDriver/CH59x_uart1.c \
+	$(SRC_PATH)/StdPeriphDriver/CH59x_uart3.c \
+	$(SRC_PATH)/StdPeriphDriver/CH59x_pwr.c \
+	$(SRC_PATH)/StdPeriphDriver/CH59x_adc.c \
+	$(SRC_PATH)/RVMSIS/core_riscv.c \
+	$(BLE_PATH)/HAL/MCU.c \
+	$(BLE_PATH)/HAL/RTC.c \
+	$(BLE_PATH)/HAL/SLEEP.c \
+	$(BLE_PATH)/HAL/KEY.c
+
+# ASM sources - use OTA-specific startup for OTA builds
+ifdef OTA_V2
+ASM_SOURCES = \
+	Startup/startup_CH592_OTA.S \
+	$(BLE_PATH)/LIB/ble_task_scheduler.S
+else ifdef OTA
+ASM_SOURCES = \
+	Startup/startup_CH592_OTA.S \
+	$(BLE_PATH)/LIB/ble_task_scheduler.S
+else
+ASM_SOURCES = \
+	$(SRC_PATH)/Startup/startup_CH592.S \
+	$(BLE_PATH)/LIB/ble_task_scheduler.S
+endif
+
+# Include paths
+C_INCLUDES = \
+	-I$(BLE_PATH)/HAL/include \
+	-I$(BLE_PATH)/LIB \
+	-I$(APP_DIR)/include \
+	-I$(PROFILE_DIR)/include \
+	-I$(SRC_PATH)/StdPeriphDriver/inc \
+	-I$(SRC_PATH)/RVMSIS \
+	-ILIB
+
+# Hardware version (default: latest = 6)
+# Usage: make VER=0 / VER=1 / VER=2 / VER=3 / VER=5 / VER=6
+ifdef VER
+HW_VER = $(VER)
+endif
+HW_VER ?= 6
+
+BLE_MEMHEAP = 5632
+
+# Firmware version from version.h
+FW_VER_MAJOR := $(shell grep 'FW_VERSION_MAJOR ' APP/include/version.h | awk '{print $$3}')
+FW_VER_MINOR := $(shell grep 'FW_VERSION_MINOR ' APP/include/version.h | awk '{print $$3}')
+FW_VER_PATCH := $(shell grep 'FW_VERSION_PATCH ' APP/include/version.h | awk '{print $$3}')
+
+# Build number from git: short hash → 16-bit integer (e.g. "a3f1" → 0xa3f1)
+GIT_HASH := $(shell git rev-parse --short=4 HEAD 2>/dev/null || echo "0000")
+BUILD_NUMBER := 0x$(GIT_HASH)
+FW_VERSION := $(FW_VER_MAJOR).$(FW_VER_MINOR).$(FW_VER_PATCH).$(GIT_HASH)
+
+# Optional color variant. Unset → DIS Model Number = "IK-1" (general SKU,
+# declared 2026-05-14). Set to W/B/G → "IK-1-W"/"IK-1-B"/"IK-1-G" (declared
+# 2026-05-07). Build with: `make FW_VARIANT=W` (also wired through
+# ota/build-ota.sh as `--variant=W`).
+ifdef FW_VARIANT
+FW_VARIANT_DEFINE = -DFW_VARIANT=\"$(FW_VARIANT)\"
+else
+FW_VARIANT_DEFINE =
+endif
+
+# Common defines
+C_DEFS_COMMON = \
+	-DFW_BUILD_NUMBER=$(BUILD_NUMBER) \
+	$(FW_VARIANT_DEFINE) \
+	-DHARDWARE_VER$(HW_VER) \
+	-DCH592 \
+	-DBLE_MAC=FALSE \
+	-DBLE_SNV_NUM=2 \
+	-DDCDC_ENABLE=TRUE \
+	-DBLE_MEMHEAP_SIZE=$(BLE_MEMHEAP) \
+	-DBLE_BUFF_MAX_LEN=251 \
+	-DBLE_TX_NUM_EVENT=4 \
+	-DCLK_OSC32K=0 \
+	-DWAKE_UP_RTC_MAX_TIME=164 \
+	-DuECC_PLATFORM=uECC_arch_other \
+	-DuECC_WORD_SIZE=4 \
+	-DuECC_OPTIMIZATION_LEVEL=2 \
+	-DuECC_SUPPORTS_secp160r1=0 \
+	-DuECC_SUPPORTS_secp192r1=0 \
+	-DuECC_SUPPORTS_secp224r1=0 \
+	-DuECC_SUPPORTS_secp256r1=1 \
+	-DuECC_SUPPORTS_secp256k1=1 \
+	-DuECC_SUPPORT_COMPRESSED_POINT=1 \
+	-DuECC_VLI_NATIVE_LITTLE_ENDIAN=1
+
+# Debug build: serial output enabled, sleep disabled, higher TX power
+C_DEFS_DEBUG = \
+	$(C_DEFS_COMMON) \
+	-DDEBUG=3 \
+	-DLOG_VERBOSE=1 \
+	-DHAL_SLEEP=FALSE \
+	-DBLE_TX_POWER=LL_TX_POWEER_4_DBM
+
+# Release build: no serial output, sleep enabled, lower TX power
+C_DEFS_RELEASE = \
+	$(C_DEFS_COMMON) \
+	-DHAL_SLEEP=TRUE \
+	-DBLE_TX_POWER=LL_TX_POWEER_0_DBM
+
+# Release-debug build: sleep enabled WITH serial output (for diagnosing sleep issues)
+C_DEFS_RELEASE_DEBUG = \
+	$(C_DEFS_COMMON) \
+	-DDEBUG=3 \
+	-DLOG_VERBOSE=0 \
+	-DHAL_SLEEP=TRUE \
+	-DBLE_TX_POWER=LL_TX_POWEER_0_DBM
+
+# Select build mode (default: debug)
+ifdef RELEASE_DEBUG
+    C_DEFS = $(C_DEFS_RELEASE_DEBUG)
+    BUILD_MODE = release-debug
+else ifdef RELEASE
+    C_DEFS = $(C_DEFS_RELEASE)
+    BUILD_MODE = release
+else
+    C_DEFS = $(C_DEFS_DEBUG)
+    BUILD_MODE = debug
+endif
+
+# Compiler flags
+MCU_FLAGS = -march=rv32imac_zicsr -mabi=ilp32 -msmall-data-limit=8
+
+CFLAGS = $(MCU_FLAGS) $(C_DEFS) $(C_INCLUDES)
+CFLAGS += -std=gnu99 -Os -ffunction-sections -fdata-sections -fno-common
+CFLAGS += -Wall -Wno-unused-function
+
+# 测试专用注入点。正常构建和 ota/build-ota.sh 一概不传 TEST_DEFS，
+# 只有 firmware/tools/ 下的测试脚本会手工塞 -D。用来把概率性 race
+# （比如 R599S sleep no-ack）变成必现，否则「跑一遍没复现」什么都证明不了。
+CFLAGS += $(TEST_DEFS)
+ifndef RELEASE
+    CFLAGS += -g
+endif
+
+ASFLAGS = $(MCU_FLAGS) $(C_DEFS) $(C_INCLUDES)
+ASFLAGS += -x assembler-with-cpp
+
+# Linker flags
+# Use appropriate linker script based on build mode:
+# - OTA V1: 0x1000 start (separate bootloader at 0x0000)
+# - OTA V2: 0x4000 start (IAP bootloader at 0x0000)
+# - Normal: 0x0000 start (no OTA)
+ifdef OTA_V2
+    LDSCRIPT = Ld/Link_OTA_V2.ld
+else ifdef OTA
+    LDSCRIPT = Ld/Link_OTA.ld
+else
+    LDSCRIPT = Ld/Link.ld
+endif
+LIBS = -L$(BLE_PATH)/LIB -L$(SRC_PATH)/StdPeriphDriver -lCH59xBLE -lISP592 -lm
+LDFLAGS = $(MCU_FLAGS)
+LDFLAGS += -T$(LDSCRIPT)
+LDFLAGS += -nostartfiles -Xlinker --gc-sections
+LDFLAGS += -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref
+LDFLAGS += --specs=nano.specs --specs=nosys.specs
+LDFLAGS += $(LIBS)
+
+# Object files
+OBJECTS = $(addprefix $(BUILD_DIR)/,$(notdir $(C_SOURCES:.c=.o)))
+vpath %.c $(sort $(dir $(C_SOURCES)))
+
+OBJECTS += $(addprefix $(BUILD_DIR)/,$(notdir $(ASM_SOURCES:.S=.o)))
+vpath %.S $(sort $(dir $(ASM_SOURCES)))
+
+# Track build flags — auto-clean when flags change
+BUILD_FLAGS_FILE = $(BUILD_DIR)/.build_flags
+CURRENT_FLAGS = $(BUILD_MODE) HW_VER=$(HW_VER) FW=$(FW_VERSION) TEST_DEFS=$(TEST_DEFS)
+$(shell mkdir -p $(BUILD_DIR))
+$(shell if [ ! -f $(BUILD_FLAGS_FILE) ] || [ "$$(cat $(BUILD_FLAGS_FILE))" != "$(CURRENT_FLAGS)" ]; then \
+	rm -f $(BUILD_DIR)/*.o; \
+	echo "$(CURRENT_FLAGS)" > $(BUILD_FLAGS_FILE); \
+fi)
+
+# Build targets
+all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin size
+	@echo "Build mode: $(BUILD_MODE), HW: VER$(HW_VER), FW: $(FW_VERSION)"
+	@echo "$(FW_VERSION)" > $(BUILD_DIR)/.fw_version
+
+$(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR)
+	@echo "CC $<"
+	@$(CC) -c $(CFLAGS) $< -o $@
+
+$(BUILD_DIR)/%.o: %.S Makefile | $(BUILD_DIR)
+	@echo "AS $<"
+	@$(CC) -c $(ASFLAGS) $< -o $@
+
+$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile
+	@echo "LD $@"
+	@$(CC) $(OBJECTS) $(LDFLAGS) -o $@
+
+$(BUILD_DIR)/$(TARGET).hex: $(BUILD_DIR)/$(TARGET).elf
+	@echo "HEX $@"
+	@$(OBJCOPY) -O ihex $< $@
+
+# OTA 镜像槽位 216K（Image A/B 各 216K，布局已用满 448K，见 CLAUDE.md）。
+# 不带 OTA=1 时链接脚本是 448K，链接器不报错，1.8.0 的 release-debug 就这样
+# 超限到打包才发现。这里对 bin 统一断言，超了直接失败。
+FW_MAX_SIZE = 221184
+
+$(BUILD_DIR)/$(TARGET).bin: $(BUILD_DIR)/$(TARGET).elf
+	@echo "BIN $@"
+	@$(OBJCOPY) -O binary -S $< $@
+	@sz=$$(wc -c < $@ | tr -d ' '); \
+	if [ $$sz -gt $(FW_MAX_SIZE) ]; then \
+	  echo "ERROR: $@ is $$sz bytes, exceeds OTA image slot $(FW_MAX_SIZE) by $$((sz - $(FW_MAX_SIZE)))"; \
+	  rm -f $@; exit 1; \
+	else echo "SIZE $$sz / $(FW_MAX_SIZE) ($$(($(FW_MAX_SIZE) - sz)) bytes free)"; fi
+
+$(BUILD_DIR):
+	@mkdir -p $@
+
+size: $(BUILD_DIR)/$(TARGET).elf
+	@echo ""
+	@echo "=== Memory Usage ==="
+	@$(SIZE) $<
+
+clean:
+	@rm -rf $(BUILD_DIR)
+	@echo "Clean done"
+
+# Release build target
+release:
+	@$(MAKE) RELEASE=1 HW_VER=$(HW_VER) clean all
+
+# Release-debug build target (sleep + serial output for diagnostics)
+release-debug:
+	@$(MAKE) RELEASE_DEBUG=1 HW_VER=$(HW_VER) clean all
+
+# OTA V1 build targets (application starts at 0x1000)
+ota:
+	@$(MAKE) OTA=1 HW_VER=$(HW_VER) clean all
+	@echo ""
+	@echo "=== OTA V1 Build Complete ==="
+	@echo "Flash layout: 0x1000 - 0x37000 (216KB max)"
+
+ota-release:
+	@$(MAKE) OTA=1 RELEASE=1 HW_VER=$(HW_VER) clean all
+	@echo ""
+	@echo "=== OTA V1 Release Build Complete ==="
+
+# OTA V2 build targets (application starts at 0x4000, IAP at 0x0000)
+ota-v2:
+	@$(MAKE) OTA_V2=1 HW_VER=$(HW_VER) clean all
+	@echo ""
+	@echo "=== OTA V2 Build Complete ==="
+	@echo "Flash layout: 0x4000 - 0x3A000 (216KB max)"
+
+ota-v2-release:
+	@$(MAKE) OTA_V2=1 RELEASE=1 HW_VER=$(HW_VER) clean all
+	@echo ""
+	@echo "=== OTA V2 Release Build Complete ==="
+
+# Flash using WCHISPTool (macOS)
+flash: $(BUILD_DIR)/$(TARGET).hex
+	@echo "Please use WCHISPTool to flash $(BUILD_DIR)/$(TARGET).hex"
+
+# Disassembly
+disasm: $(BUILD_DIR)/$(TARGET).elf
+	@$(OBJDUMP) -d -S $< > $(BUILD_DIR)/$(TARGET).lst
+
+.PHONY: all clean flash disasm size release release-debug ota ota-release ota-v2 ota-v2-release
