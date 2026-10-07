@@ -27,11 +27,16 @@ ota/iap/build/
 ota/jumpapp/build/
 
 
-# === OTA keys ===
-# Intentionally NOT ignored: ota_keys.h, ota_keys.py, ota/ota_ec_private.pem are
-# versioned in the PRIVATE monorepo (origin = 192.168.1.98). scripts/sync-github.sh
-# excludes all three from the public GitHub repos. The EC private key can forge
-# firmware for the whole fleet — never push the tree to a github remote directly.
+# === Private keys and device state ===
+**/ota_keys.h
+**/ota_keys.py
+**/ota_ec_private.pem
+**/secrets.h
+**/*.key
+**/*.pem
+backups/
+bluetooth.json
+bluetooth-replay.json
 
 # === Python ===
 __pycache__/
@@ -60,3 +65,7 @@ xcuserdata/
 
 # Superpowers brainstorming mockups
 .superpowers/
+
+# ESP-IDF generated dependencies
+firmware/ports/esp32s3/managed_components/
+firmware/ports/esp32s3/sdkconfig.old

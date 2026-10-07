@@ -1,0 +1,62 @@
+{
+  "target": "Seeed XIAO ESP32-S3 + ZW111",
+  "components": [
+    {
+      "component": "immurok",
+      "upstream": "https://github.com/immurok/immurok",
+      "upstream_commit": "7595d79047ec7174bb527944199fcad6d8c496b3",
+      "initial_fork": "https://github.com/Pramodhsurya/tinytouch-immurok",
+      "path": "."
+    },
+    {
+      "component": "firmware",
+      "upstream": "https://github.com/immurok/firmware",
+      "upstream_commit": "be6ce984e68689c9cdf4d75355389692ecfd7a18",
+      "initial_fork": "https://github.com/Pramodhsurya/tinytouch-immurok-firmware",
+      "path": "firmware"
+    },
+    {
+      "component": "ota",
+      "upstream": "https://github.com/immurok/ota",
+      "upstream_commit": "a0ef46ef6b178b082672484e2a9123a4f915b3d9",
+      "initial_fork": "https://github.com/Pramodhsurya/tinytouch-immurok-ota",
+      "path": "ota"
+    },
+    {
+      "component": "hardware",
+      "upstream": "https://github.com/immurok/hardware",
+      "upstream_commit": "84896a588262e302fa202020b771b1e055449fe3",
+      "initial_fork": "https://github.com/Pramodhsurya/tinytouch-immurok-hardware",
+      "path": "hardware"
+    },
+    {
+      "component": "app-macos",
+      "upstream": "https://github.com/immurok/app-macos",
+      "upstream_commit": "1c8841e345b7ba2a2d64ca2831ebac6e5e7a654b",
+      "initial_fork": "https://github.com/Pramodhsurya/tinytouch-immurok-app-macos",
+      "path": "app-macos"
+    },
+    {
+      "component": "app-win",
+      "upstream": "https://github.com/immurok/app-win",
+      "upstream_commit": "e12880db3582b7bb02ca7426675451b08ce96225",
+      "initial_fork": "https://github.com/Pramodhsurya/tinytouch-immurok-app-win",
+      "path": "app-win"
+    },
+    {
+      "component": "app-linux-rs",
+      "upstream": "https://github.com/immurok/app-linux-rs",
+      "upstream_commit": "1363e73b7c1d8eafa6e9532eca754e814072d7ef",
+      "initial_fork": "https://github.com/Pramodhsurya/tinytouch-immurok-app-linux-rs",
+      "path": "app-linux-rs"
+    },
+    {
+      "component": "imk-skill",
+      "upstream": "https://github.com/immurok/imk-skill",
+      "upstream_commit": "388bdbd5bd0f16fb439ddbb4343f7f59477b8a96",
+      "initial_fork": "https://github.com/Pramodhsurya/tinytouch-immurok-imk-skill",
+      "path": "imk-skill"
+    }
+  ],
+  "repository": "https://github.com/Pramodhsurya/tinytouch-immurok"
+}

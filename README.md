@@ -1,3 +1,13 @@
+# tinyTouch ESP32-S3 + ZW111
+
+This fork consolidates the immurok firmware, OTA tools, hardware, Mac/Windows/Linux companion apps and agent integration in one repository. We are porting the system to XIAO ESP32-S3 + ZW111 while retaining USB data and Bluetooth.
+
+**Port in progress:** the imported ESP32 baseline implements the existing tinyTouch protocol; full immurok app/feature compatibility is not yet implemented. See [ESP32-S3 port plan](ESP32S3_PORT.md), [baseline firmware](firmware/ports/esp32s3), and [component provenance](components.json).
+
+Upstream documentation follows below and describes immurok hardware/features, not completed ESP32 parity. Each component retains its license.
+
+---
+
 # immurok
 
 Wireless fingerprint authenticator for Mac, Windows, Linux, and your AI coding agent.
