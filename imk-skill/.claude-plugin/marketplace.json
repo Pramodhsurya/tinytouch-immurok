@@ -1,0 +1,13 @@
+{
+  "name": "imk",
+  "owner": {
+    "name": "immurok"
+  },
+  "plugins": [
+    {
+      "name": "imk-tools",
+      "source": "./",
+      "description": "Helper for AI coding agents on macOS projects that use immurok / imk for fingerprint-gated authorization."
+    }
+  ]
+}
