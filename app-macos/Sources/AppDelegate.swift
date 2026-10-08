@@ -954,6 +954,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // ESP32 commissioning is already owned by the tinyTouch helper. The
         // CH592 wizard would request unrelated PAM setup and protocol pairing.
         NotificationCenter.default.post(name: .openSettingsWindow, object: nil)
+        NSApp.activate(ignoringOtherApps: true)
+        Task { @MainActor in
+            // SwiftUI creates the window after handling the notification.
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if let window = NSApp.windows.first(where: { $0.title == "tinyTouch" }) {
+                window.deminiaturize(nil)
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                NSLog("tinyTouch device window presented")
+            }
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        Task { @MainActor in self.checkAndShowSetupWizard() }
+        return true
     }
 
     // MARK: - Authorization Repair Notification
