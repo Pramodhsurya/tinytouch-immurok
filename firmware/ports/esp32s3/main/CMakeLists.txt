@@ -4,6 +4,7 @@ idf_component_register(
     "bluetooth_transport.c"
     "config_console.c"
     "auth_proof.c"
+    "fresh_touch.c"
     "device_config.c"
     "fingerprint.c"
     "finger_profiles.c"

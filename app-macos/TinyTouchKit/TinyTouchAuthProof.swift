@@ -3,7 +3,8 @@ import CryptoKit
 import Security
 
 public enum TinyTouchAuthError: Error, LocalizedError {
-    case invalidResponse, rejected, expired, unsupported, keychain, busy, lease, cancelled
+    case invalidResponse, rejected, expired, unsupported, keychain, busy, lease, cancelled, disconnected
+    case transport(stage: String, code: Int32)
     public var errorDescription: String? {
         switch self {
         case .invalidResponse: return "The authentication response failed verification."
@@ -14,6 +15,8 @@ public enum TinyTouchAuthError: Error, LocalizedError {
         case .busy: return "Another tinyTouch operation is using USB. Wait for it to finish."
         case .lease: return "The USB helper did not acknowledge exclusive access. Check helper health and try again."
         case .cancelled: return "Authentication cancelled."
+        case .disconnected: return "USB disconnected during this authentication request. Reconnect the device and start a new test."
+        case .transport(let stage, let code): return "USB \(stage) failed (system error \(code)). Reconnect the device and try again."
         }
     }
 }
@@ -78,7 +81,7 @@ public final class TinyTouchAuthRequest {
               HMAC<SHA256>.isValidAuthenticationCode(mac, authenticating: material("match"), using: key) else { throw TinyTouchAuthError.invalidResponse }
     }
     private func material(_ role: String) -> Data {
-        Data(["tinyTouch-auth2-v1", role, serial, hostID, clientNonce, deviceNonce, contextHash].joined(separator: "|").utf8)
+        Data(["tinyTouch-auth2-fresh-v1", role, serial, hostID, clientNonce, deviceNonce, contextHash].joined(separator: "|").utf8)
     }
     private static func fields(_ line: String, prefix: String, keys: Set<String>) throws -> [String: String] {
         guard line.utf8.count <= 512, line.hasPrefix(prefix + " ") else { throw TinyTouchAuthError.invalidResponse }

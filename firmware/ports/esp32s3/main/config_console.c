@@ -214,7 +214,7 @@ static void auth2_prove(const char *args) {
     auth_proof_clear(&auth2); reply("ERR AUTH2 rejected"); return;
   }
   strcpy(context, auth2.context);
-  bool matched = fingerprint_count() > 0 && fingerprint_authorize_prompted(touch_prompt);
+  bool matched = fingerprint_count() > 0 && fingerprint_authorize_fresh(touch_prompt, auth2_connection_lost);
   matched = matched && !auth2_connection_lost();
   bool ok = auth_proof_finish(&auth2, matched, esp_timer_get_time() / 1000, auth2_hmac, tag);
   if (!ok) { reply("ERR AUTH2 no_match_or_expired"); return; }
@@ -242,7 +242,7 @@ static void status(void) {
   bool sensor_is_ready = fingerprint_is_ready();
   snprintf(line, sizeof(line),
            "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
-           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1 config_values=1 custom_config=1 auth_proof=" AUTH2_CAPABILITY " "
+           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1 config_values=1 custom_config=1 auth_proof=" AUTH2_CAPABILITY " auth_fresh=" AUTH2_CAPABILITY " touch_present=%u "
            "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u "
            "led_idle_color=%u led_success_color=%u led_failure_color=%u led_idle_end_color=%u "
            "led_idle_effect=%u led_idle_cycles=%u led_feedback_ms=%u piv_auto_type=%u "
@@ -252,6 +252,7 @@ static void status(void) {
            sensor_is_ready ? "ready" : "offline", count,
            (unsigned)device_config_hid_host_count(), firmware_update_staged() ? "staged" :
            (firmware_update_active() ? "writing" : "idle"), device_config_led_mode_name(),
+           fingerprint_present_hint() ? 1u : 0u,
            (unsigned)device_config_typing_delay_ms(), device_config_submit_enter() ? 1u : 0u,
            (unsigned)device_config_touch_cooldown_ms(), preferences.led_idle_color,
            preferences.led_success_color, preferences.led_failure_color, preferences.led_idle_end_color,
@@ -390,7 +391,10 @@ static bool enrollment_connected(void) {
 
 static void fingerprint_list(void) {
   fingerprint_inventory_t inventory;
-  if (!fingerprint_inventory(&inventory)) { reply("ERR FINGER inventory_unavailable"); return; }
+  if (!fingerprint_inventory(&inventory)) {
+    char error[96]; snprintf(error, sizeof(error), "ERR FINGER inventory_unavailable reason=%s", fingerprint_inventory_failure());
+    reply(error); return;
+  }
   char groups[96] = {0};
   size_t offset = 0;
   unsigned available = 0, pending = 0;

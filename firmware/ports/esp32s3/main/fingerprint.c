@@ -1,5 +1,7 @@
 #include "fingerprint.h"
 #include "device_config.h"
+#include "fresh_touch.h"
+#include "fp_reply_shape.h"
 
 #include <string.h>
 
@@ -7,6 +9,7 @@
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -20,7 +23,6 @@ static const int FP_RX_PIN = 44;
 static const int FP_INT_PIN = 2;
 static const int INT_ACTIVE_VALUE = 1;
 static const uint16_t END_SLOT = FINGER_TEMPLATE_LIMIT - 1;
-static const uint32_t FINGER_WAIT_MS = 7000;
 static const uint8_t FP_LED_BLUE = 0x01;
 static const uint8_t FP_LED_GREEN = 0x02;
 static const uint8_t FP_LED_RED = 0x04;
@@ -38,6 +40,7 @@ static volatile bool prompted_authorization_active;
 static bool sensor_ready;
 static finger_profiles_t profiles;
 static bool profiles_ready;
+static const char *inventory_failure = "none";
 static bool (*enrollment_connected)(void);
 static bool cleanup_pending_locked(void);
 
@@ -176,6 +179,10 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
         return false;
       }
 
+      if (!fp_reply_shape_valid(packet_id, response_payload_len, data_cap, out_len, saw_ack)) {
+        note_transport_failure(); return false;
+      }
+
       if (packet_id == 0x07) {
         if (response_payload_len < 1) {
           note_transport_failure();
@@ -194,7 +201,7 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
         }
         if (*confirm != 0x00 || !data || !data_len || out_len >= data_cap) return true;
         post_ack_until = xTaskGetTickCount() + pdMS_TO_TICKS(120);
-      } else if (packet_id == 0x02 && data && data_len) {
+      } else if ((packet_id == 0x02 || packet_id == 0x08) && data && data_len) {
         size_t actual_len = response_payload_len;
         if (actual_len) {
           size_t copy_len = actual_len;
@@ -684,20 +691,55 @@ bool fingerprint_recover(void) {
 }
 
 bool fingerprint_authorize_prompted(void (*prompt)(void)) {
-  // TOUCH_OUT is not reliable enough to gate a foreground capture on every
-  // supported module. Reuse HID's quiet matcher and keep polling until the
-  // user presents a valid enrolled finger or the authorization window ends.
+  return fingerprint_authorize_fresh(prompt, NULL);
+}
+
+bool fingerprint_authorize_fresh(void (*prompt)(void), bool (*cancelled)(void)) {
+  // UART image buffers/late ACKs cannot establish new physical presence. Hold
+  // the UART mutex across this transaction so LED/HID traffic cannot interleave.
   prompted_authorization_active = true;
-  if (prompt) prompt();
-  TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(FINGER_WAIT_MS);
   bool ok = false;
-  while (xTaskGetTickCount() < deadline) {
-    if (fingerprint_authorize_poll_match().slot != 0) {
-      ok = true;
+  if (!fp_take(1000)) goto done;
+  uart_wait_tx_done(FP_UART, pdMS_TO_TICKS(200));
+  // Quarantine pending responses from a previous LED or sensor command.
+  TickType_t drained_at = xTaskGetTickCount();
+  uint8_t drain[64];
+  while (xTaskGetTickCount() - drained_at < pdMS_TO_TICKS(200)) {
+    while (uart_read_bytes(FP_UART, drain, sizeof(drain), 0) > 0) {}
+    if (cancelled && cancelled()) goto unlock;
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  fresh_touch_t presence;
+  fresh_touch_begin(&presence, esp_timer_get_time() / 1000);
+  bool prompted = false;
+  while (presence.phase != FRESH_CONSUMED) {
+    if (cancelled && cancelled()) { fresh_touch_cancel(&presence); break; }
+    bool present = finger_present(), absent = false;
+    if (presence.phase == FRESH_WAIT_LIFT && !present) {
+      uint8_t confirm = 0xff;
+      absent = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350) && confirm == 0x02;
+      present = finger_present();
+    }
+    bool capture = fresh_touch_observe(&presence, esp_timer_get_time() / 1000, present, absent);
+    if (!prompted && presence.phase == FRESH_WAIT_TOUCH) {
+      prompted = true; if (prompt) prompt();
+    }
+    if (capture) {
+      uint8_t confirm = 0xff;
+      bool acquired = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350) && confirm == 0x00;
+      bool matched = false;
+      if (acquired && finger_present() && !(cancelled && cancelled()))
+        matched = fingerprint_match_captured(true).slot != 0;
+      ok = fresh_touch_finish(&presence, esp_timer_get_time() / 1000,
+                              finger_present(), acquired, matched);
+      ok = ok && !(cancelled && cancelled());
       break;
     }
-    vTaskDelay(pdMS_TO_TICKS(120));
+    vTaskDelay(pdMS_TO_TICKS(40));
   }
+unlock:
+  fp_give();
+done:
   prompted_authorization_active = false;
   return ok;
 }
@@ -804,13 +846,17 @@ bool fingerprint_delete_all(void) {
 }
 
 static bool inventory_locked(fingerprint_inventory_t *inventory) {
+  inventory_failure = "profiles";
   if (!profiles_ready) return false;
+  inventory_failure = "parameters";
   uint8_t confirm = 0xff, parameters[16];
   size_t length = sizeof(parameters);
   if (!fp_command(0x0f, NULL, 0, &confirm, parameters, &length, 1000) ||
       confirm != 0 || length != sizeof(parameters)) return false;
   unsigned capacity = ((unsigned)parameters[4] << 8) | parameters[5];
+  inventory_failure = "capacity";
   if (capacity == 0 || capacity > 256) return false;
+  inventory_failure = "index";
   uint8_t page = 0, index[32];
   length = sizeof(index);
   if (!fp_command(0x1f, &page, 1, &confirm, index, &length, 1000) ||
@@ -819,23 +865,27 @@ static bool inventory_locked(fingerprint_inventory_t *inventory) {
   unsigned total = 0;
   for (unsigned slot = 0; slot < 256; slot++) {
     if (!(index[slot / 8] & (1u << (slot % 8)))) continue;
-    if (slot >= capacity) return false;
+    if (slot >= capacity) { inventory_failure = "index_bounds"; return false; }
     total++;
     if (slot < FINGER_TEMPLATE_LIMIT) occupied |= UINT64_C(1) << slot;
   }
   // A mismatched index must never be mistaken for free space.
   uint8_t count[2]; length = sizeof(count);
+  inventory_failure = "count_consistency";
   if (!fp_command(0x1d, NULL, 0, &confirm, count, &length, 1000) ||
       confirm != 0 || length != sizeof(count) || total != (((unsigned)count[0] << 8) | count[1]))
     return false;
   inventory->capacity = capacity < FINGER_TEMPLATE_LIMIT ? capacity : FINGER_TEMPLATE_LIMIT;
   inventory->occupied = occupied;
   inventory->profiles = profiles;
+  inventory_failure = "none";
   return true;
 }
 
+const char *fingerprint_inventory_failure(void) { return inventory_failure; }
+
 bool fingerprint_inventory(fingerprint_inventory_t *inventory) {
-  if (!inventory || !fp_take(1000)) return false;
+  if (!inventory || !fp_take(1000)) { inventory_failure = "busy"; return false; }
   bool ok = inventory_locked(inventory);
   fp_give();
   return ok;

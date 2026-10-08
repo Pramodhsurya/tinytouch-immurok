@@ -2,8 +2,8 @@ import XCTest
 @testable import TinyTouchKit
 
 final class TinyTouchAuthProofTests: XCTestCase {
-    private let challengeTag = "c1ef24a244a5abc8e5db050bd91af1614c1a9dac7be37288f2daec51209fed97"
-    private let matchTag = "9933afacb8616a8292656188b47fcb63f6da118451f913a2573ff089a73854a7"
+    private let challengeTag = "85e84657b21e5feb755486598187d8d83972bacacba422a4518f2c6c70962cb8"
+    private let matchTag = "0d2c9f05bc9dfd1d62f8e56837733dc896c850dff35711f8cfe3f68d6ecd5508"
     private var client: String { String(repeating: "a1", count: 32) }
     private var device: String { String(repeating: "b2", count: 32) }
     private var context: String { String(repeating: "c3", count: 32) }
@@ -17,13 +17,20 @@ final class TinyTouchAuthProofTests: XCTestCase {
     func testCrossLanguageKnownAnswersAndSingleUse() throws {
         let request = try request()
         XCTAssertEqual(request.hostID, "630dcd2966c43366")
-        XCTAssertEqual(try request.proveCommand(challenge: challenge), "AUTH2 PROVE \(client) cf0d4fb19a6229af0f14e8dd3cf499275522ffcb98c6d0904830bca837cba417")
+        XCTAssertEqual(try request.proveCommand(challenge: challenge), "AUTH2 PROVE \(client) 997d2d06c12ebfcda1296aef4fbe15159bcb4a5500465639ac323473bb0151e4")
         try request.verifyMatch(match)
         XCTAssertThrowsError(try request.verifyMatch(match))
         XCTAssertThrowsError(try request.proveCommand(challenge: challenge))
     }
     func testNeverAcceptsAResultWithoutHostChallenge() throws {
         XCTAssertThrowsError(try request().verifyMatch(match))
+    }
+    func testLegacyDomainCannotBeEnabledBySpoofedCapabilities() throws {
+        let oldChallenge = challenge.replacingOccurrences(of: challengeTag,
+            with: "c1ef24a244a5abc8e5db050bd91af1614c1a9dac7be37288f2daec51209fed97")
+        let request = try request()
+        XCTAssertThrowsError(try request.proveCommand(challenge: oldChallenge))
+        XCTAssertThrowsError(try request.proveCommand(challenge: challenge))
     }
     func testRejectsReplayedChallengeOnAnotherRequestContextOrDevice() throws {
         for request in [try request(nonce: 0xa2), try request(ctx: 0xc4), try request(serial: "TT-001122334456")] {
@@ -71,6 +78,16 @@ final class TinyTouchAuthProofTests: XCTestCase {
         fields["auth_proof"] = "1"
         XCTAssertTrue(try TinyTouchStatus(data: JSONEncoder().encode(fields)).authProofSupported)
         fields["auth_proof"] = "true"
+        XCTAssertThrowsError(try TinyTouchStatus(data: JSONEncoder().encode(fields)))
+    }
+    func testCryptographicProofAloneCannotEnableFreshAuthentication() throws {
+        var fields = ["protocol": "6", "firmware": "0.1.36", "build": "auth-proof", "sensor": "ready", "fingerprints": "1", "hosts": "1", "mode": "hid", "auth_proof": "1"]
+        XCTAssertFalse(try TinyTouchStatus(data: JSONEncoder().encode(fields)).authenticationSupported)
+        fields["auth_fresh"] = "1"
+        XCTAssertTrue(try TinyTouchStatus(data: JSONEncoder().encode(fields)).authenticationSupported)
+        fields["auth_proof"] = "0"
+        XCTAssertFalse(try TinyTouchStatus(data: JSONEncoder().encode(fields)).authenticationSupported)
+        fields["auth_fresh"] = "true"
         XCTAssertThrowsError(try TinyTouchStatus(data: JSONEncoder().encode(fields)))
     }
 }

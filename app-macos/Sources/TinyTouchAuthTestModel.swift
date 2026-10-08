@@ -14,9 +14,18 @@ final class TinyTouchAuthTestModel: ObservableObject {
     deinit { cancellation?.cancel() }
     func cancel() { cancellation?.cancel() }
     func test() {
-        guard !busy, connection.usbStatus?.authProofSupported == true,
-              let device = connection.beginManagement() else { return }
-        busy = true; passed = false
+        guard !busy else { return }
+        // Every click clears the old green result, including a rejected start.
+        passed = false
+        guard connection.usbStatus?.authenticationSupported == true else {
+            message = "Fresh fingerprint authentication is unavailable. Update the firmware and refresh USB."
+            return
+        }
+        guard let device = connection.beginManagement() else {
+            message = "A new test could not start. Refresh USB and wait for other operations to finish."
+            return
+        }
+        busy = true
         message = "Reserving USB for this authentication request…"
         let cancellation = TinyTouchAuthCancellation(); self.cancellation = cancellation
         let requestID = UUID(); activeRequest = requestID

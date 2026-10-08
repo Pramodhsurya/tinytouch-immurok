@@ -1,5 +1,24 @@
 # ESP32 firmware build validation
 
+## Fresh-presence correction — October 8, 2026
+
+Firmware **0.1.37 / esp32-fresh-touch-1** replaces the unsafe polling-only authorization path with sensor-confirmed GPIO absence, a new debounced presence transition, a fresh capture/match and cancellation checks. Sensor UART ownership is held throughout the request; incompatible/duplicate/excess replies are rejected. The native client requires the new `auth_fresh=1` capability in addition to cryptographic proof. **0.1.36 failed the user's no-touch test; its apparent positive results are withdrawn.** Privileged features remain inactive.
+
+Build passed with ESP-IDF 5.3.4; image size **668,672 bytes**, **379,904 bytes** free per OTA slot, SHA-256 `0e8ac73012ec4fa49673adb9a6e26509764f0422e95b67050f20fbebfadd558a`. esptool checksum/validation hash pass. Bypass/recovery remain OFF; partition/NVS layout is unchanged. Portable presence/packet-shape tests pass with UndefinedBehaviorSanitizer; 142 Mac tests pass, including rejection of cryptographic capability without fresh-presence capability and the old HMAC domain. The revised native app is installed. Each test click clears an earlier success, including a request rejected by startup guards. Physical no-touch/wrong-finger/positive/cancel acceptance remains pending.
+
+**Deployment and activation:** the first OTA attempt stopped before upload because live sensor-count authorization returned unavailable. One retry completed upload and verification. After the user's RESET, fresh runtime confirms `firmware=0.1.37`, `build=esp32-fresh-touch-1`, `auth_proof=1`, `auth_fresh=1`, `touch_present=0`, `ota=idle`, sensor ready, five physical templates and one registered host. No enrollment/NVS erase, recovery image or authorization bypass was used. The updated app was reopened for no-touch testing first; this activation alone does not establish biometric acceptance.
+
+Presence regression check from the repository root:
+
+```sh
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=undefined \
+  -I firmware/ports/esp32s3/main \
+  firmware/ports/esp32s3/main/fresh_touch.c \
+  firmware/ports/esp32s3/tests/fresh_touch_test.c \
+  -o /tmp/tinytouch-fresh-touch-test
+/tmp/tinytouch-fresh-touch-test
+```
+
 ## AUTH2 development build — October 8, 2026
 
 Firmware **0.1.36**, default build identifier **esp32-auth-proof-1**, builds with the same ESP-IDF 5.3.4 toolchain. The **666,912-byte** image fits each existing 1,048,576-byte slot with **381,664 bytes** free. SHA-256: `d9c2a62dfb4f86e1268c5e0e459bc0a861a4709858c4c467491590a483acd5b4`. Fingerprint bypass/recovery, secure boot and flash encryption remain OFF. No partition table or NVS layout changes are introduced.
@@ -11,6 +30,8 @@ Portable C AUTH2 known-answer, tamper/replay, no-match, expiration/cancellation 
 **October 8 deployment:** enrolled-finger OTA authorization passed on the first attempt. The existing signed CLI uploaded all 666,912 bytes, completed verification and exited successfully with the update-ready confirmation. Immediate pre-restart readback showed `ota=staged` on 0.1.35, retaining five templates, one host and 14 settings.
 
 **Activation passed after RESET:** fresh runtime reports firmware `0.1.36`, build `esp32-auth-proof-1`, `auth_proof=1`, `ota=idle`, sensor ready, five templates and one registered host. The initial native management probe passed the new firmware status but failed during a follow-up read; complete logical inventory/settings readback is pending retry. Native Keychain/sensor AUTH2 acceptance is still pending.
+
+**0.1.36 biometric acceptance withdrawn:** the app displayed a valid proof, but subsequent user testing confirmed success without touching, including the original apparent positive test. Cancellation returned no success; this does not establish safe authentication. Replacement firmware validation is recorded above. Native raw PING/status reads pass; repeated management readback returns `ERR FINGER inventory_unavailable` while count stays five. Phase-specific diagnostics are included in 0.1.37. Do not erase enrollment/NVS or relax occupancy checks to hide the failure.
 
 Reproduce the portable Mac C check from the repository root (use a temporary output path):
 

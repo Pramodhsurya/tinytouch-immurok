@@ -27,6 +27,8 @@ fingerprint_match_t fingerprint_authorize_poll_match(void);
 // A completed attempt returns true, including an image that did not match.
 bool fingerprint_try_poll_match(fingerprint_match_t *match);
 bool fingerprint_authorize_prompted(void (*prompt)(void));
+bool fingerprint_authorize_fresh(void (*prompt)(void), bool (*cancelled)(void));
+const char *fingerprint_inventory_failure(void);
 bool fingerprint_prompted_authorization_active(void);
 int fingerprint_count(void);
 bool fingerprint_delete_all(void);

@@ -28,7 +28,7 @@ static void encode(const uint8_t bytes[32], char out[65]) {
 }
 static bool tag(auth_proof_t *s, const char *role, auth_proof_hmac_fn hmac, char out[65]) {
   char material[320]; uint8_t bytes[32] = {0};
-  int n = snprintf(material, sizeof(material), "tinyTouch-auth2-v1|%s|%s|%s|%s|%s|%s",
+  int n = snprintf(material, sizeof(material), "tinyTouch-auth2-fresh-v1|%s|%s|%s|%s|%s|%s",
                    role, s->serial, s->host, s->client, s->device, s->context);
   bool ok = n > 0 && n < (int)sizeof(material) && hmac(s->key, material, bytes);
   if (ok) encode(bytes, out);

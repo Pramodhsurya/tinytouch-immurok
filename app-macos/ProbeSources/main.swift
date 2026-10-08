@@ -2,6 +2,12 @@ import Foundation
 import TinyTouchKit
 
 do {
+    if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--auth-transport-test" {
+        guard let device = try TinyTouchUSBDevice.select(TinyTouchUSBDevice.connected(), expected: nil) else { throw TinyTouchError.wrongDevice }
+        let status = try TinyTouchAuthUSB.checkTransport(device: device)
+        print("Native USB transport verified: \(device.serial), firmware \(status.firmware), proof \(status.authProofSupported ? "supported" : "unavailable"), fresh presence \(status.authFreshSupported ? "supported" : "unavailable")")
+        exit(0)
+    }
     if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--auth-lease-test" {
         try TinyTouchAuthUSB.checkLease()
         print("Foreground USB lease acknowledged and released.")

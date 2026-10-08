@@ -79,8 +79,8 @@ struct TinyTouchMacSettingsView: View {
             GroupBox("Fingerprint authentication test") {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(authentication.message).foregroundStyle(authentication.passed ? Color.green : Color.primary)
-                    if connection.usbStatus?.authProofSupported != true {
-                        Text("Connect by USB with ESP32 firmware 0.1.36 (auth-proof build) to enable this test.").font(.caption)
+                    if connection.usbStatus?.authenticationSupported != true {
+                        Text("Connect by USB with firmware supporting fresh finger presence (auth_fresh=1) to enable this test.").font(.caption)
                     }
                     Text("Mac Keychain may ask you to allow this app to read the existing pairing key. Passwords are not read. PAM, SSH and automation still require their own adapters.").font(.caption).foregroundStyle(.secondary)
                     if authentication.busy {
@@ -88,7 +88,7 @@ struct TinyTouchMacSettingsView: View {
                         Button("Cancel test") { authentication.cancel() }
                     } else {
                         Button("Test enrolled fingerprint") { authentication.test() }
-                            .disabled(connection.usbStatus?.authProofSupported != true || connection.refreshing || connection.managing)
+                            .disabled(connection.usbStatus?.authenticationSupported != true || connection.refreshing || connection.managing)
                     }
                 }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
             }
