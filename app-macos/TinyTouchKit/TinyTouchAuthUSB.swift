@@ -135,7 +135,7 @@ final class TinyTouchAuthSerial {
                 let bytes = buffer.prefix(upTo: end); buffer.removeSubrange(...end)
                 guard bytes.count <= 1024, let line = String(data: bytes, encoding: .utf8)?.trimmingCharacters(in: .newlines) else { throw TinyTouchAuthError.invalidResponse }
                 if line.hasPrefix("ERR ") { throw TinyTouchAuthError.rejected }
-                if line == "EVENT TOUCH" { progress("Touch an enrolled finger now, then lift it."); continue }
+                if line == "EVENT TOUCH" { progress("Touch an enrolled finger now and hold it on the sensor until the result appears."); continue }
                 if line.hasPrefix(prefix) { return line }
                 if !line.isEmpty { throw TinyTouchAuthError.invalidResponse }
             }

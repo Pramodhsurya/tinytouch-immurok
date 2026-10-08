@@ -8,6 +8,8 @@ Build passed with ESP-IDF 5.3.4; image size **668,672 bytes**, **379,904 bytes**
 
 **Deployment and activation:** the first OTA attempt stopped before upload because live sensor-count authorization returned unavailable. One retry completed upload and verification. After the user's RESET, fresh runtime confirms `firmware=0.1.37`, `build=esp32-fresh-touch-1`, `auth_proof=1`, `auth_fresh=1`, `touch_present=0`, `ota=idle`, sensor ready, five physical templates and one registered host. No enrollment/NVS erase, recovery image or authorization bypass was used. The updated app was reopened for no-touch testing first; this activation alone does not establish biometric acceptance.
 
+**Physical follow-up:** the user reports no-touch rejection but also rejection after touching an enrolled finger when prompted. The native prompt still said “then lift it,” which conflicts with the fresh gate. It is corrected to require holding until the result, and the rebuilt/signature-verified app is installed and reopened for retest. Firmware remains 0.1.37; positive/wrong-finger/cancellation acceptance is pending. Read-only `fingers` diagnosis fails with `reason=parameters`; the device log includes sensor recovery failures. No raw sensor data, pairing keys or saved passwords were collected. A single image-capture attempt can also reject before acquisition is ready; investigate bounded retries if the corrected hold test still rejects.
+
 Presence regression check from the repository root:
 
 ```sh
