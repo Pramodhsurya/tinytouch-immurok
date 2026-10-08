@@ -133,7 +133,7 @@ Sources: [Mac README](https://github.com/immurok/app-macos/blob/main/README.md),
 | [ ] | In progress | MAC-03 | `Sources transport layer` | Add USB companion transport and transport/device selector | P2 | Same management commands work over USB and BLE without duplicate action |
 | [ ] | Not started | MAC-04 | `Sources/ImmurokSecurity.swift` | Implement negotiated crypto/freshness client and migrate Keychain identity | P2 | Firmware fixtures verified; existing saved password/key access preserved |
 | [ ] | In progress | MAC-05 | `Sources device views` | Show connection, host slot, battery, firmware and readiness status | P2 | Capability-driven display; unknown battery distinguished from measured level |
-| [ ] | Not started | MAC-06 | `Sources/FingerprintView.swift` | Enroll, cancel, delete and rename logical fingerprints | P2 | UI follows ZW111 progress/capacity and receives accurate final state |
+| [ ] | In progress | MAC-06 | `Sources/FingerprintView.swift` | Enroll, cancel, delete and rename logical fingerprints | P2 | UI follows ZW111 progress/capacity and receives accurate final state |
 | [ ] | Not started | MAC-07 | `Sources/AppDelegate.swift` | Native app screen unlock and wake/reconnect retry flow | P2 | Lock-screen unlock over BLE/USB; pending match cannot duplicate typing |
 | [ ] | Not started | MAC-08 | `Sources/DualHostView.swift` | First/second-host guidance, slot status and authorized unbinding | P3 | Two-host workflow tested with ESP32, including lost-host removal |
 | [ ] | Not started | MAC-09 | `Sources lock handling` | Confirm and perform device-requested screen lock | P3 | Cancel/confirm behavior correct; no unintended authentication grant |
@@ -152,7 +152,7 @@ Sources: [Mac README](https://github.com/immurok/app-macos/blob/main/README.md),
 | [ ] | Not started | MAC-22 | `Sources/CLISocketServer.swift / AgentGateOverlaySession.swift` | Exact-command approval overlay, reject/timeout and authorized subprocess lifecycle | P5 | Unapproved command never starts; no fallback after rejection; approved context scoped |
 | [ ] | Not started | MAC-23 | `Sources settings / setup` | Per-feature toggles, login item, Accessibility/Bluetooth and PAM status/repair UI | P2 | Enable/disable and restart behavior consistent; settings survive upgrades |
 | [ ] | Not started | MAC-24 | `Resources / LocalizationManager.swift` | System-language detection, bundled translations and custom translation overrides | P5 | All available resources load; missing strings fall back safely |
-| [ ] | Not started | MAC-25 | `Sources logs / About` | Runtime logs, diagnostics, app version and update checks | P6 | Useful diagnosis without passwords/private keys; correct fork release endpoint |
+| [ ] | In progress | MAC-25 | `Sources logs / About` | Runtime logs, diagnostics, app version and update checks | P6 | Useful diagnosis without passwords/private keys; correct fork release endpoint |
 | [ ] | Not started | MAC-26 | `FirmwareUpdateKit / update service` | ESP32 package validation, download/cache, progress, cancel and completion UI | P6 | No CH592 image accepted; image-size limits negotiated; interrupted transfer handled |
 | [ ] | Not started | MAC-27 | `packaging / Tests` | Bundle signing, CLI deployment, updates and native regression suite | P6 | Fresh install/upgrade/uninstall verified; tests pass against ESP32 integration |
 | [ ] | In progress | MAC-28 | `packaging / app-macos` | Deliver a standalone tinyTouch.app for this Mac, with its companion CLI and own application identity | P6 | App runs independently of development terminals; login launch, permissions and Keychain migration tested |
@@ -292,3 +292,5 @@ No new flashing, PAM installation, app installation or hardware change was perfo
 ### Native ESP32 Mac compatibility work — 2026-10-07
 
 Full Mac app feature parity is the release goal. The connection/status adapter is implemented and the native USB probe passed on the attached ESP32. BLE/USB management, authenticated native operations and transport acceptance criteria remain open; do not check connection items complete on status alone. Implementation dependencies and current evidence: [MAC_ESP32_COMPATIBILITY.md](MAC_ESP32_COMPATIBILITY.md). Existing MAC IDs remain authoritative; no duplicate feature entries were added.
+
+Native USB fingerprint/settings management is now implemented with last-finger protection and post-operation readback. Live inventory/settings reads passed; 115 Mac tests pass. MAC-06 remains in progress until physical enrollment, cancellation and protected deletion are tested. Native Bluetooth bonded identity has also been confirmed; broader reconnect/transport management criteria remain open.

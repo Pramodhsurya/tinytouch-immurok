@@ -3,7 +3,7 @@ import IOKit
 import Darwin
 
 public enum TinyTouchError: Error, LocalizedError {
-    case invalidStatus, unsupportedProtocol, wrongDevice, ambiguousDevices, backendMissing, commandFailed, timedOut
+    case invalidStatus, unsupportedProtocol, wrongDevice, ambiguousDevices, backendMissing, commandFailed, timedOut, lastFingerprint
     public var errorDescription: String? {
         switch self {
         case .invalidStatus: return "The device returned an invalid status."
@@ -12,7 +12,8 @@ public enum TinyTouchError: Error, LocalizedError {
         case .ambiguousDevices: return "Multiple tinyTouch devices are connected. Select a device before continuing."
         case .backendMissing: return "The bundled tinyTouch USB backend is missing."
         case .commandFailed: return "The USB status request failed. Reconnect the device and retry."
-        case .timedOut: return "The USB status request timed out."
+        case .timedOut: return "The USB command timed out."
+        case .lastFingerprint: return "Enroll another finger before deleting or replacing this slot."
         }
     }
 }

@@ -321,6 +321,10 @@ class BLEManager: NSObject {
     }
 
     private func doConnect() {
+        guard Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool != true else {
+            stopReconnectTimer()
+            return
+        }
         guard centralManager.state == .poweredOn else {
             NSLog("BLEManager: Bluetooth not ready (state: %d)", centralManager.state.rawValue)
             return

@@ -13,7 +13,7 @@ The native device page now uses `TinyTouchConnection` and `TinyTouchKit`, rather
 - Physical ZW111 template counts are displayed directly, not as the original six-slot bitmap. Unknown battery measurement is displayed as unavailable. USB metadata is cleared on disconnect; BLE-only connectivity does not imply fresh USB metadata.
 - The ESP32 preview keeps unported feature controls and PAM/SSH/CLI service deployment inactive, and opens its connection page instead of the CH592 commissioning wizard. Native app update installation is disabled in this preview; the release endpoint points to our combined repository rather than replacing this app with upstream binaries.
 
-This is a **connection/status adapter**, not completed management/authentication feature parity. The existing helper provides the already tested USB/BLE keyboard unlock path. Cold start, Bluetooth permissions, sleep/wake and physical detach/reconnect still need app/device acceptance evidence before MAC-02/03 can be checked off.
+This is a **connection/status adapter**, not completed management/authentication feature parity. The existing helper provides the already tested USB/BLE keyboard unlock path. The native app has confirmed the bonded Bluetooth identity with macOS Bluetooth authorization granted. Sleep/wake and physical detach/reconnect still need app/device acceptance evidence before MAC-02/03 can be checked off.
 
 ## Implementation sequence for full feature parity
 
@@ -43,6 +43,20 @@ The package script takes the complete signed CLI directory, checks its signature
 
 ## Recorded evidence
 
-- `swift test`: 103 tests, zero failures, including wrong-device/ambiguous-device selection, malformed status, unsupported protocol, invalid counts oversized output and exact Bluetooth identity matching.
+- `swift test`: 115 tests, zero failures, including wrong-device selection, malformed/oversized status, exact Bluetooth identity matching, inventory validation, command bounds, timeout/cancellation, last-finger protection and device-scoped names.
 - Native `tinyTouchProbe` against the attached device: TT-90706911C494, protocol 6, firmware 0.1.35, build esp32-baseline-1, sensor ready, one physical template, one host.
-- Bluetooth native app acceptance and full feature compatibility remain pending until separately recorded.
+- Native app runtime: Bluetooth authorized, powered on, bonded encrypted identity read confirmed. USB status also confirmed in the running native app. Sleep/wake and physical reconnect acceptance remain pending.
+- Native management probe: slot 10 has one existing view; nine empty blocks; 14 settings decoded. No fingerprint was changed during these checks.
+- Enrollment/delete/settings positive acceptance and full feature compatibility remain pending until separately recorded.
+
+## Native USB management — 2026-10-07
+
+The device page now supports ten-slot ZW111 inventory, four-view enrollment with streamed prompts, cancellation, confirmed replacement/deletion, per-device local fingerprint names and validated HID/LED preferences. The underlying signed CLI retains its firmware fingerprint authorization and lease handling. Successful mutations are followed by fresh inventory/settings/status reads before the app reports verification. Native deletion/replacement reads the current inventory first and refuses to remove the last usable finger; cleanup-pending slots do not count as backup authentication fingers. The last-finger guard here is a native client policy, not a claim that the firmware-wide FW-06 port is complete.
+
+Management and status operations are serialized within the native app. Leaving the device page cancels an active management operation. Timeout/cancellation bounds apply to the child process and its output. Cancellation closes CDC through the CLI; the existing firmware aborts enrollment on CDC DTR loss. Other stored slots are preserved. Partial captures or cleanup-pending slots remain visible instead of being labeled complete.
+
+The existing slot 10 is preserved. The first physical enrollment acceptance should use an empty slot (for example 1), authorize with the existing enrolled finger, then capture all four views of the new finger. Check final inventory, cancellation, native rename persistence, and protected deletion of the new slot while keeping slot 10. Settings acceptance should change a benign value, verify the readback, then restore it. Positive/negative authorization and physical disconnect tests require the user's sensor interaction.
+
+BLE management, first/second-host management, request-bound native authentication, PAM, vault/SSH/OTP/API, Quick Fill, automation, signed OTA, localization of new controls and production packaging remain open. The Mac release gate cannot be checked off until these adapters and their real acceptance tests are complete.
+
+The native About view now includes the actual bundle version, connection-only diagnostic copy, and links to this fork, its checklist and credits. App update installation stays disabled until production signing/packaging is ready. No valid macOS code-signing identity is currently installed; the local preview remains ad hoc signed, so macOS may request Bluetooth permission again after a rebuild.

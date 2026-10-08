@@ -12,6 +12,7 @@ final class TinyTouchConnection: NSObject, ObservableObject, CBCentralManagerDel
     @Published private(set) var bluetoothMessage = "Checking Bluetooth…"
     @Published private(set) var bluetoothConnected = false
     @Published private(set) var refreshing = false
+    @Published private(set) var managing = false
     private struct Remembered: Decodable { let schema: Int; let device_id: String; let peripheral: UUID }
     private let nus = CBUUID(string: "6e400001-b5a3-f393-e0a9-e50e24dcca9e")
     private let identity = CBUUID(string: "6e400004-b5a3-f393-e0a9-e50e24dcca9e")
@@ -41,7 +42,7 @@ final class TinyTouchConnection: NSObject, ObservableObject, CBCentralManagerDel
     deinit { timer?.invalidate() }
 
     func refreshUSB() {
-        guard !refreshing else { return }
+        guard !refreshing, !managing else { return }
         refreshing = true
         usbStatus = nil; usbDevice = nil
         let expected = remembered?.device_id
@@ -63,6 +64,17 @@ final class TinyTouchConnection: NSObject, ObservableObject, CBCentralManagerDel
                 NSLog("tinyTouch adapter: %@", self.usbMessage)
             case .failure(let error): self.usbMessage = error.localizedDescription
             }
+        }
+    }
+    func beginManagement() -> TinyTouchUSBDevice? {
+        guard !refreshing, !managing, let device = usbDevice else { return nil }
+        managing = true
+        return device
+    }
+    func endManagement(status: TinyTouchStatus?) {
+        managing = false
+        if let status, let device = usbDevice, TinyTouchUSBDevice.connected().contains(device) {
+            usbStatus = status
         }
     }
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
