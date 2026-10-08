@@ -2597,6 +2597,8 @@ struct AboutTabView: View {
     @State private var showLogs = false
     #endif
 
+    private var esp32: Bool { Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true }
+
     private var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "4.0"
     }
@@ -2609,7 +2611,7 @@ struct AboutTabView: View {
 
     /// "FW v1.6.0(b2)"（设备版本可能带第 4 段 build，无设备时显示 —）
     private var fwVersionText: String {
-        guard let fw = viewModel.firmwareVersion else { return "FW —" }
+        guard let fw = (esp32 ? viewModel.tinyTouchConnection.usbStatus?.firmware : viewModel.firmwareVersion) else { return "FW —" }
         let parts = fw.split(separator: ".")
         if parts.count >= 4 {
             return "FW v\(parts.prefix(3).joined(separator: "."))(\(parts[3]))"
@@ -2646,6 +2648,7 @@ struct AboutTabView: View {
                         NSApp.activate(ignoringOtherApps: true)
                     }
                     .controlSize(.small)
+                    .disabled(esp32)
                 }
             }
             .padding(.top, 16)
@@ -2658,7 +2661,8 @@ struct AboutTabView: View {
             if showLogs {
                 LogTextView(entries: logManager.entries)
             } else {
-                StatusSectionView(viewModel: viewModel, setupManager: setupManager)
+                if esp32 { TinyTouchAboutView(connection: viewModel.tinyTouchConnection) }
+                else { StatusSectionView(viewModel: viewModel, setupManager: setupManager) }
             }
 
             Divider()
@@ -2692,7 +2696,7 @@ struct AboutTabView: View {
                     .onHover { isHoveringLanguage = $0 }
                     .help("settings.language".localized)
 
-                    Link(destination: URL(string: "https://github.com/immurok/")!) {
+                    Link(destination: URL(string: esp32 ? "https://github.com/Pramodhsurya/tinytouch-immurok" : "https://github.com/immurok/")!) {
                         Image(systemName: "chevron.left.forwardslash.chevron.right")
                             .font(.system(size: 16))
                             .frame(width: 32, height: 32)
@@ -2741,6 +2745,7 @@ struct AboutTabView: View {
                 .foregroundColor(isHoveringUninstall ? .red : .secondary)
                 .onHover { isHoveringUninstall = $0 }
                 .help("about.uninstall".localized)
+                .disabled(esp32)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 12)

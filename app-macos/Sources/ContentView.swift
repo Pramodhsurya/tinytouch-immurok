@@ -97,27 +97,28 @@ struct ContentView: View {
 
     @ViewBuilder
     private var tabContent: some View {
-        if selectedTab == .about && Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true {
-            TinyTouchAboutView(connection: viewModel.tinyTouchConnection)
-        } else if selectedTab != .device && Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("ESP32 compatibility work in progress").font(.title2)
-                Text("These original Mac app features will be enabled as their ESP32 firmware and native adapters are implemented and tested. The device tab shows the current USB and Bluetooth connection.")
-                Text("The existing tinyTouch helper continues to handle fingerprint unlock.").foregroundStyle(.secondary)
-            }.padding(24)
-        } else {
-        switch selectedTab {
-        case .device:
-            TinyTouchDeviceView(connection: viewModel.tinyTouchConnection)
-        case .keys:
-            KeysTabView(viewModel: viewModel)
-        case .permissions:
-            PermissionsTabView(viewModel: viewModel, setupManager: setupManager)
-        case .automation:
-            AutomationTabView(viewModel: viewModel)
-        case .about:
-            AboutTabView(viewModel: viewModel, setupManager: setupManager)
-        }
+        let esp32 = Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true
+        VStack(spacing: 0) {
+            if esp32 && selectedTab != .device && selectedTab != .about {
+                Text(selectedTab == .automation
+                     ? "Automation editing is available. Execution awaits the ESP32 authentication adapter."
+                     : "This original interface is being ported. Device-backed actions await the ESP32 authentication adapter.")
+                    .font(.caption).foregroundStyle(.secondary).padding(12)
+                Divider()
+            }
+            switch selectedTab {
+            case .device:
+                if esp32 { TinyTouchDeviceView(connection: viewModel.tinyTouchConnection) }
+                else { DeviceTabView(viewModel: viewModel) }
+            case .keys:
+                KeysTabView(viewModel: viewModel).disabled(esp32)
+            case .permissions:
+                PermissionsTabView(viewModel: viewModel, setupManager: setupManager).disabled(esp32)
+            case .automation:
+                AutomationTabView(viewModel: viewModel)
+            case .about:
+                AboutTabView(viewModel: viewModel, setupManager: setupManager)
+            }
         }
     }
 }

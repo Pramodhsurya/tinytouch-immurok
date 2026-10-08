@@ -951,18 +951,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func checkAndShowSetupWizard() {
-        // ESP32 commissioning is already owned by the tinyTouch helper. The
-        // CH592 wizard would request unrelated PAM setup and protocol pairing.
-        NotificationCenter.default.post(name: .openSettingsWindow, object: nil)
+        let esp32 = Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true
+        let needsWizard = esp32 && !TinyTouchSetupCompletion.isComplete()
+        NotificationCenter.default.post(name: needsWizard ? .openSetupWizard : .openSettingsWindow, object: nil)
         NSApp.activate(ignoringOtherApps: true)
         Task { @MainActor in
             // SwiftUI creates the window after handling the notification.
             try? await Task.sleep(nanoseconds: 250_000_000)
-            if let window = NSApp.windows.first(where: { $0.title == "tinyTouch" }) {
+            if let window = NSApp.windows.first(where: { $0.title == (needsWizard ? "tinyTouch Setup Wizard" : "tinyTouch") }) {
                 window.deminiaturize(nil)
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
-                NSLog("tinyTouch device window presented")
+                NSLog("tinyTouch %@ window presented", needsWizard ? "setup" : "device")
             }
         }
     }

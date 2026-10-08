@@ -40,8 +40,12 @@ struct immurokApp: App {
         .defaultPosition(.center)
 
         // 首次运行引导窗口（AppDelegate 检测到未完成设置时经通知打开）
-        Window("wizard.title".localized, id: "setup-wizard") {
-            SetupWizardView(viewModel: viewModel)
+        Window(Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true ? "tinyTouch Setup Wizard" : "wizard.title".localized, id: "setup-wizard") {
+            if Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true {
+                TinyTouchSetupWizard(connection: viewModel.tinyTouchConnection)
+            } else {
+                SetupWizardView(viewModel: viewModel)
+            }
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
@@ -60,6 +64,10 @@ struct TinyTouchPreviewMenu: View {
             Text(connection.bluetoothMessage)
             Button("Open device status") {
                 openWindow(id: "settings")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            Button("Startup wizard") {
+                openWindow(id: "setup-wizard")
                 NSApp.activate(ignoringOtherApps: true)
             }
             Button("Quit native preview") { NSApp.terminate(nil) }
