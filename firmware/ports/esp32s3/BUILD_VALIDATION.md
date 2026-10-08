@@ -14,6 +14,8 @@ The startup-wizard output check failed to unlock the Mac. Device events show a m
 
 **Activation verified:** after the user's RESET, status confirms `firmware=0.1.38`, `build=esp32-touch-window-1`, `auth_proof=1`, `auth_fresh=1`, `auth_touch_ms=30000`, `ota=idle`, sensor ready, five templates and one host. Separate Bluetooth readback confirms AUTO remains selected, with encrypted connection and helper readiness. Two detailed native inventory probes fail at the parameters stage, so logical slot/settings readback is not credited as passed on this build. Existing enrollment is preserved; no write, recovery or bypass is used. Physical timing and output acceptance remain pending.
 
+**Delayed-touch attempt failed:** the user reports rejection/timeout and supplies the generic rejection screenshot. The Device screen confirms 0.1.38 and the parameters-stage inventory error. Device logs show repeated sensor recovery events. No phase-specific AUTH2 reason or measured failure time is available, so this does not establish a timer defect or a valid mismatch. A no-touch timing check is pending; physical timing acceptance remains unverified.
+
 ## Fresh-presence correction — October 8, 2026
 
 Firmware **0.1.37 / esp32-fresh-touch-1** replaces the unsafe polling-only authorization path with sensor-confirmed GPIO absence, a new debounced presence transition, a fresh capture/match and cancellation checks. Sensor UART ownership is held throughout the request; incompatible/duplicate/excess replies are rejected. The native client requires the new `auth_fresh=1` capability in addition to cryptographic proof. **0.1.36 failed the user's no-touch test; its apparent positive results are withdrawn.** Privileged features remain inactive.
