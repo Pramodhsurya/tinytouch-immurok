@@ -14,6 +14,8 @@ Build passed with ESP-IDF 5.3.4; image size **668,672 bytes**, **379,904 bytes**
 
 **Further 0.1.37 acceptance:** the user confirms cancellation without success and a new successful fingerprint request afterward. Two later native management probes pass full retained inventory/settings/host readback (slots 1:4 and 10:1, eight free blocks, 14 settings, one host), establishing that the earlier parameter failure is intermittent. Firmware remains unchanged; the Mac adapter now has bounded retries only for read-only inventory failures and sanitized stage diagnostics. All 148 Mac tests pass. The sensor/UART root cause, physical enrollment/deletion and disconnect/reconnect acceptance remain open.
 
+**Post-repair readback:** following the user's pause for an unsoldered sensor wire and request to resume, USB discovery and native management pass on TT-90706911C494 / 0.1.37. Sensor ready, all five templates, slots 1:4 and 10:1, eight free blocks, 14 settings and the registered host remain intact; both helpers are Running. No new firmware, enrollment or deletion was applied. The specific repaired wire and the cause of earlier parameter failures remain unconfirmed. The pending physical disconnect case must be performed afresh; prior successful readback alone does not complete it.
+
 Presence regression check from the repository root:
 
 ```sh
