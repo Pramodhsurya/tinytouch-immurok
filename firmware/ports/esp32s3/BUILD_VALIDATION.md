@@ -16,6 +16,8 @@ Build passed with ESP-IDF 5.3.4; image size **668,672 bytes**, **379,904 bytes**
 
 **Post-repair readback:** following the user's pause for an unsoldered sensor wire and request to resume, USB discovery and native management pass on TT-90706911C494 / 0.1.37. Sensor ready, all five templates, slots 1:4 and 10:1, eight free blocks, 14 settings and the registered host remain intact; both helpers are Running. No new firmware, enrollment or deletion was applied. The specific repaired wire and the cause of earlier parameter failures remain unconfirmed. The pending physical disconnect case must be performed afresh; prior successful readback alone does not complete it.
 
+**Resumed physical checks passed:** the user confirms enrolled-finger verification after repair. Unplugging USB during the touch prompt produces the expected disconnect error, no success and a disabled test button (user screenshot). After reconnect and Device refresh, the user confirms a new fresh proof verifies. These results close the pending USB disconnect/reconnect test cases for 0.1.37; broader BLE/privileged and fingerprint-management acceptance remain open.
+
 Presence regression check from the repository root:
 
 ```sh

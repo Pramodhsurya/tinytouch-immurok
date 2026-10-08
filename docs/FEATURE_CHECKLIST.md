@@ -313,6 +313,8 @@ The user confirms Dock presence, the app staying open during use, and restoratio
 
 **After solder repair:** hardware tests paused when the user reported an unsoldered sensor wire and resumed at the user's request after repair. USB discovery and a fresh native management probe pass on the same 0.1.37 firmware/device: sensor ready, five templates, slots 1:4 and 10:1, eight free blocks, 14 settings, one host. Both helpers report Running. The loose wire's identity and its relationship to earlier intermittent parameter failures are not established. An interrupted/pending disconnect test is not credited as passed; fresh touch, disconnect/reconnect and wizard checks resume from this verified readback without erasing state.
 
+The resumed physical checks pass: enrolled finger verifies after repair; unplugging USB during the prompt shows “USB disconnected during this authentication request” with no green result and the test disabled (user screenshot); after reconnect and Device refresh, a new enrolled-finger request verifies (user-confirmed). The USB authentication acceptance cases are summarized in AUTH_PROOF_PROTOCOL.md. Full BLE/privileged feature parity remains open, and the startup-wizard test is underway.
+
 ### Native ESP32 Mac compatibility work — 2026-10-07
 
 Full Mac app feature parity is the release goal. The connection/status adapter is implemented and the native USB probe passed on the attached ESP32. BLE/USB management, authenticated native operations and transport acceptance criteria remain open; do not check connection items complete on status alone. Implementation dependencies and current evidence: [MAC_ESP32_COMPATIBILITY.md](MAC_ESP32_COMPATIBILITY.md). Existing MAC IDs remain authoritative; no duplicate feature entries were added.
