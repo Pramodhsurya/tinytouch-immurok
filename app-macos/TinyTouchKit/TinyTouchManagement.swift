@@ -78,6 +78,20 @@ public enum TinyTouchSetting: String, CaseIterable {
     }
 }
 
+public enum TinyTouchInventoryStage: String, CaseIterable {
+    case profiles, parameters, capacity, index, indexBounds = "index_bounds", countConsistency = "count_consistency", busy
+    var retryable: Bool { self == .parameters || self == .index || self == .countConsistency || self == .busy }
+    // Accept only the device's finite diagnostic vocabulary, never arbitrary
+    // backend stderr (which may contain sensitive or unrelated information).
+    static func backendFailure(_ data: Data) -> TinyTouchError {
+        guard data.count <= 65536, let text = String(data: data, encoding: .utf8) else { return .commandFailed }
+        let prefix = "Error: tinyTouch rejected the request: FINGER inventory_unavailable reason="
+        let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard line.hasPrefix(prefix), let stage = Self(rawValue: String(line.dropFirst(prefix.count))) else { return .commandFailed }
+        return .inventoryUnavailable(stage: stage)
+    }
+}
+
 public enum TinyTouchManagementCommand {
     case inventory, settings, hosts, removeHost(String), enroll(Int, replace: Bool), delete(Int), set(TinyTouchSetting, String)
     public var arguments: [String] {
@@ -120,11 +134,37 @@ public final class TinyTouchCommandRunner: @unchecked Sendable {
     }
     public func run(device: TinyTouchUSBDevice, backend: URL, command: TinyTouchManagementCommand,
                     progress: @escaping (String) -> Void) throws -> String {
-        guard TinyTouchUSBDevice.connected().contains(device) else { throw TinyTouchError.wrongDevice }
-        let output = try execute(backend: backend, arguments: ["--port", device.path] + command.arguments,
-                                 timeout: command.timeout, progress: progress)
-        guard TinyTouchUSBDevice.connected().contains(device) else { throw TinyTouchError.wrongDevice }
-        return output
+        try readWithRetry(command: command, progress: progress) {
+            guard TinyTouchUSBDevice.connected().contains(device) else { throw TinyTouchError.wrongDevice }
+            let output = try execute(backend: backend, arguments: ["--port", device.path] + command.arguments,
+                                     timeout: command.timeout, progress: progress)
+            guard TinyTouchUSBDevice.connected().contains(device) else { throw TinyTouchError.wrongDevice }
+            return output
+        }
+    }
+    private func checkCancellation() throws {
+        lock.lock(); let value = cancelled; lock.unlock()
+        if value { throw CancellationError() }
+    }
+    // Only a failed read-only inventory command may retry. A protected command
+    // might have succeeded before its response was lost, so it must never repeat.
+    func readWithRetry(command: TinyTouchManagementCommand, progress: (String) -> Void,
+                       operation: () throws -> String) throws -> String {
+        for attempt in 0..<3 {
+            try checkCancellation()
+            do { return try operation() }
+            catch TinyTouchError.inventoryUnavailable(let stage) {
+                guard case .inventory = command, stage.retryable, attempt < 2 else {
+                    throw TinyTouchError.inventoryUnavailable(stage: stage)
+                }
+                progress("Sensor inventory unavailable (\(stage.rawValue)); retrying read \(attempt + 2) of 3…")
+                for _ in 0..<10 {
+                    try checkCancellation()
+                    Thread.sleep(forTimeInterval: 0.02)
+                }
+            }
+        }
+        throw TinyTouchError.commandFailed
     }
     // Kept internal so tests exercise cancellation/output bounds without opening a device.
     func execute(backend: URL, arguments: [String], timeout: TimeInterval, progress: @escaping (String) -> Void) throws -> String {
@@ -170,7 +210,9 @@ public final class TinyTouchCommandRunner: @unchecked Sendable {
             if !child.isRunning { break }
             Thread.sleep(forTimeInterval: 0.1)
         }
-        guard child.terminationStatus == 0 else { throw TinyTouchError.commandFailed }
+        guard child.terminationStatus == 0 else {
+            throw TinyTouchInventoryStage.backendFailure(try Data(contentsOf: stderr))
+        }
         guard let output = String(data: try Data(contentsOf: stdout), encoding: .utf8) else { throw TinyTouchError.invalidStatus }
         return output
     }

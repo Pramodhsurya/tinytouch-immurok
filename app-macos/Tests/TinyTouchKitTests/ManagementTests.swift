@@ -57,6 +57,69 @@ final class ManagementTests: XCTestCase {
             XCTAssertTrue($0 is CancellationError)
         }
     }
+    func testInventoryReadRecoversWithoutReturningTheFailedAttempt() throws {
+        var attempts = 0
+        let valid = "Finger 1: Enrolled: 4 fingerprint views.\nSpace for 9 additional fingers.\n"
+        let output = try TinyTouchCommandRunner().readWithRetry(command: .inventory, progress: { _ in }) {
+            attempts += 1
+            if attempts == 1 { throw TinyTouchError.inventoryUnavailable(stage: .parameters) }
+            return valid
+        }
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(try TinyTouchFingerprintInventory(output: output).groups, [1: 4])
+    }
+    func testPersistentInventoryFailureRemainsAnError() {
+        var attempts = 0
+        XCTAssertThrowsError(try TinyTouchCommandRunner().readWithRetry(command: .inventory, progress: { _ in }) {
+            attempts += 1
+            throw TinyTouchError.inventoryUnavailable(stage: .index)
+        }) {
+            guard case TinyTouchError.inventoryUnavailable(stage: .index) = $0 else { return XCTFail("Lost inventory diagnostic") }
+        }
+        XCTAssertEqual(attempts, 3)
+    }
+    func testWritesAndInvalidInventoryNeverRetry() {
+        for command in [TinyTouchManagementCommand.delete(2), .enroll(2, replace: false), .set(.typingDelay, "2"), .removeHost("0011223344556677")] {
+            var attempts = 0
+            XCTAssertThrowsError(try TinyTouchCommandRunner().readWithRetry(command: command, progress: { _ in }) {
+                attempts += 1
+                throw TinyTouchError.inventoryUnavailable(stage: .parameters)
+            })
+            XCTAssertEqual(attempts, 1)
+        }
+        for failure in [TinyTouchError.invalidStatus, .wrongDevice, .timedOut, .commandFailed, .inventoryUnavailable(stage: .capacity), .inventoryUnavailable(stage: .profiles), .inventoryUnavailable(stage: .indexBounds)] {
+            var attempts = 0
+            XCTAssertThrowsError(try TinyTouchCommandRunner().readWithRetry(command: .inventory, progress: { _ in }) {
+                attempts += 1; throw failure
+            })
+            XCTAssertEqual(attempts, 1)
+        }
+    }
+    func testCancellationDuringInventoryBackoffPreventsAnotherCommand() {
+        let runner = TinyTouchCommandRunner()
+        var attempts = 0
+        XCTAssertThrowsError(try runner.readWithRetry(command: .inventory, progress: { _ in }) {
+            attempts += 1; runner.cancel()
+            throw TinyTouchError.inventoryUnavailable(stage: .busy)
+        }) { XCTAssertTrue($0 is CancellationError) }
+        XCTAssertEqual(attempts, 1)
+    }
+    func testBackendDiagnosticsUseOnlyKnownStagesWithoutEchoingStderr() {
+        let prefix = "Error: tinyTouch rejected the request: FINGER inventory_unavailable reason="
+        for stage in TinyTouchInventoryStage.allCases {
+            guard case .inventoryUnavailable(let actual) = TinyTouchInventoryStage.backendFailure(Data((prefix + stage.rawValue + "\n").utf8)) else { return XCTFail("Missing known diagnostic") }
+            XCTAssertEqual(actual, stage)
+        }
+        for text in [prefix + "private-value", prefix + "parameters\nprivate-value", "private-value", String(repeating: "x", count: 65537)] {
+            guard case .commandFailed = TinyTouchInventoryStage.backendFailure(Data(text.utf8)) else { return XCTFail("Unsafe stderr accepted") }
+        }
+    }
+    func testRunnerPreservesSafeInventoryFailureStage() {
+        XCTAssertThrowsError(try TinyTouchCommandRunner().execute(backend: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "printf 'Error: tinyTouch rejected the request: FINGER inventory_unavailable reason=parameters\\n' >&2; exit 1"], timeout: 2) { _ in }) {
+            guard case TinyTouchError.inventoryUnavailable(stage: .parameters) = $0 else { return XCTFail("Missing inventory failure stage") }
+        }
+    }
     func testCancelInFlightTerminatesCommand() {
         let runner = TinyTouchCommandRunner()
         let complete = expectation(description: "cancelled command returned")

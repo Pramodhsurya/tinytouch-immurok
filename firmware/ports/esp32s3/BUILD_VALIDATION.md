@@ -12,6 +12,8 @@ Build passed with ESP-IDF 5.3.4; image size **668,672 bytes**, **379,904 bytes**
 
 **Subsequent retest passed:** with the corrected hold instruction, the user confirms enrolled-finger verification and rejection with a different finger. Repeated no-touch rejection was reported earlier. These physical cases pass on the unchanged 0.1.37 image; no capture-retry firmware update was necessary. Quiet prompted matching does not schedule the normal keyboard-helper ring feedback. Cancellation/retry and disconnect cases on this firmware remain pending, and the inventory parameter error remains open.
 
+**Further 0.1.37 acceptance:** the user confirms cancellation without success and a new successful fingerprint request afterward. Two later native management probes pass full retained inventory/settings/host readback (slots 1:4 and 10:1, eight free blocks, 14 settings, one host), establishing that the earlier parameter failure is intermittent. Firmware remains unchanged; the Mac adapter now has bounded retries only for read-only inventory failures and sanitized stage diagnostics. All 148 Mac tests pass. The sensor/UART root cause, physical enrollment/deletion and disconnect/reconnect acceptance remain open.
+
 Presence regression check from the repository root:
 
 ```sh
