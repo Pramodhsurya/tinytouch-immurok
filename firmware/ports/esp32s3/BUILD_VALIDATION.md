@@ -8,6 +8,8 @@ Portable C AUTH2 known-answer, tamper/replay, no-match, expiration/cancellation 
 
 `esptool 4.12.0 image_info` validates the ESP32-S3 image checksum and validation hash. Fresh pre-update runtime remains 0.1.35 / esp32-baseline-1 with sensor ready, five physical templates, logical slots 1 (four views) and 10 (one view), one registered host and 14 settings. No erase, recovery image or authorization bypass was used.
 
+**October 8 deployment:** enrolled-finger OTA authorization passed on the first attempt. The existing signed CLI uploaded all 666,912 bytes, completed verification and exited successfully with the update-ready confirmation. The image is staged in the inactive application slot. The immediate readback still showed the running 0.1.35 image with all five templates, one host and 14 settings preserved; RESET activation and the native AUTH2 test remain pending.
+
 Reproduce the portable Mac C check from the repository root (use a temporary output path):
 
 ```sh
