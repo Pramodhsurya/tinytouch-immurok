@@ -8,7 +8,9 @@ AUTH2 now allows 30 seconds for a new debounced touch after confirmed absence ar
 
 All **152 Mac tests** pass. Portable fresh-presence and proof C regressions pass with UndefinedBehaviorSanitizer, covering the new timing boundaries and existing no-touch/cancellation/replay protections. The revised native bundle builds and preserves the embedded signed CLI. Firmware deployment, delayed-touch/no-touch timing acceptance, and USB keyboard-output retest remain pending; the 0.1.37 physical results below are not credited to this build.
 
-The startup-wizard output check failed to unlock the Mac. Device events show a match followed by a helper-response timeout. Read-only status reports forced BLE output with USB connected, while the Bluetooth helper reports availability errors. Switching to AUTO and retesting USB output is pending; no saved password was inspected, no credential access controls changed, and no sensor enrollment was erased.
+The startup-wizard output check failed to unlock the Mac. Device events show a match followed by a helper-response timeout. Read-only status reports forced BLE output with USB connected, while the Bluetooth helper reports availability errors. Fingerprint-approved AUTO selection has now passed; status confirms `mode=AUTO`, encrypted BLE and helper readiness. USB output retest remains pending; no saved password was inspected, no credential access controls changed, and no sensor enrollment was erased.
+
+**Live upload staged:** after the user's readiness confirmation, enrolled-finger authorization passed and the complete 0.1.38 image uploaded and verified. Read-only status confirms the existing 0.1.37 runtime with `ota=staged`, sensor ready, five templates and one host. RESET activation and post-activation inventory/timing tests are pending. The revised signature-verified Mac bundle is installed with the prior bundle retained.
 
 ## Fresh-presence correction — October 8, 2026
 
