@@ -307,6 +307,8 @@ October 8 follow-up: the user reports rejection on repeated no-touch attempts, b
 
 **Dock access:** the ESP32 native bundle now uses normal application mode (`LSUIElement=false`) while retaining its menu-bar control. Dock reopening restores the main window without reopening a deferred startup wizard. Menu-bar actions dismiss their popup before presenting the settings/wizard window. Build/install verification and physical Dock/minimize/reopen acceptance are recorded in MAC_NATIVE_SETUP.md; this is part of MAC-01, not a duplicate task.
 
+The user confirms Dock presence, the app staying open during use, and restoration after minimizing and clicking the Dock icon. These physical window cases pass. MAC-01 remains In progress because full startup-wizard acceptance and production packaging are still pending.
+
 ### Native ESP32 Mac compatibility work — 2026-10-07
 
 Full Mac app feature parity is the release goal. The connection/status adapter is implemented and the native USB probe passed on the attached ESP32. BLE/USB management, authenticated native operations and transport acceptance criteria remain open; do not check connection items complete on status alone. Implementation dependencies and current evidence: [MAC_ESP32_COMPATIBILITY.md](MAC_ESP32_COMPATIBILITY.md). Existing MAC IDs remain authoritative; no duplicate feature entries were added.
