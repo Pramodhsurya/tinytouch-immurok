@@ -1,0 +1,41 @@
+# tinyTouch native Mac setup
+
+The native app currently supports ESP32-S3 + ZW111 USB inventory, fingerprint enrollment/management, device settings, registered-computer inventory/removal, startup checks and bonded Bluetooth identity. The existing tinyTouch password helpers remain responsible for fingerprint output. Keys, PAM/sudo, SSH, automation execution, native host registration and Bluetooth management are still being ported. Refer to [FEATURE_CHECKLIST.md](FEATURE_CHECKLIST.md) for status.
+
+## Build and install on this Mac
+
+Use the existing complete signed tinyTouch CLI directory, including its `_internal` runtime. Packaging preserves its signed bytes and existing credential access. Run from the combined repository:
+
+```sh
+cd app-macos
+swift test
+python3 packaging/build-esp32-preview.py /path/to/signed/tinytouch-directory
+python3 packaging/install-esp32-preview.py
+open "$HOME/Applications/tinyTouch Native.app"
+```
+
+The installer uses your Applications folder and verifies both the native bundle and signed CLI. It retains an existing native app as a hidden `.tinyTouch-previous-…app` backup. Quit the installed native app before installing an update. The original `tinyTouch.app` password helper is separate. No PAM module or login item is automatically installed. This local app is ad hoc signed, not notarized; distribution signing is pending.
+
+## First launch and settings
+
+Connect USB. The startup wizard checks device status, reads fingerprint inventory, permits enrollment in an empty slot and asks you to perform and confirm a separate fingerprint-output test. Existing enrollment and pairing are preserved. Complete HID-mode setup through the existing tinyTouch helper if no host is configured; native first-host pairing is pending. Once complete, the wizard records the checked device serial. It can be reopened from the menu or Features.
+
+Features shows native Bluetooth/Accessibility permission status and whether each password helper is running. The current native management functions do not require Accessibility. Bluetooth identity checking requires native Bluetooth permission; helper permissions are separate. A running helper does not prove its credentials are valid, so test fingerprint output separately.
+
+To start the native app after login, enable **Launch tinyTouch Native at login** in Features. If macOS requires approval, use the displayed Login Items settings button and approve it yourself. Turn the toggle off to unregister the native app. This setting is separate from the password helpers. Login/restart acceptance is still pending.
+
+## Troubleshooting and recovery
+
+- USB unavailable: reconnect the device, wait for the status check, then refresh. An active sensor operation can be cancelled; reconnect and read inventory afterward to inspect partial enrollment/cleanup.
+- Bluetooth unavailable: check the Features permission status and macOS Bluetooth settings. Existing helper pairing supplies the remembered peripheral identity. Native Bluetooth pairing and management are pending.
+- Helper stopped/unavailable: check the existing tinyTouch setup and its background-service settings. The native app only reports helper health; it does not reinstall or repair credentials.
+- Native update fails: the previous native app is retained during replacement. Quit the native app and restore that backup to `~/Applications/tinyTouch Native.app` if needed. Do not move or overwrite the separate password helper.
+- Uninstall this local native preview: turn off its login item, quit it and move `tinyTouch Native.app` to Trash. System PAM uninstall is not part of this preview.
+
+Read-only health diagnosis without opening USB:
+
+```sh
+swift run tinyTouchProbe --helper-health
+```
+
+Remaining acceptance includes login launch/restart, install-update-restore, permission changes and the full Mac feature gate. Keep incomplete checklist items open until their tests pass.

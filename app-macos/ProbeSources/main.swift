@@ -2,6 +2,11 @@ import Foundation
 import TinyTouchKit
 
 do {
+    if CommandLine.arguments == [CommandLine.arguments[0], "--helper-health"] {
+        print("USB helper: \(TinyTouchHelperHealth.read(label: "com.tinytouch.helper").rawValue)")
+        print("Bluetooth helper: \(TinyTouchHelperHealth.read(label: "com.tinytouch.bluetooth").rawValue)")
+        exit(0)
+    }
     guard [2, 3].contains(CommandLine.arguments.count) else { throw TinyTouchError.backendMissing }
     guard let device = try TinyTouchUSBDevice.select(TinyTouchUSBDevice.connected(), expected: nil) else {
         throw TinyTouchError.wrongDevice

@@ -29,7 +29,7 @@ for source in (root / 'Resources').iterdir():
             shutil.copytree(source, resources / source.name)
         else:
             shutil.copy2(source, resources / source.name)
-# copy2 preserves signed bytes; this backend only performs leased status reads.
+# copy2 preserves signed bytes and the backend's existing Keychain identity.
 shutil.copytree(backend, resources / 'tinyTouchCLI', symlinks=True)
 shutil.copy2(root / 'LICENSE', resources / 'LICENSE-app')
 shutil.copy2(root.parent / 'CREDITS.md', resources / 'CREDITS.md')

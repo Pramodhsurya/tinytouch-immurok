@@ -10,7 +10,7 @@ The [folder-by-folder ESP32 analysis](docs/esp32-folder-analysis.md) maps the ap
 
 Track implementation in the [feature parity checklist](docs/FEATURE_CHECKLIST.md): one canonical entry per task, grouped by component, with implementation order and completion evidence.
 
-The [Mac ESP32 compatibility plan](docs/MAC_ESP32_COMPATIBILITY.md) records the native connection adapter, current device evidence, and the order for porting every Mac app feature before moving to Windows.
+The [Mac ESP32 compatibility plan](docs/MAC_ESP32_COMPATIBILITY.md) records the native connection adapter, current device evidence, and the order for porting every Mac app feature before moving to Windows. Install and use the current standalone native preview with the [Mac setup guide](docs/MAC_NATIVE_SETUP.md).
 
 The ESP32 firmware baseline derives from **tinyTouch by Zimeng Xiong**; immurok supplies the application/system reference. See [credits and licenses](CREDITS.md). Mac app/device functionality and tests are the current priority; Windows follows, Linux is on hold, and PCB work follows Windows.
 

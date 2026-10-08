@@ -102,7 +102,9 @@ struct ContentView: View {
             if esp32 && selectedTab != .device && selectedTab != .about {
                 Text(selectedTab == .automation
                      ? "Automation editing is available. Execution awaits the ESP32 authentication adapter."
-                     : "This original interface is being ported. Device-backed actions await the ESP32 authentication adapter.")
+                     : selectedTab == .permissions
+                       ? "Mac startup and status controls are available. Privileged ESP32 features are still being ported."
+                       : "This original interface is being ported. Device-backed actions await the ESP32 authentication adapter.")
                     .font(.caption).foregroundStyle(.secondary).padding(12)
                 Divider()
             }
@@ -113,7 +115,17 @@ struct ContentView: View {
             case .keys:
                 KeysTabView(viewModel: viewModel).disabled(esp32)
             case .permissions:
-                PermissionsTabView(viewModel: viewModel, setupManager: setupManager).disabled(esp32)
+                if esp32 {
+                    ScrollView {
+                        VStack(spacing: 16) {
+                            TinyTouchMacSettingsView(connection: viewModel.tinyTouchConnection)
+                            DisclosureGroup("Original features awaiting ESP32 support") {
+                                PermissionsTabView(viewModel: viewModel, setupManager: setupManager)
+                                    .disabled(true).frame(height: 420)
+                            }
+                        }.padding(20)
+                    }
+                } else { PermissionsTabView(viewModel: viewModel, setupManager: setupManager) }
             case .automation:
                 AutomationTabView(viewModel: viewModel)
             case .about:
