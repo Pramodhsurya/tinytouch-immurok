@@ -319,6 +319,8 @@ The resumed physical checks pass: enrolled finger verifies after repair; unplugg
 
 **Live staging update:** fingerprint-approved AUTO selection passed and readback confirms automatic transport mode. A separate enrolled-finger approval passed for the 0.1.38 OTA upload, which completed and verified. The device still reports 0.1.37 with `ota=staged`, five templates, one host and sensor ready; RESET activation is pending. The new signed native preview is installed and its previous bundle retained. USB keyboard output, wizard completion and physical timing acceptance remain pending; task statuses are unchanged.
 
+**Activation update:** after the user's RESET, status verifies 0.1.38 / esp32-touch-window-1, both proof/freshness capabilities, `auth_touch_ms=30000`, idle OTA, sensor ready, five templates and one host. AUTO transport remains selected. Two detailed native inventory reads fail at the parameters stage, so MAC-06 remains In progress and no logical inventory readback is credited for this build. The next physical test waits 15–20 seconds after the prompt before touching. Timing, USB keyboard output and wizard acceptance remain pending; statuses and totals are unchanged.
+
 ### Native ESP32 Mac compatibility work — 2026-10-07
 
 Full Mac app feature parity is the release goal. The connection/status adapter is implemented and the native USB probe passed on the attached ESP32. BLE/USB management, authenticated native operations and transport acceptance criteria remain open; do not check connection items complete on status alone. Implementation dependencies and current evidence: [MAC_ESP32_COMPATIBILITY.md](MAC_ESP32_COMPATIBILITY.md). Existing MAC IDs remain authoritative; no duplicate feature entries were added.

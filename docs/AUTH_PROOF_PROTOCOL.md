@@ -56,6 +56,8 @@ The Mac suite passes **152 tests**, including proof parsing/domain separation, r
 
 Physical USB acceptance on 0.1.37 (user-operated tests, October 8):
 
+**0.1.38 activation update:** enrolled-finger OTA authorization, upload and verification pass. After RESET, runtime confirms the new version/build, both authentication capabilities, `auth_touch_ms=30000`, idle OTA, sensor ready, five templates and one host. AUTO transport selection persists. Detailed native inventory readback fails at the parameters stage in two probes; the earlier successful logical inventory is not credited as post-activation readback. Physical delayed-touch/no-touch timing acceptance remains pending, separately from the 0.1.37 cases below.
+
 | Case | Status | Observed result |
 | --- | --- | --- |
 | Enrolled finger after prompt | Passed | Fresh proof verified; repeated after solder repair |
