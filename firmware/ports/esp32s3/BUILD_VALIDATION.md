@@ -1,14 +1,16 @@
-# ESP32 baseline build validation
+# ESP32 firmware build validation
 
 ## AUTH2 development build — October 8, 2026
 
 Firmware **0.1.36**, default build identifier **esp32-auth-proof-1**, builds with the same ESP-IDF 5.3.4 toolchain. The **666,912-byte** image fits each existing 1,048,576-byte slot with **381,664 bytes** free. SHA-256: `d9c2a62dfb4f86e1268c5e0e459bc0a861a4709858c4c467491590a483acd5b4`. Fingerprint bypass/recovery, secure boot and flash encryption remain OFF. No partition table or NVS layout changes are introduced.
 
-Portable C AUTH2 known-answer, tamper/replay, no-match, expiration/cancellation and crypto failure tests pass normally and under UndefinedBehaviorSanitizer. Mac authentication/lease fixtures are included in 140 passing Swift tests. AddressSanitizer did not initialize on this Mac and is not recorded as passed. See the [USB proof specification](../../../docs/AUTH_PROOF_PROTOCOL.md). Activation and live sensor proof are pending until recorded below.
+Portable C AUTH2 known-answer, tamper/replay, no-match, expiration/cancellation and crypto failure tests pass normally and under UndefinedBehaviorSanitizer. Mac authentication/lease fixtures are included in 140 passing Swift tests. AddressSanitizer did not initialize on this Mac and is not recorded as passed. See the [USB proof specification](../../../docs/AUTH_PROOF_PROTOCOL.md). Activation passed as recorded below; native Keychain/sensor proof is pending.
 
 `esptool 4.12.0 image_info` validates the ESP32-S3 image checksum and validation hash. Fresh pre-update runtime remains 0.1.35 / esp32-baseline-1 with sensor ready, five physical templates, logical slots 1 (four views) and 10 (one view), one registered host and 14 settings. No erase, recovery image or authorization bypass was used.
 
-**October 8 deployment:** enrolled-finger OTA authorization passed on the first attempt. The existing signed CLI uploaded all 666,912 bytes, completed verification and exited successfully with the update-ready confirmation. The image is staged in the inactive application slot. The immediate readback still showed the running 0.1.35 image with all five templates, one host and 14 settings preserved; RESET activation and the native AUTH2 test remain pending.
+**October 8 deployment:** enrolled-finger OTA authorization passed on the first attempt. The existing signed CLI uploaded all 666,912 bytes, completed verification and exited successfully with the update-ready confirmation. Immediate pre-restart readback showed `ota=staged` on 0.1.35, retaining five templates, one host and 14 settings.
+
+**Activation passed after RESET:** fresh runtime reports firmware `0.1.36`, build `esp32-auth-proof-1`, `auth_proof=1`, `ota=idle`, sensor ready, five templates and one registered host. The initial native management probe passed the new firmware status but failed during a follow-up read; complete logical inventory/settings readback is pending retry. Native Keychain/sensor AUTH2 acceptance is still pending.
 
 Reproduce the portable Mac C check from the repository root (use a temporary output path):
 

@@ -295,7 +295,7 @@ FW-14/FW-15 and MAC-04 now have an AUTH2 implementation using the existing host 
 
 140 Mac tests and the C normal/UndefinedBehaviorSanitizer tests pass. Live helper leasing passes and preserves both running helpers. Firmware 0.1.36 builds within the existing OTA slot; the updated native preview installs with a retained previous bundle. Live firmware activation and fingerprint proof are pending until separately recorded. BLE proofs, new pairing, privileged operations and physical failure-path acceptance remain open, so these rows are not Completed. FW-11 ECDH pairing remains Yet to be done.
 
-The October 8 live firmware update passed enrolled-finger approval on the first attempt and completed upload/verification. Readback explicitly reports `ota=staged` on the old 0.1.35 image; RESET activation is pending. Five templates, the registered host and all 14 settings remain intact. The user's report that it is working does not establish new AUTH2 acceptance while the old firmware is still running.
+The October 8 live firmware update passed enrolled-finger approval on the first attempt and completed upload/verification. After RESET, fresh runtime confirms firmware 0.1.36 / esp32-auth-proof-1, `auth_proof=1`, `ota=idle`, sensor ready, five templates and one host. The native Keychain/sensor proof test remains pending. A first post-reset management probe passed status but failed during a follow-up read; full logical inventory readback must be repeated after the native test.
 
 ### Native ESP32 Mac compatibility work — 2026-10-07
 
