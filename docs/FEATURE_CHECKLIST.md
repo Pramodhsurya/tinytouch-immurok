@@ -128,11 +128,11 @@ Sources: [Mac README](https://github.com/immurok/app-macos/blob/main/README.md),
 
 | Done | Status | ID | Subfolder / area | Feature or deliverable | Implementation order | Completion criterion |
 | --- | --- | --- | --- | --- | --- | --- |
-| [ ] | Not started | MAC-01 | `Sources / Package.swift` | Build native menu-bar app and first-run setup wizard | P2 | Local signed test bundle launches; permissions and missing prerequisites explained |
-| [ ] | Not started | MAC-02 | `Sources/BLEManager.swift` | Discover tinyTouch, pair, verify and reconnect over compatible BLE protocol | P2 | Native app handles cold start, disconnect, sleep/wake and wrong device |
-| [ ] | Not started | MAC-03 | `Sources transport layer` | Add USB companion transport and transport/device selector | P2 | Same management commands work over USB and BLE without duplicate action |
+| [ ] | In progress | MAC-01 | `Sources / Package.swift` | Build native menu-bar app and first-run setup wizard | P2 | Local signed test bundle launches; permissions and missing prerequisites explained |
+| [ ] | In progress | MAC-02 | `Sources/BLEManager.swift` | Discover tinyTouch, pair, verify and reconnect over compatible BLE protocol | P2 | Native app handles cold start, disconnect, sleep/wake and wrong device |
+| [ ] | In progress | MAC-03 | `Sources transport layer` | Add USB companion transport and transport/device selector | P2 | Same management commands work over USB and BLE without duplicate action |
 | [ ] | Not started | MAC-04 | `Sources/ImmurokSecurity.swift` | Implement negotiated crypto/freshness client and migrate Keychain identity | P2 | Firmware fixtures verified; existing saved password/key access preserved |
-| [ ] | Not started | MAC-05 | `Sources device views` | Show connection, host slot, battery, firmware and readiness status | P2 | Capability-driven display; unknown battery distinguished from measured level |
+| [ ] | In progress | MAC-05 | `Sources device views` | Show connection, host slot, battery, firmware and readiness status | P2 | Capability-driven display; unknown battery distinguished from measured level |
 | [ ] | Not started | MAC-06 | `Sources/FingerprintView.swift` | Enroll, cancel, delete and rename logical fingerprints | P2 | UI follows ZW111 progress/capacity and receives accurate final state |
 | [ ] | Not started | MAC-07 | `Sources/AppDelegate.swift` | Native app screen unlock and wake/reconnect retry flow | P2 | Lock-screen unlock over BLE/USB; pending match cannot duplicate typing |
 | [ ] | Not started | MAC-08 | `Sources/DualHostView.swift` | First/second-host guidance, slot status and authorized unbinding | P3 | Two-host workflow tested with ESP32, including lost-host removal |
@@ -155,7 +155,7 @@ Sources: [Mac README](https://github.com/immurok/app-macos/blob/main/README.md),
 | [ ] | Not started | MAC-25 | `Sources logs / About` | Runtime logs, diagnostics, app version and update checks | P6 | Useful diagnosis without passwords/private keys; correct fork release endpoint |
 | [ ] | Not started | MAC-26 | `FirmwareUpdateKit / update service` | ESP32 package validation, download/cache, progress, cancel and completion UI | P6 | No CH592 image accepted; image-size limits negotiated; interrupted transfer handled |
 | [ ] | Not started | MAC-27 | `packaging / Tests` | Bundle signing, CLI deployment, updates and native regression suite | P6 | Fresh install/upgrade/uninstall verified; tests pass against ESP32 integration |
-| [ ] | Not started | MAC-28 | `packaging / app-macos` | Deliver a standalone tinyTouch.app for this Mac, with its companion CLI and own application identity | P6 | App runs independently of development terminals; login launch, permissions and Keychain migration tested |
+| [ ] | In progress | MAC-28 | `packaging / app-macos` | Deliver a standalone tinyTouch.app for this Mac, with its companion CLI and own application identity | P6 | App runs independently of development terminals; login launch, permissions and Keychain migration tested |
 | [ ] | Not started | MAC-29 | `Tests / device acceptance` | Complete the Mac release gate across all supported features, transports and negative cases | P6 | Every supported Mac feature has recorded automated or manual acceptance evidence; remaining hardware limitations explicit |
 | [x] | Completed | MAC-30 | `Package.swift / Tests` | Build imported Mac app/CLI and run existing host-side tests before ESP32 adaptation | P0 | Swift build and all existing test suites pass; does not imply device/native-app compatibility |
 
@@ -288,3 +288,7 @@ For every future checked item, append or link evidence here: implementation comm
 | BASE-01–BASE-05 | User-confirmed prototype measurements and operation from earlier setup; original helper/custom firmware, not the new native companion | Earlier setup; recorded 2026-10-07 |
 
 No new flashing, PAM installation, app installation or hardware change was performed to create this checklist.
+
+### Native ESP32 Mac compatibility work — 2026-10-07
+
+Full Mac app feature parity is the release goal. The connection/status adapter is implemented and the native USB probe passed on the attached ESP32. BLE/USB management, authenticated native operations and transport acceptance criteria remain open; do not check connection items complete on status alone. Implementation dependencies and current evidence: [MAC_ESP32_COMPATIBILITY.md](MAC_ESP32_COMPATIBILITY.md). Existing MAC IDs remain authoritative; no duplicate feature entries were added.

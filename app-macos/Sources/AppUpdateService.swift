@@ -22,7 +22,7 @@ final class AppUpdateService: ObservableObject {
     @Published private(set) var state: State = .idle
     @Published private(set) var updateAvailable = false  // 菜单栏橙点 + 菜单项
 
-    static let latestReleaseURL = URL(string: "https://api.github.com/repos/immurok/app-macos/releases/latest")!
+    static let latestReleaseURL = URL(string: "https://api.github.com/repos/Pramodhsurya/tinytouch-immurok/releases/latest")!
     static let checkInterval: TimeInterval = 24 * 3600
     /// 下载的 pkg 必须由本项目 Developer ID Team 签名（URLSession 下载无
     /// quarantine 标记，Gatekeeper 不会替我们把关，必须自验）
@@ -56,6 +56,10 @@ final class AppUpdateService: ObservableObject {
 
     /// 24h 内不重复（force 忽略间隔，供"检查更新"按钮）。检查失败静默，手动检查时提示。
     func checkIfDue(force: Bool = false) {
+        guard Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool != true else {
+            if force { state = .failed(message: "Native ESP32 app updates will be enabled after packaging and signing are complete.") }
+            return
+        }
         let last = UserDefaults.standard.double(forKey: Self.kLastCheck)
         if !force && Date().timeIntervalSince1970 - last < Self.checkInterval { return }
         switch state {

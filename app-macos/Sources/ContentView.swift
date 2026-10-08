@@ -97,9 +97,16 @@ struct ContentView: View {
 
     @ViewBuilder
     private var tabContent: some View {
+        if selectedTab != .device && Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("ESP32 compatibility work in progress").font(.title2)
+                Text("These original Mac app features will be enabled as their ESP32 firmware and native adapters are implemented and tested. The device tab shows the current USB and Bluetooth connection.")
+                Text("The existing tinyTouch helper continues to handle fingerprint unlock.").foregroundStyle(.secondary)
+            }.padding(24)
+        } else {
         switch selectedTab {
         case .device:
-            DeviceTabView(viewModel: viewModel)
+            TinyTouchDeviceView(connection: viewModel.tinyTouchConnection)
         case .keys:
             KeysTabView(viewModel: viewModel)
         case .permissions:
@@ -108,6 +115,7 @@ struct ContentView: View {
             AutomationTabView(viewModel: viewModel)
         case .about:
             AboutTabView(viewModel: viewModel, setupManager: setupManager)
+        }
         }
     }
 }

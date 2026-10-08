@@ -9,7 +9,11 @@ struct immurokApp: App {
     var body: some Scene {
         // Menu Bar Extra - 状态栏图标
         MenuBarExtra {
+            if Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true {
+                TinyTouchPreviewMenu(connection: viewModel.tinyTouchConnection)
+            } else {
             MenuBarView(viewModel: viewModel)
+            }
         } label: {
             // label 抽成独立 View：持久渲染，可持有 openWindow 环境值，
             // 用于响应 .openFirmwareUpdateWindow 通知打开固件升级窗口。
@@ -21,7 +25,7 @@ struct immurokApp: App {
         .menuBarExtraStyle(.window)
 
         // Settings window - 可通过菜单打开
-        Window("immurok", id: "settings") {
+        Window("tinyTouch", id: "settings") {
             ContentView(viewModel: viewModel)
         }
         .windowResizability(.contentMinSize)
@@ -46,6 +50,23 @@ struct immurokApp: App {
 
 // MARK: - Menu Bar Status Label
 
+struct TinyTouchPreviewMenu: View {
+    @ObservedObject var connection: TinyTouchConnection
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("tinyTouch").font(.headline)
+            Text(connection.usbMessage)
+            Text(connection.bluetoothMessage)
+            Button("Open device status") {
+                openWindow(id: "settings")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            Button("Quit native preview") { NSApp.terminate(nil) }
+        }.padding(16).frame(width: 300)
+    }
+}
+
 /// 状态栏图标 + 连接点 + 固件更新橙点。作为持久 View 持有 openWindow，
 /// 以便收到 .openFirmwareUpdateWindow 通知时（如强制升级）自动打开固件窗口。
 struct MenuBarStatusLabel: View {
@@ -60,7 +81,7 @@ struct MenuBarStatusLabel: View {
                 Image(systemName: "touchid")
             }
             Circle()
-                .fill(viewModel.isDeviceConnected ? Color.green : Color.red)
+                .fill(viewModel.isTinyTouchTransportConnected ? Color.green : Color.red)
                 .frame(width: 6, height: 6)
             if viewModel.firmwareUpdate.updateAvailable || viewModel.appUpdate.updateAvailable {
                 Circle()
@@ -167,9 +188,9 @@ struct MenuBarView: View {
                 openSettings(tab: .device)
             }) {
                 HStack(spacing: 8) {
-                    Image(systemName: viewModel.isDeviceConnected ? "bolt.fill" : "bolt.slash.fill")
+                    Image(systemName: viewModel.isTinyTouchTransportConnected ? "bolt.fill" : "bolt.slash.fill")
                         .frame(width: 16)
-                    Text(viewModel.isDeviceConnected ? "menu.connected".localized : "menu.disconnected".localized)
+                    Text(viewModel.isTinyTouchTransportConnected ? "tinyTouch connected" : "tinyTouch disconnected")
                     Spacer()
                 }
             }

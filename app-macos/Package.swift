@@ -5,6 +5,9 @@ let package = Package(
     name: "immurokApp",
     platforms: [.macOS(.v13)],
     targets: [
+        .target(name: "TinyTouchKit", path: "TinyTouchKit"),
+        .executableTarget(name: "tinyTouchProbe", dependencies: ["TinyTouchKit"], path: "ProbeSources"),
+        .testTarget(name: "TinyTouchKitTests", dependencies: ["TinyTouchKit"], path: "Tests/TinyTouchKitTests"),
         .target(
             name: "FirmwareUpdateKit",
             path: "FirmwareUpdateKit"
@@ -15,7 +18,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "immurokApp",
-            dependencies: ["FirmwareUpdateKit", "AuthInjectionKit"],
+            dependencies: ["FirmwareUpdateKit", "AuthInjectionKit", "TinyTouchKit"],
             path: "Sources"
         ),
         .executableTarget(

@@ -44,6 +44,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // instead.
         signal(SIGPIPE, SIG_IGN)
 
+        if Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true {
+            // Keep incompatible PAM/SSH/CLI services and login deployment inactive
+            // until authenticated ESP32 command adapters are available.
+            NSLog("tinyTouch native ESP32 connection preview launched")
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                self.checkAndShowSetupWizard()
+            }
+            return
+        }
+
         NSLog("immurok App launched (v1.6 - Menu Bar)")
         Task { @MainActor in LogManager.shared.log("App started") }
 
@@ -940,21 +951,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func checkAndShowSetupWizard() {
-        let setupManager = SetupManager.shared
-        let wizardDone = UserDefaults.standard.bool(forKey: SetupWizardView.completedKey)
-
-        // 关键项缺失（PAM/辅助功能）始终唤起引导；
-        // 用户从未走完/跳过引导（未写 completed 标记）也唤起——覆盖配对、
-        // 密码、指纹等仅引导流程覆盖的首次设置项。
-        if setupManager.needsSetup || !wizardDone {
-            NSLog("Setup incomplete (needsSetup=%@, wizardDone=%@), showing wizard",
-                  setupManager.needsSetup ? "yes" : "no", wizardDone ? "yes" : "no")
-            NotificationCenter.default.post(name: .openSetupWizard, object: nil)
-        } else {
-            NSLog("Setup complete: PAM=%@, Accessibility=%@",
-                  setupManager.isPAMModuleInstalled ? "yes" : "no",
-                  setupManager.hasAccessibilityPermission ? "yes" : "no")
-        }
+        // ESP32 commissioning is already owned by the tinyTouch helper. The
+        // CH592 wizard would request unrelated PAM setup and protocol pairing.
+        NotificationCenter.default.post(name: .openSettingsWindow, object: nil)
     }
 
     // MARK: - Authorization Repair Notification

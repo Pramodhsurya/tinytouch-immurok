@@ -26,6 +26,11 @@ extension Notification.Name {
 
 @MainActor
 class AppViewModel: ObservableObject {
+    let tinyTouchConnection = TinyTouchConnection()
+    var isTinyTouchTransportConnected: Bool {
+        tinyTouchConnection.usbStatus != nil || tinyTouchConnection.bluetoothConnected
+    }
+    private var tinyTouchCancellable: AnyCancellable?
     @Published var isDeviceConnected = false
     @Published var deviceName: String?
     @Published var fingerprintCount = 0
@@ -99,6 +104,9 @@ class AppViewModel: ObservableObject {
     let appUpdate = AppUpdateService()
 
     var deviceStatusText: String {
+        if Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true {
+            return isTinyTouchTransportConnected ? "tinyTouch connected" : "tinyTouch disconnected"
+        }
         // Check bluetooth status first
         switch bluetoothStatus {
         case .denied:
@@ -158,6 +166,9 @@ class AppViewModel: ObservableObject {
     private var screenUnlockObserver: Any?
 
     init() {
+        tinyTouchCancellable = tinyTouchConnection.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         setupBLECallbacks()
         updateStatus()
         updateBluetoothStatus()
