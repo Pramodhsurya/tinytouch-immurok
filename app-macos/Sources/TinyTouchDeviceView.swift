@@ -66,6 +66,29 @@ struct TinyTouchDeviceView: View {
                         }.padding(8)
                     }
                 }
+                if let hosts = management.hosts {
+                    GroupBox("Registered computers") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("\(hosts.identifiers.count) of \(hosts.capacity) host slots used")
+                            ForEach(hosts.identifiers, id: \.self) { identifier in
+                                HStack {
+                                    Text(identifier).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+                                    Spacer()
+                                    Button("Remove", role: .destructive) {
+                                        pendingCommand = .removeHost(identifier)
+                                        confirmationText = "Remove registered computer \(identifier)? It will no longer receive fingerprint output. If this is the current Mac, its saved pairing key will be removed by the tinyTouch CLI. Fingerprints and the other registered computers are preserved."
+                                        confirmation = true
+                                    }
+                                    .disabled(management.busy || connection.refreshing || connection.usbDevice == nil || !hosts.canRemove(identifier))
+                                }
+                            }
+                            if hosts.identifiers.count <= 1 {
+                                Text("The last registered computer is protected. Configure another computer before removing this one.").font(.caption)
+                            }
+                            Text("IDs identify host slots; names and current-Mac identification are not available yet. To add another Mac, connect the device there and run tinyTouch HID setup. Its local password and pairing remain on that Mac.").font(.caption).foregroundStyle(.secondary)
+                        }.padding(8)
+                    }
+                }
                 if !management.settings.isEmpty {
                     DisclosureGroup("Device settings") {
                         VStack(alignment: .leading, spacing: 12) {
@@ -82,7 +105,7 @@ struct TinyTouchDeviceView: View {
                 }
                 if management.busy {
                     ProgressView()
-                    Text("Follow the sensor prompts. Touch your enrolled finger first to authorize changes.").font(.caption)
+                    Text("Reading device state. For changes, follow the sensor prompts to authorize with your enrolled finger.").font(.caption)
                     Text(management.progress).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     Button("Cancel operation") { management.cancel() }
                 }
@@ -102,7 +125,7 @@ struct TinyTouchDeviceView: View {
         }
         .onChange(of: selectedFinger) { draftName = management.names[$0] ?? "" }
         .onChange(of: management.names) { draftName = $0[selectedFinger] ?? "" }
-        .alert("Confirm fingerprint change", isPresented: $confirmation) {
+        .alert("Confirm device change", isPresented: $confirmation) {
             Button("Continue", role: .destructive) {
                 if let command = pendingCommand { management.perform(command) }
                 pendingCommand = nil

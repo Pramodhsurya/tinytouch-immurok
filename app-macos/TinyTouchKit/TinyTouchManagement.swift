@@ -79,12 +79,16 @@ public enum TinyTouchSetting: String, CaseIterable {
 }
 
 public enum TinyTouchManagementCommand {
-    case inventory, settings, enroll(Int, replace: Bool), delete(Int), set(TinyTouchSetting, String)
+    case inventory, settings, hosts, removeHost(String), enroll(Int, replace: Bool), delete(Int), set(TinyTouchSetting, String)
     public var arguments: [String] {
         get throws {
             switch self {
             case .inventory: return ["fingers"]
             case .settings: return ["config", "--json"]
+            case .hosts: return ["computers", "list"]
+            case .removeHost(let identifier):
+                guard TinyTouchHostInventory.validIdentifier(identifier) else { throw TinyTouchError.invalidStatus }
+                return ["computers", "remove", identifier]
             case .enroll(let slot, let replace):
                 guard (1...10).contains(slot) else { throw TinyTouchError.invalidStatus }
                 return ["enroll", String(slot)] + (replace ? ["--replace"] : [])
@@ -98,7 +102,7 @@ public enum TinyTouchManagementCommand {
         }
     }
     public var timeout: TimeInterval {
-        switch self { case .enroll: return 330; case .inventory, .settings: return 15; default: return 45 }
+        switch self { case .enroll: return 330; case .inventory, .settings, .hosts: return 15; default: return 45 }
     }
 }
 

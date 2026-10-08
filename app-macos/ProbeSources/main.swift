@@ -14,6 +14,9 @@ do {
         let runner = TinyTouchCommandRunner()
         let inventory = try TinyTouchFingerprintInventory(output: runner.run(device: device, backend: backend, command: .inventory) { _ in })
         let settings = try TinyTouchDeviceSettings(data: Data(runner.run(device: device, backend: backend, command: .settings) { _ in }.utf8))
+        let hosts = try TinyTouchHostInventory(output: runner.run(device: device, backend: backend, command: .hosts) { _ in })
+        guard hosts.identifiers.count == status.hosts else { throw TinyTouchError.invalidStatus }
+        print("Host inventory verified: \(hosts.identifiers.count) registered, capacity \(hosts.capacity)")
         print("Management read verified: slots \(inventory.groups.sorted { $0.key < $1.key }), free blocks \(inventory.available), settings \(settings.values.count)")
     }
 } catch {

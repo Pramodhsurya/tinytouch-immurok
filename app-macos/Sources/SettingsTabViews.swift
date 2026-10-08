@@ -739,8 +739,9 @@ struct KeysTabView: View {
                     Spacer()
                     // 断连时列表空不代表设备上没条目——写「暂无条目」会
                     // 让用户以为密钥丢了。
-                    Text((viewModel.isDeviceConnected
-                          ? "keys.empty" : "keys.empty.disconnected").localized)
+                    Text(Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true
+                         ? "ESP32 key storage is not available in this app yet. Existing device records have not been read or changed."
+                         : (viewModel.isDeviceConnected ? "keys.empty" : "keys.empty.disconnected").localized)
                         .font(.callout)
                         .foregroundColor(.secondary)
                     Spacer()

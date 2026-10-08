@@ -5,6 +5,7 @@ import TinyTouchKit
 @MainActor
 final class TinyTouchManagementModel: ObservableObject {
     @Published private(set) var inventory: TinyTouchFingerprintInventory?
+    @Published private(set) var hosts: TinyTouchHostInventory?
     @Published private(set) var settings: [String: String] = [:]
     @Published private(set) var busy = false
     @Published private(set) var progress = ""
@@ -39,7 +40,7 @@ final class TinyTouchManagementModel: ObservableObject {
         let id = UUID(); generation = id
         let connection = self.connection
         Task { @MainActor [weak self] in
-            let result = await Task.detached { () -> Result<(TinyTouchFingerprintInventory, [String: String], TinyTouchStatus), Error> in
+            let result = await Task.detached { () -> Result<(TinyTouchFingerprintInventory, [String: String], TinyTouchStatus, TinyTouchHostInventory), Error> in
                 do {
                     let protectedSlot: Int?
                     switch command {
@@ -51,6 +52,10 @@ final class TinyTouchManagementModel: ObservableObject {
                         guard current.canRemoveOrReplace(slot: slot) else {
                             throw TinyTouchError.lastFingerprint
                         }
+                    }
+                    if case .removeHost(let identifier) = command {
+                        let current = try TinyTouchHostInventory(output: runner.run(device: device, backend: backend, command: .hosts) { _ in })
+                        guard current.canRemove(identifier) else { throw TinyTouchError.lastHost }
                     }
                     let output = try runner.run(device: device, backend: backend, command: command) { text in
                         Task { @MainActor [weak self] in
@@ -70,7 +75,16 @@ final class TinyTouchManagementModel: ObservableObject {
                     case .set(let setting, let value): guard settings[setting.rawValue] == value else { throw TinyTouchError.invalidStatus }
                     default: break
                     }
-                    return .success((inventory, settings, try TinyTouchUSB.status(device: device, backend: backend)))
+                    let hostText: String
+                    if case .hosts = command { hostText = output }
+                    else { hostText = try runner.run(device: device, backend: backend, command: .hosts) { _ in } }
+                    let hosts = try TinyTouchHostInventory(output: hostText)
+                    if case .removeHost(let identifier) = command {
+                        guard !hosts.identifiers.contains(identifier) else { throw TinyTouchError.invalidStatus }
+                    }
+                    let status = try TinyTouchUSB.status(device: device, backend: backend)
+                    guard hosts.identifiers.count == status.hosts else { throw TinyTouchError.invalidStatus }
+                    return .success((inventory, settings, status, hosts))
                 } catch { return .failure(error) }
             }.value
             connection.endManagement(status: (try? result.get())?.2)
@@ -78,16 +92,16 @@ final class TinyTouchManagementModel: ObservableObject {
             self.generation = UUID() // Discard progress callbacks queued after completion.
             self.runner = nil; self.busy = false
             switch result {
-            case .success(let (inventory, settings, _)):
-                self.inventory = inventory; self.settings = settings; self.complete = true
+            case .success(let (inventory, settings, _, hosts)):
+                self.inventory = inventory; self.settings = settings; self.hosts = hosts; self.complete = true
                 if case .delete(let slot) = command {
                     try? TinyTouchFingerprintNames.save(name: "", slot: slot, serial: device.serial, defaults: .standard)
                 }
                 self.names = TinyTouchFingerprintNames.load(serial: device.serial, defaults: .standard)
                 self.progress = "Device state verified."
-                NSLog("tinyTouch management: %ld occupied slots, %ld free slots, %ld settings verified", inventory.groups.count, inventory.available, settings.count)
+                NSLog("tinyTouch management: %ld occupied slots, %ld free slots, %ld settings, %ld hosts verified", inventory.groups.count, inventory.available, settings.count, hosts.identifiers.count)
             case .failure(let failure):
-                self.inventory = nil; self.settings = [:]
+                self.inventory = nil; self.settings = [:]; self.hosts = nil
                 self.error = failure is CancellationError
                     ? "Cancelled. Reconnect and refresh if enrollment cleanup is pending. Other fingerprint slots were preserved."
                     : failure.localizedDescription
