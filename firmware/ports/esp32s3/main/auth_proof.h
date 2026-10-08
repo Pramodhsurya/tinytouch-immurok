@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define AUTH_PROOF_TTL_MS 30000u
+#define AUTH_PROOF_TTL_MS 60000u
 typedef bool (*auth_proof_hmac_fn)(const uint8_t key[32], const char *, uint8_t out[32]);
 typedef bool (*auth_proof_random_fn)(uint8_t out[32]);
 typedef struct {

@@ -117,6 +117,7 @@ final class TinyTouchAuthSerial {
         }
     }
     func exchange(_ command: String, prefix: String, timeout: TimeInterval,
+                  touchPrompt: String = "Touch an enrolled finger now and hold it on the sensor until the result appears.",
                   progress: (String) -> Void) throws -> String {
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeout * 1_000_000_000)
         let bytes = Data((command + "\n").utf8)
@@ -135,7 +136,7 @@ final class TinyTouchAuthSerial {
                 let bytes = buffer.prefix(upTo: end); buffer.removeSubrange(...end)
                 guard bytes.count <= 1024, let line = String(data: bytes, encoding: .utf8)?.trimmingCharacters(in: .newlines) else { throw TinyTouchAuthError.invalidResponse }
                 if line.hasPrefix("ERR ") { throw TinyTouchAuthError.rejected }
-                if line == "EVENT TOUCH" { progress("Touch an enrolled finger now and hold it on the sensor until the result appears."); continue }
+                if line == "EVENT TOUCH" { progress(touchPrompt); continue }
                 if line.hasPrefix(prefix) { return line }
                 if !line.isEmpty { throw TinyTouchAuthError.invalidResponse }
             }
@@ -221,7 +222,10 @@ public enum TinyTouchAuthUSB {
         defer { request.invalidate() }
         let challenge = try serial.exchange(request.beginCommand, prefix: "OK AUTH2 CHALLENGE ", timeout: 3, progress: progress)
         let prove = try request.proveCommand(challenge: challenge)
-        let result = try serial.exchange(prove, prefix: "OK AUTH2 MATCH ", timeout: 12, progress: progress)
+        let touchPrompt = status.authTouchWaitMilliseconds == 30000
+            ? "Touch an enrolled finger within 30 seconds and hold it on the sensor until the result appears."
+            : "Touch an enrolled finger now and hold it on the sensor until the result appears."
+        let result = try serial.exchange(prove, prefix: "OK AUTH2 MATCH ", timeout: 60, touchPrompt: touchPrompt, progress: progress)
         try request.verifyMatch(result)
         try cancellation.check()
         guard TinyTouchUSBDevice.connected().contains(device) else { throw TinyTouchError.wrongDevice }

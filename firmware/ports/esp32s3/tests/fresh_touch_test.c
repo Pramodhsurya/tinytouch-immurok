@@ -68,5 +68,39 @@ int main(void) {
   assert(!fresh_touch_observe(&s, 300, true, false));
   assert(!fresh_touch_observe(&s, 299, true, false));
   assert(!fresh_touch_finish(&s, 500, true, true, true));
-  puts("fresh_touch: cached/no-touch/stuck-high, transitions, mismatch, cancel and expiry passed");
+  // The native touch window starts at the prompt, not at initial arming.
+  fresh_touch_begin_prompted(&s, 0, 30000); arm(&s);
+  assert(!fresh_touch_observe(&s, 10000, true, false));
+  assert(fresh_touch_observe(&s, 10080, true, false));
+  assert(fresh_touch_finish(&s, 10100, true, true, true));
+  fresh_touch_begin_prompted(&s, 0, 30000); arm(&s);
+  assert(!fresh_touch_observe(&s, 30100, true, false));
+  assert(fresh_touch_observe(&s, 30180, true, false));
+  assert(fresh_touch_finish(&s, 30249, true, true, true));
+  fresh_touch_begin_prompted(&s, 0, 30000); arm(&s);
+  assert(!fresh_touch_observe(&s, 30100, true, false));
+  assert(fresh_touch_observe(&s, 30180, true, false));
+  // A touch made within the window gets a bounded capture/match budget.
+  assert(fresh_touch_finish(&s, 30250, true, true, true));
+  fresh_touch_begin_prompted(&s, 0, 30000); arm(&s);
+  assert(!fresh_touch_observe(&s, 30100, true, false));
+  assert(fresh_touch_observe(&s, 30180, true, false));
+  assert(!fresh_touch_finish(&s, 37180, true, true, true));
+  fresh_touch_begin_prompted(&s, 0, 30000); arm(&s);
+  assert(!fresh_touch_observe(&s, 30249, false, true));
+  assert(!fresh_touch_observe(&s, 30250, false, true));
+  assert(s.phase == FRESH_CONSUMED);
+  // A held finger still cannot extend initial arming beyond seven seconds.
+  fresh_touch_begin_prompted(&s, 0, 30000);
+  assert(!fresh_touch_observe(&s, 6999, true, false));
+  assert(!fresh_touch_observe(&s, 7000, true, false));
+  assert(s.phase == FRESH_CONSUMED);
+  fresh_touch_begin_prompted(&s, 0, 30000); arm(&s);
+  fresh_touch_cancel(&s);
+  assert(!fresh_touch_finish(&s, 10000, true, true, true));
+  for (unsigned window = 0; window <= 30001; window += 30001) {
+    fresh_touch_begin_prompted(&s, 0, window);
+    assert(s.phase == FRESH_CONSUMED);
+  }
+  puts("fresh_touch: presence, 30-second prompt boundary, legacy arming, cancel and expiry passed");
 }

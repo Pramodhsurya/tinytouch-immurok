@@ -690,11 +690,7 @@ bool fingerprint_recover(void) {
   return ok;
 }
 
-bool fingerprint_authorize_prompted(void (*prompt)(void)) {
-  return fingerprint_authorize_fresh(prompt, NULL);
-}
-
-bool fingerprint_authorize_fresh(void (*prompt)(void), bool (*cancelled)(void)) {
+static bool authorize_fresh_window(void (*prompt)(void), bool (*cancelled)(void), bool extended) {
   // UART image buffers/late ACKs cannot establish new physical presence. Hold
   // the UART mutex across this transaction so LED/HID traffic cannot interleave.
   prompted_authorization_active = true;
@@ -710,7 +706,8 @@ bool fingerprint_authorize_fresh(void (*prompt)(void), bool (*cancelled)(void)) 
     vTaskDelay(pdMS_TO_TICKS(10));
   }
   fresh_touch_t presence;
-  fresh_touch_begin(&presence, esp_timer_get_time() / 1000);
+  if (extended) fresh_touch_begin_prompted(&presence, esp_timer_get_time() / 1000, 30000);
+  else fresh_touch_begin(&presence, esp_timer_get_time() / 1000);
   bool prompted = false;
   while (presence.phase != FRESH_CONSUMED) {
     if (cancelled && cancelled()) { fresh_touch_cancel(&presence); break; }
@@ -742,6 +739,15 @@ unlock:
 done:
   prompted_authorization_active = false;
   return ok;
+}
+
+bool fingerprint_authorize_prompted(void (*prompt)(void)) {
+  // Keep the legacy CLI's 15-second AUTH read deadline compatible.
+  return authorize_fresh_window(prompt, NULL, false);
+}
+
+bool fingerprint_authorize_fresh(void (*prompt)(void), bool (*cancelled)(void)) {
+  return authorize_fresh_window(prompt, cancelled, true);
 }
 
 bool fingerprint_prompted_authorization_active(void) {

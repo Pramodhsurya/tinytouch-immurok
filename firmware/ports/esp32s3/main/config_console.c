@@ -242,7 +242,7 @@ static void status(void) {
   bool sensor_is_ready = fingerprint_is_ready();
   snprintf(line, sizeof(line),
            "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
-           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1 config_values=1 custom_config=1 auth_proof=" AUTH2_CAPABILITY " auth_fresh=" AUTH2_CAPABILITY " touch_present=%u "
+           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1 config_values=1 custom_config=1 auth_proof=" AUTH2_CAPABILITY " auth_fresh=" AUTH2_CAPABILITY " auth_touch_ms=30000 touch_present=%u "
            "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u "
            "led_idle_color=%u led_success_color=%u led_failure_color=%u led_idle_end_color=%u "
            "led_idle_effect=%u led_idle_cycles=%u led_feedback_ms=%u piv_auto_type=%u "

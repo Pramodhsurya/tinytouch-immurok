@@ -80,6 +80,33 @@ final class TinyTouchAuthProofTests: XCTestCase {
         fields["auth_proof"] = "true"
         XCTAssertThrowsError(try TinyTouchStatus(data: JSONEncoder().encode(fields)))
     }
+    func testExtendedRequestAcceptsLateResultOnlyWithinSixtySeconds() throws {
+        var now: UInt64 = 100
+        let request = try request(clock: { now })
+        _ = try request.proveCommand(challenge: challenge.replacingOccurrences(of: "30000", with: "60000"))
+        now += 55_000_000_000
+        try request.verifyMatch(match)
+        XCTAssertThrowsError(try request.verifyMatch(match))
+        now = 100
+        let expired = try self.request(clock: { now })
+        _ = try expired.proveCommand(challenge: challenge.replacingOccurrences(of: "30000", with: "60000"))
+        now += 60_000_000_000
+        XCTAssertThrowsError(try expired.verifyMatch(match))
+    }
+    func testLegacyLifetimeCannotBeExtendedByNewClient() throws {
+        var now: UInt64 = 100
+        let request = try request(clock: { now })
+        now += 35_000_000_000
+        XCTAssertThrowsError(try request.proveCommand(challenge: challenge))
+        XCTAssertThrowsError(try request.proveCommand(challenge: challenge.replacingOccurrences(of: "30000", with: "60000")))
+    }
+    func testUnsupportedLifetimesAlwaysConsumeRequest() throws {
+        for lifetime in ["45000", "60001", "060000", "-1", "0"] {
+            let request = try request()
+            XCTAssertThrowsError(try request.proveCommand(challenge: challenge.replacingOccurrences(of: "30000", with: lifetime)))
+            XCTAssertThrowsError(try request.proveCommand(challenge: challenge))
+        }
+    }
     func testCryptographicProofAloneCannotEnableFreshAuthentication() throws {
         var fields = ["protocol": "6", "firmware": "0.1.36", "build": "auth-proof", "sensor": "ready", "fingerprints": "1", "hosts": "1", "mode": "hid", "auth_proof": "1"]
         XCTAssertFalse(try TinyTouchStatus(data: JSONEncoder().encode(fields)).authenticationSupported)
@@ -89,5 +116,15 @@ final class TinyTouchAuthProofTests: XCTestCase {
         XCTAssertFalse(try TinyTouchStatus(data: JSONEncoder().encode(fields)).authenticationSupported)
         fields["auth_fresh"] = "true"
         XCTAssertThrowsError(try TinyTouchStatus(data: JSONEncoder().encode(fields)))
+    }
+    func testPromptWindowMetadataIsOptionalAndBounded() throws {
+        var fields = ["protocol": "6", "firmware": "0.1.38", "build": "touch-window", "sensor": "ready", "fingerprints": "1", "hosts": "1", "mode": "hid", "auth_proof": "1", "auth_fresh": "1"]
+        XCTAssertNil(try TinyTouchStatus(data: JSONEncoder().encode(fields)).authTouchWaitMilliseconds)
+        fields["auth_touch_ms"] = "30000"
+        XCTAssertEqual(try TinyTouchStatus(data: JSONEncoder().encode(fields)).authTouchWaitMilliseconds, 30000)
+        for value in ["0", "30001", "030000", "-1", "wait"] {
+            fields["auth_touch_ms"] = value
+            XCTAssertThrowsError(try TinyTouchStatus(data: JSONEncoder().encode(fields)))
+        }
     }
 }

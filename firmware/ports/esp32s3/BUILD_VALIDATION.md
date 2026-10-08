@@ -1,5 +1,15 @@
 # ESP32 firmware build validation
 
+## Thirty-second native touch window — October 8, 2026
+
+Firmware **0.1.38 / esp32-touch-window-1** builds with ESP-IDF 5.3.4. Image size **668,816 bytes**, **379,760 bytes** free per OTA slot; SHA-256 `a2401c3773023100498c7f05207dc7e384e84b63dd28b907e7db424c9d00d614`. esptool checksum and validation hash pass. Recovery and fingerprint bypass remain OFF; partition/NVS layout and the fresh-proof HMAC domain are unchanged.
+
+AUTH2 now allows 30 seconds for a new debounced touch after confirmed absence arms the gate and emits the prompt. Initial arming remains bounded to seven seconds, capture/match receives a bounded seven-second budget, and the complete request expires at 60 seconds. Legacy AUTH keeps its seven-second gate for the signed CLI's existing read timeout. STATUS advertises `auth_touch_ms=30000`; the native app displays the corresponding instruction and accepts only the known 30/60-second request lifetimes.
+
+All **152 Mac tests** pass. Portable fresh-presence and proof C regressions pass with UndefinedBehaviorSanitizer, covering the new timing boundaries and existing no-touch/cancellation/replay protections. The revised native bundle builds and preserves the embedded signed CLI. Firmware deployment, delayed-touch/no-touch timing acceptance, and USB keyboard-output retest remain pending; the 0.1.37 physical results below are not credited to this build.
+
+The startup-wizard output check failed to unlock the Mac. Device events show a match followed by a helper-response timeout. Read-only status reports forced BLE output with USB connected, while the Bluetooth helper reports availability errors. Switching to AUTO and retesting USB output is pending; no saved password was inspected, no credential access controls changed, and no sensor enrollment was erased.
+
 ## Fresh-presence correction — October 8, 2026
 
 Firmware **0.1.37 / esp32-fresh-touch-1** replaces the unsafe polling-only authorization path with sensor-confirmed GPIO absence, a new debounced presence transition, a fresh capture/match and cancellation checks. Sensor UART ownership is held throughout the request; incompatible/duplicate/excess replies are rejected. The native client requires the new `auth_fresh=1` capability in addition to cryptographic proof. **0.1.36 failed the user's no-touch test; its apparent positive results are withdrawn.** Privileged features remain inactive.

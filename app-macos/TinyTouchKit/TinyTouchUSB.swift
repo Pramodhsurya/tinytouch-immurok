@@ -31,6 +31,7 @@ public struct TinyTouchStatus: Equatable {
     public let mode: String
     public let authProofSupported: Bool
     public let authFreshSupported: Bool
+    public let authTouchWaitMilliseconds: Int?
     public var authenticationSupported: Bool { authProofSupported && authFreshSupported }
     public init(data: Data) throws {
         guard data.count <= 65536,
@@ -47,6 +48,10 @@ public struct TinyTouchStatus: Equatable {
         if let value = fields["auth_fresh"], !["0", "1"].contains(value) { throw TinyTouchError.invalidStatus }
         authProofSupported = fields["auth_proof"] == "1"
         authFreshSupported = fields["auth_fresh"] == "1"
+        if let raw = fields["auth_touch_ms"] {
+            guard let wait = Int(raw), (1...30000).contains(wait), String(wait) == raw else { throw TinyTouchError.invalidStatus }
+            authTouchWaitMilliseconds = wait
+        } else { authTouchWaitMilliseconds = nil }
         self.firmware = firmware; self.build = build; self.sensorReady = sensor == "ready"
         self.fingerprints = fingerprints; self.hosts = hosts; self.mode = mode
     }

@@ -47,10 +47,12 @@ int main(void) {
   begin(&s); assert(!auth_proof_finish(&s, true, 200, hmac, mac)); erased(&s);
   begin(&s); assert(auth_proof_verify_host(&s, client, host_mac, 200, hmac));
   assert(!auth_proof_finish(&s, false, 300, hmac, mac)); erased(&s);
-  begin(&s); assert(!auth_proof_verify_host(&s, client, host_mac, 30100, hmac)); erased(&s);
+  begin(&s); assert(!auth_proof_verify_host(&s, client, host_mac, 60100, hmac)); erased(&s);
   begin(&s); assert(!auth_proof_verify_host(&s, client, host_mac, 99, hmac)); erased(&s);
   begin(&s); assert(auth_proof_verify_host(&s, client, host_mac, 200, hmac));
-  assert(!auth_proof_finish(&s, true, 30100, hmac, mac)); erased(&s);
+  assert(!auth_proof_finish(&s, true, 60100, hmac, mac)); erased(&s);
+  begin(&s); assert(auth_proof_verify_host(&s, client, host_mac, 200, hmac));
+  assert(auth_proof_finish(&s, true, 59999, hmac, mac)); erased(&s);
   begin(&s); auth_proof_clear(&s); erased(&s); // cancellation/disconnect
   assert(!auth_proof_begin(&s, key, "TT-001122334455", host, client, context, 100, broken_random, hmac, nonce, mac)); erased(&s);
   assert(!auth_proof_begin(&s, key, "TT-001122334455", host, client, context, 100, random_bytes, broken_hmac, nonce, mac)); erased(&s);

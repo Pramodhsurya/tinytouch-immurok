@@ -35,6 +35,7 @@ public final class TinyTouchAuthRequest {
     private var deviceNonce = ""
     private let created: UInt64
     private let now: () -> UInt64
+    private var lifetimeNanoseconds: UInt64 = 60_000_000_000
 
     public convenience init(key: Data, serial: String, context: Data) throws {
         var nonce = Data(count: 32)
@@ -56,15 +57,18 @@ public final class TinyTouchAuthRequest {
     public func invalidate() { phase = .consumed }
     private func unexpired() throws {
         let current = now()
-        guard current >= created, current - created < 30_000_000_000 else { throw TinyTouchAuthError.expired }
+        guard current >= created, current - created < lifetimeNanoseconds else { throw TinyTouchAuthError.expired }
     }
     public func proveCommand(challenge: String) throws -> String {
         guard phase == .new else { throw TinyTouchAuthError.invalidResponse }
         phase = .consumed // Every failure consumes this client request.
         try unexpired()
         let fields = try Self.fields(challenge, prefix: "OK AUTH2 CHALLENGE", keys: ["nonce", "mac", "ttl_ms"])
-        guard fields["ttl_ms"] == "30000", let nonce = fields["nonce"], Self.hexData(nonce)?.count == 32,
+        guard let ttl = fields["ttl_ms"], ["30000", "60000"].contains(ttl),
+              let nonce = fields["nonce"], Self.hexData(nonce)?.count == 32,
               let mac = fields["mac"].flatMap(Self.hexData), mac.count == 32 else { throw TinyTouchAuthError.invalidResponse }
+        lifetimeNanoseconds = UInt64(ttl)! * 1_000_000
+        try unexpired()
         deviceNonce = nonce
         guard HMAC<SHA256>.isValidAuthenticationCode(mac, authenticating: material("challenge"), using: key) else { throw TinyTouchAuthError.invalidResponse }
         let hostTag = Data(HMAC<SHA256>.authenticationCode(for: material("host"), using: key))
