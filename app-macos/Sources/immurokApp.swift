@@ -57,16 +57,19 @@ struct immurokApp: App {
 struct TinyTouchPreviewMenu: View {
     @ObservedObject var connection: TinyTouchConnection
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("tinyTouch").font(.headline)
             Text(connection.usbMessage)
             Text(connection.bluetoothMessage)
             Button("Open device status") {
+                dismiss()
                 openWindow(id: "settings")
                 NSApp.activate(ignoringOtherApps: true)
             }
             Button("Startup wizard") {
+                dismiss()
                 openWindow(id: "setup-wizard")
                 NSApp.activate(ignoringOtherApps: true)
             }

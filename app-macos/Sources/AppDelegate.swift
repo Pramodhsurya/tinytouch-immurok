@@ -953,6 +953,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func checkAndShowSetupWizard() {
         let esp32 = Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true
         let needsWizard = esp32 && !TinyTouchSetupCompletion.isComplete()
+        presentMainWindow(needsWizard: needsWizard)
+    }
+
+    @MainActor
+    private func presentMainWindow(needsWizard: Bool) {
         NotificationCenter.default.post(name: needsWizard ? .openSetupWizard : .openSettingsWindow, object: nil)
         NSApp.activate(ignoringOtherApps: true)
         Task { @MainActor in
@@ -968,7 +973,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        Task { @MainActor in self.checkAndShowSetupWizard() }
+        // Dock clicks restore the main window, even if setup was deferred.
+        // The wizard remains available from the menu and Features tab.
+        Task { @MainActor in self.presentMainWindow(needsWizard: false) }
         return true
     }
 

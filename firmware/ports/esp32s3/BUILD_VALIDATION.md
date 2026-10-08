@@ -10,6 +10,8 @@ Build passed with ESP-IDF 5.3.4; image size **668,672 bytes**, **379,904 bytes**
 
 **Physical follow-up:** the user reports no-touch rejection but also rejection after touching an enrolled finger when prompted. The native prompt still said “then lift it,” which conflicts with the fresh gate. It is corrected to require holding until the result, and the rebuilt/signature-verified app is installed and reopened for retest. Firmware remains 0.1.37; positive/wrong-finger/cancellation acceptance is pending. Read-only `fingers` diagnosis fails with `reason=parameters`; the device log includes sensor recovery failures. No raw sensor data, pairing keys or saved passwords were collected. A single image-capture attempt can also reject before acquisition is ready; investigate bounded retries if the corrected hold test still rejects.
 
+**Subsequent retest passed:** with the corrected hold instruction, the user confirms enrolled-finger verification and rejection with a different finger. Repeated no-touch rejection was reported earlier. These physical cases pass on the unchanged 0.1.37 image; no capture-retry firmware update was necessary. Quiet prompted matching does not schedule the normal keyboard-helper ring feedback. Cancellation/retry and disconnect cases on this firmware remain pending, and the inventory parameter error remains open.
+
 Presence regression check from the repository root:
 
 ```sh

@@ -38,6 +38,7 @@ info = plistlib.loads((root / 'Resources/Info.plist').read_bytes())
 info.update(CFBundleName='tinyTouch Native Preview', CFBundleDisplayName='tinyTouch Native Preview',
             CFBundleIdentifier='com.tinytouch.native.preview', CFBundleExecutable='tinyTouch-native',
             CFBundleShortVersionString='0.1.0', CFBundleVersion='1', TinyTouchESP32Preview=True,
+            LSUIElement=False,
             NSBluetoothAlwaysUsageDescription='tinyTouch reads the identity of your paired ESP32 fingerprint device.')
 (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
 subprocess.run(['codesign', '--force', '--sign', '-', str(bundle)], check=True)
