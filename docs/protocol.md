@@ -1,5 +1,7 @@
 # immurok BLE Protocol Specification
 
+**ESP32 port:** this imported document describes the upstream CH592 protocol. The current USB extension is specified in [ESP32 request-bound fingerprint proof](AUTH_PROOF_PROTOCOL.md); support is negotiated through `auth_proof`, and this upstream BLE service is not yet implemented on ESP32.
+
 ## Overview
 
 immurok communicates over Bluetooth Low Energy (BLE) using two channels:

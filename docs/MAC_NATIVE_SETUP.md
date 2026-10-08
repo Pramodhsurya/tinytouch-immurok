@@ -26,6 +26,14 @@ To start the native app after login, enable **Launch tinyTouch Native at login**
 
 ## Troubleshooting and recovery
 
+### Fresh fingerprint proof test
+
+With normal ESP32 firmware 0.1.36 or newer advertising `auth_proof=1`, connect USB and open **Features → Fingerprint authentication test → Test enrolled fingerprint**. Approve the pairing-key read yourself if Keychain asks, then touch an enrolled finger within the prompt window and lift it. A verified result is scoped to this test only; it does not execute a privileged action. **Cancel** closes the request and releases USB to the existing helper. Failed/expired requests require a new test. The native app never reads your saved password. See [AUTH_PROOF_PROTOCOL.md](AUTH_PROOF_PROTOCOL.md) for the contract and limits.
+
+The original signed CLI stages firmware through its fingerprint-approved `update --file` command. Keep USB connected during upload; after successful staging, press RESET to activate the image (disconnecting USB alone may leave a battery-powered board running). Do not use BOOT or erase NVS to bypass authorization. Verify sensor, template and host inventory after activation.
+
+### Connection and installation
+
 - USB unavailable: reconnect the device, wait for the status check, then refresh. An active sensor operation can be cancelled; reconnect and read inventory afterward to inspect partial enrollment/cleanup.
 - Bluetooth unavailable: check the Features permission status and macOS Bluetooth settings. Existing helper pairing supplies the remembered peripheral identity. Native Bluetooth pairing and management are pending.
 - Helper stopped/unavailable: check the existing tinyTouch setup and its background-service settings. The native app only reports helper health; it does not reinstall or repair credentials.

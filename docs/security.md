@@ -1,5 +1,7 @@
 # immurok Security Architecture
 
+**ESP32 port:** the architecture below is the imported upstream design, not a claim of ESP32 parity. Implemented USB proof behavior and remaining trust limitations are documented in [ESP32 request-bound fingerprint proof](AUTH_PROOF_PROTOCOL.md). The current port reuses existing tinyTouch host keys; upstream ECDH pairing remains pending.
+
 ## Threat Model
 
 immurok is a wireless fingerprint authenticator. The primary threats are:

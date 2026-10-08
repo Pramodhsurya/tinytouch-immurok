@@ -2,6 +2,11 @@ import Foundation
 import TinyTouchKit
 
 do {
+    if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--auth-lease-test" {
+        try TinyTouchAuthUSB.checkLease()
+        print("Foreground USB lease acknowledged and released.")
+        exit(0)
+    }
     if CommandLine.arguments == [CommandLine.arguments[0], "--helper-health"] {
         print("USB helper: \(TinyTouchHelperHealth.read(label: "com.tinytouch.helper").rawValue)")
         print("Bluetooth helper: \(TinyTouchHelperHealth.read(label: "com.tinytouch.bluetooth").rawValue)")

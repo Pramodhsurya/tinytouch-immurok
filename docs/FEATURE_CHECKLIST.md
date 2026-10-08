@@ -1,6 +1,6 @@
 # tinyTouch feature parity checklist
 
-Reviewed **2026-10-07**. Target: **ESP32-S3 + ZW111**, retaining Bluetooth and adding usable USB data/control across the companion system.
+Reviewed **2026-10-08**. Target: **ESP32-S3 + ZW111**, retaining Bluetooth and adding usable USB data/control across the companion system.
 
 This is the canonical checklist. Check a box only after the feature is implemented in our port and its acceptance criterion passes. Imported source, upstream marketing claims and a passing helper unit test do not complete an end-to-end feature. Prototype evidence is recorded separately below. Keep this file updated with each implementation commit; do not automatically check boxes from upstream status.
 
@@ -72,8 +72,8 @@ Sources: [Overview README](https://github.com/immurok/immurok/blob/main/README.m
 | [x] | Completed | ROOT-02 | `docs` | Record folder responsibilities and ESP32 compatibility gaps | P0 | Published folder analysis with source links |
 | [x] | Completed | ROOT-03 | `docs` | Create deduplicated feature tracker and pinned upstream inventory | P0 | This checklist and source inventory validated |
 | [ ] | Yet to be done | ROOT-04 | `root / CI` | Build and release each component from monorepo working directories | P0 | Root CI runs correct jobs; downloadable artifacts identify board/platform |
-| [ ] | Yet to be done | DOC-01 | `docs/protocol.md` | Document versioned commands, capabilities, errors and BLE/USB framing | P1 | C, Swift, C# and Rust fixtures agree; unsupported commands fail explicitly |
-| [ ] | Yet to be done | DOC-02 | `docs/security.md` | Document threat model, pairing, request freshness, local IPC and storage trust | P1 | Descriptions match implemented security and tested failure paths |
+| [ ] | In progress | DOC-01 | `docs/protocol.md` | Document versioned commands, capabilities, errors and BLE/USB framing | P1 | C, Swift, C# and Rust fixtures agree; unsupported commands fail explicitly |
+| [ ] | In progress | DOC-02 | `docs/security.md` | Document threat model, pairing, request freshness, local IPC and storage trust | P1 | Descriptions match implemented security and tested failure paths |
 | [ ] | Yet to be done | DOC-03 | `docs/app-spec.md` | Document platform feature matrix and supported OS/desktop limits | P2 | No unsupported feature is advertised as working |
 | [ ] | In progress | DOC-04 | `docs / root README` | Provide setup, permissions, transport selection, recovery and troubleshooting guides | P2 | A fresh user can build/pair/recover without relying on chat history |
 | [ ] | Yet to be done | ROOT-05 | `root / packaging` | Apply tinyTouch branding with configuration and Keychain migration | P2 | Existing owner credentials remain accessible; upstream legal notices preserved |
@@ -98,8 +98,8 @@ Sources: [Firmware README](https://github.com/immurok/firmware/blob/main/README.
 | [ ] | Yet to be done | FW-11 | `APP/immurok_security.c` | ECDH P-256 pairing, HKDF-SHA256 derivation and reliable key erasure | P1 | Cross-language known-answer and malformed-key tests pass |
 | [ ] | Yet to be done | FW-12 | `APP pairing policy` | Physical-presence pairing, timeout/cancel and owner-approved migration | P1 | Unapproved nearby host rejected; existing templates not silently wiped |
 | [ ] | Yet to be done | FW-13 | `APP security / storage` | Persistent bonds and paired host keys with deliberate unpair/repair behavior | P1 | Power cycle retains owner; revoked peer cannot authenticate |
-| [ ] | Yet to be done | FW-14 | `APP security / commands` | Reconnect challenge and authenticated events with session/request freshness | P1 | Stale, forged and duplicate events rejected on each transport |
-| [ ] | Yet to be done | FW-15 | `APP/hidkbd.c command dispatcher` | AUTH_REQUEST, cancel, busy/timeout and fingerprint-gated operations | P1 | Wrong finger, cancellation, disconnect and timeout grant no authority |
+| [ ] | In progress | FW-14 | `APP security / commands` | Reconnect challenge and authenticated events with session/request freshness | P1 | Stale, forged and duplicate events rejected on each transport |
+| [ ] | In progress | FW-15 | `APP/hidkbd.c command dispatcher` | AUTH_REQUEST, cancel, busy/timeout and fingerprint-gated operations | P1 | Wrong finger, cancellation, disconnect and timeout grant no authority |
 | [ ] | Yet to be done | FW-16 | `APP/hidkbd.c match events` | Pending match delivery and acknowledgement after reconnect | P2 | Expiry and sequence binding prevent stale or double unlock |
 | [ ] | Yet to be done | FW-17 | `APP HID` | Wake/pre-trigger keystrokes and reliable key/modifier release | P2 | No stuck keys; wake behavior verified on supported hosts |
 | [ ] | Yet to be done | FW-18 | `APP lock notification` | Long-touch lock request independent of ordinary match | P3 | Intentional hold requests lock; auth/enrollment gates suppress accidental lock |
@@ -131,7 +131,7 @@ Sources: [Mac README](https://github.com/immurok/app-macos/blob/main/README.md),
 | [ ] | In progress | MAC-01 | `Sources / Package.swift` | Build native menu-bar app and first-run setup wizard | P2 | Local signed test bundle launches; permissions and missing prerequisites explained |
 | [ ] | In progress | MAC-02 | `Sources/BLEManager.swift` | Discover tinyTouch, pair, verify and reconnect over compatible BLE protocol | P2 | Native app handles cold start, disconnect, sleep/wake and wrong device |
 | [ ] | In progress | MAC-03 | `Sources transport layer` | Add USB companion transport and transport/device selector | P2 | Same management commands work over USB and BLE without duplicate action |
-| [ ] | Yet to be done | MAC-04 | `Sources/ImmurokSecurity.swift` | Implement negotiated crypto/freshness client and migrate Keychain identity | P2 | Firmware fixtures verified; existing saved password/key access preserved |
+| [ ] | In progress | MAC-04 | `Sources/ImmurokSecurity.swift` | Implement negotiated crypto/freshness client and migrate Keychain identity | P2 | Firmware fixtures verified; existing saved password/key access preserved |
 | [ ] | In progress | MAC-05 | `Sources device views` | Show connection, host slot, battery, firmware and readiness status | P2 | Capability-driven display; unknown battery distinguished from measured level |
 | [ ] | In progress | MAC-06 | `Sources/FingerprintView.swift` | Enroll, cancel, delete and rename logical fingerprints | P2 | UI follows ZW111 progress/capacity and receives accurate final state |
 | [ ] | Yet to be done | MAC-07 | `Sources/AppDelegate.swift` | Native app screen unlock and wake/reconnect retry flow | P2 | Lock-screen unlock over BLE/USB; pending match cannot duplicate typing |
@@ -288,6 +288,12 @@ For every future checked item, append or link evidence here: implementation comm
 | BASE-01–BASE-05 | User-confirmed prototype measurements and operation from earlier setup; original helper/custom firmware, not the new native companion | Earlier setup; recorded 2026-10-07 |
 
 No new flashing, PAM installation, app installation or hardware change was performed to create this checklist.
+
+### Request-bound USB authentication — 2026-10-08
+
+FW-14/FW-15 and MAC-04 now have an AUTH2 implementation using the existing host key: verified device challenge, host proof before the fingerprint prompt, nonce/context-bound match proof, single consumption, timeout and disconnect cleanup. The native Features page provides an explicit test with a pairing-key Keychain prompt. It never reads the password or grants privileged/global authorization. DOC-01/DOC-02 are In progress with a port-specific [protocol and trust-limit document](AUTH_PROOF_PROTOCOL.md); upstream specs are clearly distinguished. No duplicate checklist tasks were added.
+
+140 Mac tests and the C normal/UndefinedBehaviorSanitizer tests pass. Live helper leasing passes and preserves both running helpers. Firmware 0.1.36 builds within the existing OTA slot; the updated native preview installs with a retained previous bundle. Live firmware activation and fingerprint proof are pending until separately recorded. BLE proofs, new pairing, privileged operations and physical failure-path acceptance remain open, so these rows are not Completed. FW-11 ECDH pairing remains Yet to be done.
 
 ### Native ESP32 Mac compatibility work — 2026-10-07
 

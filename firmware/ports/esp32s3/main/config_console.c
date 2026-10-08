@@ -6,10 +6,14 @@
 #include <string.h>
 
 #include "esp_timer.h"
+#include "esp_mac.h"
+#include "esp_random.h"
+#include "esp_bt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
+#include "mbedtls/md.h"
 #include "nvs_flash.h"
 #include "tusb.h"
 
@@ -20,6 +24,7 @@
 #include "touch_pin_hid.h"
 #include "bluetooth_transport.h"
 #include "usb_ccid.h"
+#include "auth_proof.h"
 
 #ifndef TINYTOUCH_FIRMWARE_VERSION
 #define TINYTOUCH_FIRMWARE_VERSION "development"
@@ -31,6 +36,11 @@
 #define AUTH_WINDOW_US (120LL * 1000000LL)
 #define OTA_WINDOW_US (30LL * 1000000LL)
 #define CDC_WRITE_TIMEOUT_US (2LL * 1000000LL)
+#if defined(TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH) || defined(TINYTOUCH_RECOVERY_BUILD)
+#define AUTH2_CAPABILITY "0"
+#else
+#define AUTH2_CAPABILITY "1"
+#endif
 
 static char command[5632];
 static size_t command_length;
@@ -42,6 +52,16 @@ static SemaphoreHandle_t write_lock;
 static SemaphoreHandle_t rx_signal;
 static volatile bool piv_create_active;
 static volatile bool usb_reconnect_active;
+static auth_proof_t auth2;
+static portMUX_TYPE auth2_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool auth2_disconnected;
+
+static bool auth2_connection_lost(void) {
+  portENTER_CRITICAL(&auth2_lock);
+  bool lost = auth2_disconnected;
+  portEXIT_CRITICAL(&auth2_lock);
+  return lost || !tud_cdc_connected();
+}
 
 static void wipe(void *data, size_t length) {
   volatile uint8_t *cursor = data;
@@ -136,6 +156,73 @@ static void authorize(void) {
   reply(count == 0 ? "OK AUTH first_setup=1" : "OK AUTH");
 }
 
+static bool auth2_hmac(const uint8_t key[32], const char *message, uint8_t out[32]) {
+  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  return info && mbedtls_md_hmac(info, key, 32, (const uint8_t *)message,
+                                strlen(message), out) == 0;
+}
+static bool auth2_random(uint8_t out[32]) {
+  // ESP32-S3 RNG requires the RF entropy source. Never fall back to a PRNG.
+  if (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_ENABLED) return false;
+  esp_fill_random(out, 32); return true;
+}
+static bool auth2_host(const char *identifier, uint8_t key[32]) {
+  uint8_t id[DEVICE_CONFIG_HID_KEY_ID_SIZE];
+  if (!decode_hex(identifier, id, sizeof(id))) return false;
+  device_hid_host_t hosts[DEVICE_CONFIG_MAX_HID_HOSTS];
+  size_t count = device_config_copy_hid_hosts(hosts);
+  bool found = false;
+  for (size_t i = 0; i < count; i++) if (memcmp(id, hosts[i].id, sizeof(id)) == 0) {
+    memcpy(key, hosts[i].key, 32); found = true; break;
+  }
+  wipe(hosts, sizeof(hosts)); return found;
+}
+static void auth2_begin(const char *args) {
+#if defined(TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH) || defined(TINYTOUCH_RECOVERY_BUILD)
+  reply("ERR AUTH2 unavailable"); return;
+#endif
+  char host[17], client[65], context[65], extra[2];
+  if (sscanf(args, "%16s %64s %64s %1s", host, client, context, extra) != 3) {
+    reply("ERR AUTH2 arguments"); return;
+  }
+  uint8_t key[32] = {0}, mac[6]; char serial[16], nonce[65], tag[65], line[200];
+  if (fingerprint_count() <= 0 || !auth2_host(host, key) ||
+      esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK || !tud_cdc_connected()) {
+    wipe(key, sizeof(key)); reply("ERR AUTH2 unavailable"); return;
+  }
+  snprintf(serial, sizeof(serial), "TT-%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  portENTER_CRITICAL(&auth2_lock); auth2_disconnected = false; portEXIT_CRITICAL(&auth2_lock);
+  bool ok = auth_proof_begin(&auth2, key, serial, host, client, context,
+                            esp_timer_get_time() / 1000, auth2_random, auth2_hmac, nonce, tag);
+  wipe(key, sizeof(key));
+  if (!ok) { reply("ERR AUTH2 busy_or_invalid"); return; }
+  if (auth2_connection_lost()) { auth_proof_clear(&auth2); return; }
+  snprintf(line, sizeof(line), "OK AUTH2 CHALLENGE nonce=%s mac=%s ttl_ms=%u", nonce, tag, AUTH_PROOF_TTL_MS);
+  reply(line);
+}
+static void auth2_prove(const char *args) {
+  char client[65], supplied[65], extra[2], tag[65], context[65], line[256];
+  uint8_t current_key[32] = {0};
+  bool parsed = sscanf(args, "%64s %64s %1s", client, supplied, extra) == 2;
+  // A removed or rotated host cannot finish an outstanding session.
+  bool registered = auth2.pending && auth2_host(auth2.host, current_key);
+  uint8_t difference = 0;
+  for (size_t i = 0; i < 32; i++) difference |= current_key[i] ^ auth2.key[i];
+  wipe(current_key, sizeof(current_key));
+  if (!parsed || !registered || difference || auth2_connection_lost() ||
+      !auth_proof_verify_host(&auth2, client, supplied, esp_timer_get_time() / 1000, auth2_hmac)) {
+    auth_proof_clear(&auth2); reply("ERR AUTH2 rejected"); return;
+  }
+  strcpy(context, auth2.context);
+  bool matched = fingerprint_count() > 0 && fingerprint_authorize_prompted(touch_prompt);
+  matched = matched && !auth2_connection_lost();
+  bool ok = auth_proof_finish(&auth2, matched, esp_timer_get_time() / 1000, auth2_hmac, tag);
+  if (!ok) { reply("ERR AUTH2 no_match_or_expired"); return; }
+  snprintf(line, sizeof(line), "OK AUTH2 MATCH nonce=%s context=%s mac=%s", client, context, tag);
+  reply(line);
+  // No legacy configuration authorization window is opened by AUTH2.
+}
+
 static bool token_matches(const char *token) {
   return ota_token[0] && strlen(token) == 32 && strcmp(token, ota_token) == 0;
 }
@@ -155,7 +242,7 @@ static void status(void) {
   bool sensor_is_ready = fingerprint_is_ready();
   snprintf(line, sizeof(line),
            "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
-           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1 config_values=1 custom_config=1 "
+           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1 config_values=1 custom_config=1 auth_proof=" AUTH2_CAPABILITY " "
            "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u "
            "led_idle_color=%u led_success_color=%u led_failure_color=%u led_idle_end_color=%u "
            "led_idle_effect=%u led_idle_cycles=%u led_feedback_ms=%u piv_auto_type=%u "
@@ -289,6 +376,9 @@ void tud_cdc_line_state_cb(uint8_t interface, bool dtr, bool rts) {
   portENTER_CRITICAL(&enrollment_state_lock);
   if (!dtr && enrollment_running) enrollment_disconnected = true;
   portEXIT_CRITICAL(&enrollment_state_lock);
+  if (!dtr) {
+    portENTER_CRITICAL(&auth2_lock); auth2_disconnected = true; portEXIT_CRITICAL(&auth2_lock);
+  }
 }
 
 static bool enrollment_connected(void) {
@@ -483,6 +573,9 @@ static void handle_command(void) {
   else if (strcmp(command, "LOGS") == 0) touch_pin_hid_send_logs();
   else if (strcmp(command, "USB RECONNECT") == 0) usb_reconnect();
   else if (strcmp(command, "AUTH") == 0) authorize();
+  else if (strncmp(command, "AUTH2 BEGIN ", 12) == 0) auth2_begin(command + 12);
+  else if (strncmp(command, "AUTH2 PROVE ", 12) == 0) auth2_prove(command + 12);
+  else if (strcmp(command, "AUTH2 ABORT") == 0) { auth_proof_clear(&auth2); reply("OK AUTH2 ABORT"); }
   else if (strncmp(command, "SET MODE ", 9) == 0) set_mode(command + 9);
   else if (strncmp(command, "SET ", 4) == 0) set_value(command + 4);
   else if (strncmp(command, "LED PREVIEW ", 12) == 0) led_preview(command + 12);
@@ -513,6 +606,8 @@ static void console_task(void *arg) {
   (void)arg;
   char buffer[1024];
   while (true) {
+    if (auth2_connection_lost()) auth_proof_clear(&auth2);
+    else auth_proof_expire(&auth2, esp_timer_get_time() / 1000);
     if (ota_token[0] && esp_timer_get_time() - ota_last_activity > OTA_WINDOW_US) {
       firmware_update_abort(); clear_ota();
     }

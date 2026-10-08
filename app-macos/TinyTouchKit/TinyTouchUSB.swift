@@ -27,6 +27,7 @@ public struct TinyTouchStatus: Equatable {
     public let fingerprints: Int
     public let hosts: Int
     public let mode: String
+    public let authProofSupported: Bool
     public init(data: Data) throws {
         guard data.count <= 65536,
               let fields = try? JSONDecoder().decode([String: String].self, from: data),
@@ -38,6 +39,8 @@ public struct TinyTouchStatus: Equatable {
               let mode = fields["mode"], ["hid", "piv"].contains(mode)
         else { throw TinyTouchError.invalidStatus }
         guard fields["protocol"] == "6" else { throw TinyTouchError.unsupportedProtocol }
+        if let value = fields["auth_proof"], !["0", "1"].contains(value) { throw TinyTouchError.invalidStatus }
+        authProofSupported = fields["auth_proof"] == "1"
         self.firmware = firmware; self.build = build; self.sensorReady = sensor == "ready"
         self.fingerprints = fingerprints; self.hosts = hosts; self.mode = mode
     }
