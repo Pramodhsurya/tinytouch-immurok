@@ -128,7 +128,7 @@ Sources: [Mac README](https://github.com/immurok/app-macos/blob/main/README.md),
 
 | Done | Status | ID | Subfolder / area | Feature or deliverable | Implementation order | Completion criterion |
 | --- | --- | --- | --- | --- | --- | --- |
-| [ ] | In progress | MAC-01 | `Sources / Package.swift` | Build native menu-bar app and first-run setup wizard | P2 | Local signed test bundle launches; permissions and missing prerequisites explained |
+| [x] | Completed | MAC-01 | `Sources / Package.swift` | Build native menu-bar app and first-run setup wizard | P2 | Local signed test bundle launches; permissions and missing prerequisites explained |
 | [ ] | In progress | MAC-02 | `Sources/BLEManager.swift` | Discover tinyTouch, pair, verify and reconnect over compatible BLE protocol | P2 | Native app handles cold start, disconnect, sleep/wake and wrong device |
 | [ ] | In progress | MAC-03 | `Sources transport layer` | Add USB companion transport and transport/device selector | P2 | Same management commands work over USB and BLE without duplicate action |
 | [ ] | In progress | MAC-04 | `Sources/ImmurokSecurity.swift` | Implement negotiated crypto/freshness client and migrate Keychain identity | P2 | Firmware fixtures verified; existing saved password/key access preserved |
@@ -368,6 +368,8 @@ The resumed physical checks pass: enrolled finger verifies after repair; unplugg
 **0.1.41 untouched expiry passed:** the user completes the requested no-touch observation; subsequent log confirms expiry 30,034 ms after the prompt without a fresh verified result. Both helpers are Running and AUTO remains selected with encrypted keyboard/helper readiness. The separate USB lock-screen output test is now requested, with native requests finished and the battery disconnected. Wizard/output, exact delayed-touch timing and broader Mac acceptance remain open; canonical task statuses and totals remain unchanged.
 
 **USB-connected Mac unlock passed:** the user confirms the enrolled finger unlocks the Mac once with USB connected, battery disconnected and native tests finished. This passes the separate existing helper/device keyboard-output check after AUTO transport selection and new fingerprint enrollment; it is not a new native PAM/unlock adapter. Startup wizard completion using existing finger 2 and the now-confirmed output step is next. MAC-07 remains Yet to be done for the native wake/reconnect/duplicate-output flow, and canonical totals stay unchanged pending wizard/broader acceptance.
+
+**Startup wizard acceptance passed; MAC-01 Completed:** the user confirms Finish setup returns to Device without an inventory error after using existing fingerprint 2 and the passed USB-connected output check. A targeted read of the native app's setup-completion preference confirms the checked serial TT-90706911C494. The locally signed native bundle launches, menu/Dock access is implemented, readiness/prerequisite checks and the four-step wizard are exercised; this satisfies MAC-01's local app/wizard criterion. Production signing/distribution and login/update/recovery remain MAC-27/28 and MAC-23 acceptance work. Window close/menu-bar/Dock reopening and relaunch are the next physical checks. Canonical totals are now **13 Completed, 16 In progress, 108 Yet to be done (137 unique tasks)**.
 
 ### Native ESP32 Mac compatibility work — 2026-10-07
 
