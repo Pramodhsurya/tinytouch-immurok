@@ -20,6 +20,8 @@ The user confirms only touching the sensor during those failed attempts. A subse
 
 **0.1.40 delayed-touch positive passed:** after new block 2 enrollment, the user confirms fresh proof verifies when waiting 15–20 seconds after the native touch prompt, then holding the new enrolled finger until the result. This verifies the delayed-touch positive case with the current inventory. No-touch 30-second expiry, wrong-finger, cancellation/retry and disconnect/reconnect checks on this firmware remain pending, as do USB output and wizard acceptance.
 
+**0.1.40 no-touch expiry passed:** the user confirms the prompted request expires without success when leaving the sensor untouched for the requested 35-second observation. This is a user-observed expiry check, not a precise measured duration. Wrong-finger, cancellation/retry, disconnect/reconnect, USB output and wizard cases remain pending.
+
 ## Sensor failure diagnostics — October 8, 2026
 
 Firmware **0.1.39 / esp32-sensor-diagnostics-1** builds with ESP-IDF 5.3.4. Image size **669,472 bytes**, **379,104 bytes** free per OTA slot; SHA-256 `4aaf0d45b1efb6e2404224ca29feff087234ea6d9062a11a1500822dbc9422b6`. esptool checksum and validation hash pass. Recovery/bypass remain OFF and the partition/NVS layout is unchanged.

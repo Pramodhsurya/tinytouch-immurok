@@ -341,6 +341,8 @@ The resumed physical checks pass: enrolled finger verifies after repair; unplugg
 
 **New-finger delayed-touch acceptance passed:** following the complete new block 2 enrollment and removal of old blocks 1/10, the user confirms the native test verifies after waiting 15–20 seconds after the touch prompt and holding the newly enrolled finger. This passes the delayed-touch positive case on 0.1.40; no-touch expiry around 30 seconds and subsequent negative/cancellation/disconnect cases remain pending. No broader authentication, management, USB-output or wizard task is marked Completed from this single positive case; totals remain unchanged.
 
+**New-finger no-touch expiry passed:** the user confirms the requested no-touch check passes: after the native prompt, the sensor is left untouched for 35 seconds and the request expires without green success. Together with the delayed-touch positive, this supplies physical timing evidence on 0.1.40; it is a user-observed window rather than a precise instrumented duration. Wrong-finger, cancellation/retry and disconnect/reconnect checks on this firmware are still pending, along with USB output and wizard acceptance. Task statuses and totals remain unchanged.
+
 ### Native ESP32 Mac compatibility work — 2026-10-07
 
 Full Mac app feature parity is the release goal. The connection/status adapter is implemented and the native USB probe passed on the attached ESP32. BLE/USB management, authenticated native operations and transport acceptance criteria remain open; do not check connection items complete on status alone. Implementation dependencies and current evidence: [MAC_ESP32_COMPATIBILITY.md](MAC_ESP32_COMPATIBILITY.md). Existing MAC IDs remain authoritative; no duplicate feature entries were added.
