@@ -2,6 +2,7 @@
 #include "device_config.h"
 #include "fresh_touch.h"
 #include "fp_reply_shape.h"
+#include "fp_uart_quiet.h"
 #include "touch_pin_hid.h"
 
 #include <string.h>
@@ -110,8 +111,26 @@ static bool fp_response_checksum_valid(const uint8_t *packet, size_t packet_len)
 static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_len,
                        uint8_t *confirm, uint8_t *data, size_t *data_len,
                        uint32_t timeout_ms) {
+  const size_t data_cap = (data && data_len) ? *data_len : 0;
+  if (data && data_len) *data_len = 0;
+  *confirm = 0xff;
+  // The sensor does not echo the instruction in its response. A one-shot
+  // drain misses late replies; wait for bounded quiet while holding fp_mutex.
   uint8_t drain[64];
-  while (uart_read_bytes(FP_UART, drain, sizeof(drain), 0) > 0) {}
+  if (uart_wait_tx_done(FP_UART, pdMS_TO_TICKS(200)) != ESP_OK) {
+    touch_pin_hid_log_event("fp_uart_tx_pending", instruction);
+    note_transport_failure(); return false;
+  }
+  fp_uart_quiet_t quiet = fp_uart_quiet_begin(esp_timer_get_time() / 1000);
+  while (true) {
+    bool received = uart_read_bytes(FP_UART, drain, sizeof(drain), 0) > 0;
+    if (fp_uart_quiet_observe(&quiet, esp_timer_get_time() / 1000, received)) break;
+    if (quiet.failed) {
+      touch_pin_hid_log_event("fp_uart_not_quiet", instruction);
+      note_transport_failure(); return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
 
   uint8_t payload[32];
   if (param_len + 1 > sizeof(payload)) return false;
@@ -141,13 +160,11 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
 
   uint8_t response[96];
   size_t pos = 0;
-  const size_t data_cap = (data && data_len) ? *data_len : 0;
   size_t out_len = 0;
   bool saw_ack = false;
   TickType_t post_ack_until = 0;
   TickType_t start = xTaskGetTickCount();
   TickType_t deadline = pdMS_TO_TICKS(timeout_ms);
-  if (data && data_len) *data_len = 0;
 
   while ((xTaskGetTickCount() - start) < deadline) {
     // Drain every complete packet already in memory before waiting for more
@@ -226,7 +243,10 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
       pos = remaining;
     }
 
-    if (saw_ack && post_ack_until && xTaskGetTickCount() > post_ack_until) return true;
+    if (saw_ack && post_ack_until && xTaskGetTickCount() > post_ack_until) {
+      touch_pin_hid_log_event("fp_reply_incomplete", instruction);
+      note_transport_failure(); return false;
+    }
 
     // Waiting to fill the entire scratch buffer adds a timeout to every short
     // ACK. Block for one byte, then drain only what has actually arrived.
@@ -241,6 +261,10 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
   if (!saw_ack) {
     touch_pin_hid_log_event("fp_uart_timeout", instruction);
     note_transport_failure();
+  }
+  if (saw_ack && data_cap && out_len != data_cap) {
+    touch_pin_hid_log_event("fp_reply_incomplete", instruction);
+    note_transport_failure(); return false;
   }
   return saw_ack;
 }

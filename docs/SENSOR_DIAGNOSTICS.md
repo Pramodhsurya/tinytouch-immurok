@@ -7,11 +7,14 @@ Firmware **0.1.39 / esp32-sensor-diagnostics-1** adds numeric diagnostics to the
 | Event | Value / meaning |
 | --- | --- |
 | `fp_uart_write` | Instruction whose UART write failed |
+| `fp_uart_tx_pending` | Instruction blocked because prior transmission did not drain |
+| `fp_uart_not_quiet` | Instruction blocked because a bounded quiet receive period could not be established |
 | `fp_uart_timeout` | Instruction without an acknowledged response before its deadline |
 | `fp_reply_header` | Instruction receiving an invalid packet address or length |
 | `fp_reply_oversize` | Instruction receiving a packet larger than the bounded receive buffer |
 | `fp_reply_checksum` | Instruction receiving an invalid checksum |
 | `fp_reply_shape` | Instruction × 256 + response payload length; incompatible/duplicate reply rejected |
+| `fp_reply_incomplete` | Instruction whose successful ACK was not followed by all required data |
 | `fp_parameters_confirm` | Confirmation byte for the failed parameter read; 255 means no valid confirmation was obtained |
 | `fp_parameters_length` | Parameter bytes collected for that failed read; expected exactly 16 |
 | `auth2_count_failed` | Count prerequisite failed before fresh authorization; negative value means unavailable |
@@ -31,3 +34,5 @@ The revised Mac client distinguishes exact allowlisted AUTH2 failures: unavailab
 Validation: all 153 Mac tests pass, including error-stage routing and suppression of unknown error text. The native bundle and ESP-IDF image build; esptool checksum/hash verification passes. Deployment and live diagnostic readback are pending. The sensor/UART root cause and physical timing acceptance remain unresolved.
 
 Live 0.1.39 activation and readback now pass after enrolled-finger OTA approval and RESET. The failed parameters read receives confirmation 0 and only two bytes (the count-reply shape). The next count request receives and rejects a 17-byte payload (the parameters-reply shape); verification then rejects a three-byte payload. The commands and replies are out of step. A bounded UART quiet/drain boundary and rejection of incomplete inline data replies are being prepared. No enrollment is erased and no stale reply is accepted as a fresh capture.
+
+Firmware 0.1.40 implements that correction: drain pending transmission, require 200 ms without received bytes before a new sensor command, and fail synchronization if the quiet period cannot be established within one second. The sensor mutex remains held. Fixed-size inline ACK data must be complete; ACK-only followed by bounded data packets remains supported. An incomplete successful response fails instead of returning a short result as success. The fresh-presence and request deadlines remain unchanged. Portable C tests cover late count/parameter traffic resetting the quiet timer, continuous traffic failing at the bound, clock regression, rejection of both foreign ACK shapes, valid replies and existing biometric/timing protections. ESP-IDF build and image verification pass. The first 0.1.40 OTA approval rejects before upload; activation and live fix acceptance remain pending. Device logs appear to restart between subsequent probes; whether this is user reset/unplugging or an unexpected restart is not yet established.

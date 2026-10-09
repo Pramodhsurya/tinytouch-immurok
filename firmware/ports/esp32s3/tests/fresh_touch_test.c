@@ -1,5 +1,6 @@
 #include "fresh_touch.h"
 #include "fp_reply_shape.h"
+#include "fp_uart_quiet.h"
 #include <assert.h>
 #include <stdio.h>
 
@@ -16,12 +17,30 @@ int main(void) {
   assert(!fp_reply_shape_valid(0x07, 1, 0, 0, true));
   assert(!fp_reply_shape_valid(0x07, 0, 0, 0, false));
   assert(fp_reply_shape_valid(0x07, 33, 32, 0, false));
+  assert(!fp_reply_shape_valid(0x07, 3, 16, 0, false)); // count ACK at parameter read
+  assert(!fp_reply_shape_valid(0x07, 17, 2, 0, false)); // parameter ACK at count read
+  assert(fp_reply_shape_valid(0x07, 17, 16, 0, false));
+  assert(fp_reply_shape_valid(0x07, 3, 2, 0, false));
   assert(!fp_reply_shape_valid(0x07, 34, 32, 0, false));
   assert(!fp_reply_shape_valid(0x02, 32, 32, 0, false));
   assert(fp_reply_shape_valid(0x08, 32, 32, 0, true));
   assert(!fp_reply_shape_valid(0x08, 32, 32, 1, true));
   assert(!fp_reply_shape_valid(0x02, 1, 0, 0, true));
   assert(!fp_reply_shape_valid(0x02, 1, 1, 2, true));
+  fp_uart_quiet_t quiet = fp_uart_quiet_begin(100);
+  assert(!fp_uart_quiet_observe(&quiet, 299, false));
+  assert(fp_uart_quiet_observe(&quiet, 300, false));
+  quiet = fp_uart_quiet_begin(100);
+  assert(!fp_uart_quiet_observe(&quiet, 250, true)); // late count response drained
+  assert(!fp_uart_quiet_observe(&quiet, 400, true)); // late parameters drained
+  assert(!fp_uart_quiet_observe(&quiet, 599, false));
+  assert(fp_uart_quiet_observe(&quiet, 600, false));
+  quiet = fp_uart_quiet_begin(0);
+  for (unsigned t = 0; t < 1000; t += 100) assert(!fp_uart_quiet_observe(&quiet, t, true));
+  assert(!fp_uart_quiet_observe(&quiet, 1000, false) && quiet.failed);
+  assert(!fp_uart_quiet_observe(&quiet, 1200, false));
+  quiet = fp_uart_quiet_begin(100);
+  assert(!fp_uart_quiet_observe(&quiet, 99, false) && quiet.failed);
   fresh_touch_t s;
   // A matching cached image without a physical touch must never authorize.
   fresh_touch_begin(&s, 0); arm(&s);
