@@ -355,6 +355,8 @@ The resumed physical checks pass: enrolled finger verifies after repair; unplugg
 
 **0.1.41 enrolled-finger hold retest passed:** after the continuous-contact instruction, the user reports completion and requests the next step. Readback confirms two new `auth_fresh_verified` events with 994 ms capture/match duration each, following one additional denial. This verifies positive matching on the current firmware and new block 2 without re-enrollment or a code change. It does not establish the 20-second delayed-touch interval or the cause of the earlier final-check denials. Cancellation/retry, disconnect/reconnect, no-touch/delayed timing, USB output and wizard acceptance remain open; totals remain unchanged.
 
+**0.1.41 cancellation check passed:** the user confirms completion of the requested cancel-without-touch check, with expected cancelled/no-success behavior. A newly started enrolled-finger request after cancellation is the next check. Disconnect/reconnect, untouched/delayed timing, USB output and wizard acceptance remain pending; task statuses and totals remain unchanged.
+
 ### Native ESP32 Mac compatibility work — 2026-10-07
 
 Full Mac app feature parity is the release goal. The connection/status adapter is implemented and the native USB probe passed on the attached ESP32. BLE/USB management, authenticated native operations and transport acceptance criteria remain open; do not check connection items complete on status alone. Implementation dependencies and current evidence: [MAC_ESP32_COMPATIBILITY.md](MAC_ESP32_COMPATIBILITY.md). Existing MAC IDs remain authoritative; no duplicate feature entries were added.

@@ -18,6 +18,8 @@ The retry passes enrolled-finger approval, uploads the complete verified 0.1.41 
 
 **Enrolled-finger positive passed:** after the user's denial report and continuous-hold instruction, the user completes the test and asks to continue. Sequential logs confirm two fresh verified results, each with 994 ms capture/match duration. The new enrollment and final no-match behavior coexist with valid positive matching. No new firmware/enrollment change is needed for this retest. Exact delayed-touch timing, cancellation/retry, disconnect/reconnect, untouched expiry, USB output and wizard acceptance remain pending on 0.1.41.
 
+**Cancellation check passed:** the user confirms completion of the cancel-without-touch check with expected cancellation and no success. A new enrolled-finger request after cancellation is pending next. Other lifecycle/timing/output/wizard acceptance remains open.
+
 ## UART command-boundary correction — October 8, 2026
 
 Firmware **0.1.40 / esp32-uart-sync-1** builds with ESP-IDF 5.3.4. The final image also exposes numeric `reset_reason` in STATUS for restart diagnosis: **669,808 bytes**, **378,768 bytes** free per OTA slot; SHA-256 `8fa48fad0b07ecfd1069e2358c50c43d2c4c5d71ad87b0bf3e32e038c6ef1c5a`. esptool checksum/validation hash pass. Recovery/bypass remain OFF; partition/NVS layout is unchanged. The earlier 669,760-byte build is superseded before deployment.
