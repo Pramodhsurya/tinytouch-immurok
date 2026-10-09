@@ -32,6 +32,8 @@ The retry passes enrolled-finger approval, uploads the complete verified 0.1.41 
 
 **USB-connected lock-screen output passed:** the user confirms enrolled-finger output unlocks the Mac once with USB connected, battery disconnected and native tests finished. This is acceptance of the existing helper/device output path, separate from native fresh-proof verification. Wizard completion using the existing fingerprint and confirmed output is pending next; native privileged/unlock adapters and broader transport acceptance remain open.
 
+**Wizard/window lifecycle acceptance passed:** the user completes the startup wizard using fingerprint 2 and the passed output check, returning to Device without inventory errors; the saved setup serial is verified. The user also confirms normal-window reopening/relaunch without forcing the wizard. MAC-01 is complete under its local app/wizard criterion; USB sleep/wake, login, Bluetooth-only output and wider native feature acceptance remain open.
+
 ## UART command-boundary correction — October 8, 2026
 
 Firmware **0.1.40 / esp32-uart-sync-1** builds with ESP-IDF 5.3.4. The final image also exposes numeric `reset_reason` in STATUS for restart diagnosis: **669,808 bytes**, **378,768 bytes** free per OTA slot; SHA-256 `8fa48fad0b07ecfd1069e2358c50c43d2c4c5d71ad87b0bf3e32e038c6ef1c5a`. esptool checksum/validation hash pass. Recovery/bypass remain OFF; partition/NVS layout is unchanged. The earlier 669,760-byte build is superseded before deployment.
