@@ -373,6 +373,8 @@ The resumed physical checks pass: enrolled finger verifies after repair; unplugg
 
 **Completed-setup window lifecycle passed:** the user confirms the requested Dock/menu-bar reopening and quit/relaunch return the normal window without forcing the completed startup wizard. This passes the manual window lifecycle case after MAC-01 completion. USB sleep/wake and fresh proof are next; login, Bluetooth-only output, exact delayed timing and broader native feature acceptance remain open. Canonical totals stay 13 Completed, 16 In progress and 108 Yet to be done.
 
+**USB sleep/wake proof passed:** the user confirms the device reconnects and a new enrolled-finger request verifies after Mac sleep/wake with USB connected and Device refresh. This passes the manual USB proof/reconnect case; output duplication and BLE sleep/wake remain separate acceptance. Launch-at-login enable/login and subsequent disable/login checks are next. MAC-23 and broader connection/delivery rows remain In progress; totals stay 13 Completed, 16 In progress and 108 Yet to be done.
+
 ### Native ESP32 Mac compatibility work — 2026-10-07
 
 Full Mac app feature parity is the release goal. The connection/status adapter is implemented and the native USB probe passed on the attached ESP32. BLE/USB management, authenticated native operations and transport acceptance criteria remain open; do not check connection items complete on status alone. Implementation dependencies and current evidence: [MAC_ESP32_COMPATIBILITY.md](MAC_ESP32_COMPATIBILITY.md). Existing MAC IDs remain authoritative; no duplicate feature entries were added.

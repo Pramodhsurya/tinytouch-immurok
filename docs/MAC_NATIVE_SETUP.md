@@ -32,6 +32,8 @@ The user subsequently confirms Finish setup returns to Device without an invento
 
 Completed-setup window lifecycle now passes: the user confirms the requested reopening/relaunch checks return the normal window without forcing the startup wizard. USB sleep/wake, login launch and production packaging/recovery remain separate acceptance cases.
 
+USB sleep/wake readback/proof now passes as confirmed by the user after Device refresh and a fresh enrolled-finger request. Launch-at-login enable/login and disable/login are the next physical settings checks. A proof test does not separately establish helper-output duplication behavior or BLE wake recovery.
+
 Features shows native Bluetooth/Accessibility permission status and whether each password helper is running. The current native management functions do not require Accessibility. Bluetooth identity checking requires native Bluetooth permission; helper permissions are separate. A running helper does not prove its credentials are valid, so test fingerprint output separately.
 
 To start the native app after login, enable **Launch tinyTouch Native at login** in Features. If macOS requires approval, use the displayed Login Items settings button and approve it yourself. Turn the toggle off to unregister the native app. This setting is separate from the password helpers. Login/restart acceptance is still pending.
