@@ -2,11 +2,13 @@
 
 ## UART command-boundary correction — October 8, 2026
 
-Firmware **0.1.40 / esp32-uart-sync-1** builds with ESP-IDF 5.3.4. Image size **669,760 bytes**, **378,816 bytes** free per OTA slot; SHA-256 `b1d37b99fa679300267fed3af0688c875c46c9e2349c6154e7626543a8ddce1b`. esptool checksum/validation hash pass. Recovery/bypass remain OFF; partition/NVS layout is unchanged.
+Firmware **0.1.40 / esp32-uart-sync-1** builds with ESP-IDF 5.3.4. The final image also exposes numeric `reset_reason` in STATUS for restart diagnosis: **669,808 bytes**, **378,768 bytes** free per OTA slot; SHA-256 `8fa48fad0b07ecfd1069e2358c50c43d2c4c5d71ad87b0bf3e32e038c6ef1c5a`. esptool checksum/validation hash pass. Recovery/bypass remain OFF; partition/NVS layout is unchanged. The earlier 669,760-byte build is superseded before deployment.
 
 The 0.1.39 diagnostic readback shows mismatched parameter/count/verification reply lengths consistent with stale cross-command replies. The correction holds the sensor mutex while draining prior transmission and requiring 200 ms without received bytes, with a one-second synchronization limit. No new command is sent if synchronization fails. Fixed-size inline data ACKs must contain exactly the requested length; ACK-only plus data packets is still supported. Missing required data is rejected. Fresh-presence/HMAC gates, 30-second prompt wait and legacy/request deadlines remain unchanged. UndefinedBehaviorSanitizer C regressions pass for stale reply shapes, quiet reset after late bytes, continuous traffic/clock regression and existing fresh-touch boundaries; the unchanged native app has 153 passing tests.
 
 The first OTA approval fails with no match and writes no image data. Current runtime remains 0.1.39, sensor ready, five templates, one host and idle OTA. Subsequent logs contain new boot sequences; user reset/unplugging versus unexpected restart is not yet established. Upload/activation, full retained inventory and physical biometric/output/wizard acceptance remain pending. No recovery image, erase or authorization bypass is used.
+
+The user confirms only touching the sensor during those failed attempts. A subsequent update uses the existing foreground helper lease and standard protected AUTH/OTA commands in one continuous CDC session; it does not read Keychain or change authorization. It fails before a touch prompt and the same-session diagnostic read reports count-shaped replies rejected during sensor verification, with no fresh-authentication stage event. The cause of earlier restart sequences remains unresolved; the last same-session log includes continued uptime around 341 seconds. A cold restart using USB alone, with the removable battery connector disconnected, is requested to clear both MCU/sensor power and separate battery/power conditions before another protected upload. No soldered lead removal is requested.
 
 ## Sensor failure diagnostics — October 8, 2026
 

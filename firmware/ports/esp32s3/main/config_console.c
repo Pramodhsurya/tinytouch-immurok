@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "esp_timer.h"
+#include "esp_system.h"
 #include "esp_mac.h"
 #include "esp_random.h"
 #include "esp_bt.h"
@@ -246,7 +247,7 @@ static void status(void) {
   bool sensor_is_ready = fingerprint_is_ready();
   snprintf(line, sizeof(line),
            "OK STATUS protocol=6 firmware=%s build=%s mode=%s piv=%s sensor=%s fingerprints=%d "
-           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1 config_values=1 custom_config=1 auth_proof=" AUTH2_CAPABILITY " auth_fresh=" AUTH2_CAPABILITY " auth_touch_ms=30000 touch_present=%u "
+           "hosts=%u ota=%s led=%s led_only_auth=1 finger_groups=1 config_values=1 custom_config=1 auth_proof=" AUTH2_CAPABILITY " auth_fresh=" AUTH2_CAPABILITY " auth_touch_ms=30000 touch_present=%u reset_reason=%u "
            "typing_delay_ms=%u submit_enter=%u touch_cooldown_ms=%u "
            "led_idle_color=%u led_success_color=%u led_failure_color=%u led_idle_end_color=%u "
            "led_idle_effect=%u led_idle_cycles=%u led_feedback_ms=%u piv_auto_type=%u "
@@ -257,6 +258,7 @@ static void status(void) {
            (unsigned)device_config_hid_host_count(), firmware_update_staged() ? "staged" :
            (firmware_update_active() ? "writing" : "idle"), device_config_led_mode_name(),
            fingerprint_present_hint() ? 1u : 0u,
+           (unsigned)esp_reset_reason(),
            (unsigned)device_config_typing_delay_ms(), device_config_submit_enter() ? 1u : 0u,
            (unsigned)device_config_touch_cooldown_ms(), preferences.led_idle_color,
            preferences.led_success_color, preferences.led_failure_color, preferences.led_idle_end_color,
