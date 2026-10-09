@@ -42,7 +42,7 @@ Mac acceptance includes USB and BLE, pairing/enrollment, host management (two Ma
 | Password-manager and custom app unlock | MAC-14/15, LIN-10 |
 | Agent command approval and environment injection | MAC-21/22, LIN-14, AGENT-01–AGENT-04 |
 | Updates, recovery and release delivery | OTA-01–OTA-07; app uploaders: MAC-26, WIN-10, LIN-15 |
-| Battery operation, power saving, controls and tamper | FW-29–FW-34, HW-01–HW-08 |
+| Battery operation, USB-C charging, percentage display, charging-complete alerts, power saving, controls and tamper | FW-29–FW-34, HW-01–HW-08; MAC-05/23/31; [charging requirements](BATTERY_CHARGING_REQUIREMENTS.md) |
 | Setup, diagnostics, translations and installers | Platform settings/packaging rows; DOC-04 and ROOT-05/06 |
 | Public project, documentation and website | ROOT/DOC, WEB and ORG rows |
 
@@ -114,7 +114,7 @@ Sources: [Firmware README](https://github.com/immurok/firmware/blob/main/README.
 | [ ] | Yet to be done | FW-27 | `APP/totp_core.c` | Fingerprint-gated six-digit SHA-1 TOTP using host-supplied time | P4 | RFC 6238 vectors, time bounds and binary-secret encoding verified |
 | [ ] | Yet to be done | FW-28 | `APP API secrets` | Fingerprint-gated API secret reads and masked metadata responses | P4 | Unauthenticated reads expose no secret; gate binds intended record |
 | [ ] | Yet to be done | FW-29 | `APP reset / tamper` | Authenticated software reset and deliberate physical long-button reset | P6 | Templates, keys and bonds cleared; interrupted reset resumes safely |
-| [ ] | Yet to be done | FW-30 | `APP battery / Profile` | Measured raw battery voltage and Battery Service notifications | P8 | ADC calibrated; no placeholder percentage shown as measured charge |
+| [ ] | Yet to be done | FW-30 | `APP battery / Profile` | Measured battery voltage, calibrated percentage and USB/BLE battery/charging-status telemetry | P8 — after HW-04 | ADC calibrated; charging/full status backed by available charger telemetry; updates work while charging from an external USB-C charger over BLE; unknown data stays unavailable |
 | [ ] | Yet to be done | FW-31 | `APP power / GPIO` | Sensor rail gating, touch/button wake and UART sleep configuration | P8 | Hardware supports control; sensor wakes/matches reliably after sleep |
 | [ ] | Yet to be done | FW-32 | `APP advertising / low power` | Low-battery hysteresis, advertising phases and reconnect after wake | P8 | Measured power and threshold tests; recovery works while charging |
 | [ ] | Yet to be done | FW-33 | `APP indicators` | Pair/enroll/auth/error/low-battery/reset LED feedback | P8 | Board-specific indicators match documented states |
@@ -132,7 +132,7 @@ Sources: [Mac README](https://github.com/immurok/app-macos/blob/main/README.md),
 | [ ] | In progress | MAC-02 | `Sources/BLEManager.swift` | Discover tinyTouch, pair, verify and reconnect over compatible BLE protocol | P2 | Native app handles cold start, disconnect, sleep/wake and wrong device |
 | [ ] | In progress | MAC-03 | `Sources transport layer` | Add USB companion transport and transport/device selector | P2 | Same management commands work over USB and BLE without duplicate action |
 | [ ] | In progress | MAC-04 | `Sources/ImmurokSecurity.swift` | Implement negotiated crypto/freshness client and migrate Keychain identity | P2 | Firmware fixtures verified; existing saved password/key access preserved |
-| [ ] | In progress | MAC-05 | `Sources device views` | Show connection, host slot, battery, firmware and readiness status | P2 | Capability-driven display; unknown battery distinguished from measured level |
+| [ ] | In progress | MAC-05 | `Sources device views` | Show connection, host slot, battery, firmware and readiness status; offer an app battery-percentage display option | P2; battery acceptance after HW-04/FW-30 in P8 | Capability-driven display; measured percentage and charging state update over USB/BLE; display preference persists via MAC-23; unknown or stale battery distinguished from measured level |
 | [ ] | In progress | MAC-06 | `Sources/FingerprintView.swift` | Enroll, cancel, delete and rename logical fingerprints | P2 | UI follows ZW111 progress/capacity and receives accurate final state |
 | [ ] | Yet to be done | MAC-07 | `Sources/AppDelegate.swift` | Native app screen unlock and wake/reconnect retry flow | P2 | Lock-screen unlock over BLE/USB; pending match cannot duplicate typing |
 | [ ] | In progress | MAC-08 | `Sources/DualHostView.swift` | First/second-host guidance, slot status and authorized unbinding | P3 | Two-host workflow tested with ESP32, including lost-host removal |
@@ -158,6 +158,7 @@ Sources: [Mac README](https://github.com/immurok/app-macos/blob/main/README.md),
 | [ ] | In progress | MAC-28 | `packaging / app-macos` | Deliver a standalone tinyTouch.app for this Mac, with its companion CLI and own application identity | P6 | App runs independently of development terminals; login launch, permissions and Keychain migration tested |
 | [ ] | Yet to be done | MAC-29 | `Tests / device acceptance` | Complete the Mac release gate across all supported features, transports and negative cases | P6 | Every supported Mac feature has recorded automated or manual acceptance evidence; remaining hardware limitations explicit |
 | [x] | Completed | MAC-30 | `Package.swift / Tests` | Build imported Mac app/CLI and run existing host-side tests before ESP32 adaptation | P0 | Swift build and all existing test suites pass; does not imply device/native-app compatibility |
+| [ ] | Yet to be done | MAC-31 | `Sources battery / notifications` | Optional Mac charging-complete notification with battery percentage, including BLE-connected charging from an external USB-C charger | P8 — after HW-04/FW-30 and MAC-05 | One alert per verified charging-to-full cycle for the connected device; includes current measured percentage; permission/disable, stale or unknown telemetry and reconnect duplicate cases tested; settings persist via MAC-23 |
 
 ### app-win
 
@@ -222,9 +223,9 @@ Sources: [Hardware README](https://github.com/immurok/hardware/blob/main/README.
 | Done | Status | ID | Subfolder / area | Feature or deliverable | Implementation order | Completion criterion |
 | --- | --- | --- | --- | --- | --- | --- |
 | [ ] | Yet to be done | HW-01 | `ESP32 + ZW111 wiring` | Confirm pin map and document direct-solder assembly for current board | P0 | Photo/wiring review, continuity and voltage checks recorded before final assembly |
-| [ ] | Yet to be done | HW-02 | `battery / charging` | Verify selected cell protection, polarity and charge-current compatibility | P0 | Board/cell specifications and measured power paths support this assembly |
+| [ ] | Yet to be done | HW-02 | `battery / charging` | Verify selected cell protection, polarity, charge-current compatibility and actual USB-C battery charging | P0 | Board/cell specifications and measured power paths support this assembly; verify charge behavior, safe temperature and termination with Mac USB-C and a compatible external charger; powering the sensor alone does not prove charging |
 | [ ] | Yet to be done | HW-03 | `sensor rail` | Add suitable sensor power switch while keeping touch wake available | P8 | Rail control and leakage measured; UART cannot back-power sensor |
-| [ ] | Yet to be done | HW-04 | `battery measurement` | Add ADC divider/protection and calibrated battery reporting | P8 | Full-charge voltage safe at GPIO; firmware agrees with multimeter |
+| [ ] | Yet to be done | HW-04 | `battery measurement` | Add ADC divider/protection, calibrated percentage reporting and a verified charger-status sensing path where supported | P8 | Full-charge voltage safe at GPIO; firmware agrees with multimeter; validate percentage across the selected cell's usable range and charging/full detection against actual charger behavior; document unsupported states |
 | [ ] | Yet to be done | HW-05 | `controls / indicators` | Map physical pair/reset button and LED states without boot-pin conflicts | P8 | Button timing and boot/recovery behavior tested on assembled board |
 | [ ] | Yet to be done | HW-06 | `tamper / power bypass` | Case switch, always-available tamper power path and interrupted-wipe design | P8 | Opening powered/off device produces intended response; current hardware lacks this |
 | [ ] | Yet to be done | HW-07 | `power / radio` | Measure sleep, active, charging and BLE reconnect performance | P8 | Publish measured ESP32 runtime; do not inherit CH592 month-long standby claim |
@@ -386,3 +387,5 @@ October 7 startup/interface update: the ESP32-specific startup wizard and origin
 October 7 host-management stage: MAC-08 now has a native registered-computer panel backed by the signed tinyTouch CLI, live readback, bounded host-ID parsing, fingerprint-approved removal, fresh-inventory last-host protection and post-removal verification. Live read confirmed one of eight hosts. 123 Mac tests pass. Second-host registration/removal remains untested, so MAC-08 stays In progress. MAC-15 is In progress because original local automation editing/import/export is available; target/runtime acceptance is pending. A later live inventory confirmed slot 1 has four views and original slot 10 still has one; cancellation/deletion acceptance for MAC-06 remains open.
 
 October 7 native Mac settings/delivery stage: Features now provides explicit SMAppService launch-at-login controls, native permission status, wizard access and read-only USB/Bluetooth helper health. Existing privileged feature controls remain inactive. 128 tests pass; actual launchctl health checks confirm both helpers running. A per-user installer verifies the app and bundled signed CLI, retains the previous native app on updates, and installs separately from the password helper. MAC-23/27/28 and DOC-04 stay In progress pending real login/restart, update/recovery, production signing and full setup acceptance. See MAC_NATIVE_SETUP.md for current installation and troubleshooting.
+
+October 8 battery planning: expanded HW-02/HW-04/FW-30/MAC-05 and added MAC-31 for an optional charging-complete alert with measured percentage, including Bluetooth connection while charging from an external USB-C charger. See [battery charging requirements](BATTERY_CHARGING_REQUIREMENTS.md). These are pending requirements, not completed charging tests. Canonical totals are **13 Completed, 16 In progress, 109 Yet to be done (138 unique tasks)**. Launch-at-login physical acceptance remains pending.
