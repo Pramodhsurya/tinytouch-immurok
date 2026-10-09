@@ -16,6 +16,8 @@ The user confirms only touching the sensor during those failed attempts. A subse
 
 **0.1.40 cold-start inventory passed:** following the user's full USB-only cold restart, sequential background status and native management reads pass: sensor ready, five templates, logical slots 1:4 and 10:1, eight free blocks, 14 settings and one registered host. Bluetooth retains AUTO, encryption and keyboard/helper readiness. The current volatile log shows successful startup/count probing without sensor reply errors. Cold-start inventory is verified; warm-reset recovery and physical timing/biometric/output/wizard acceptance remain open. The native app is reopened for testing.
 
+**Fresh inventory created at user request:** protected enrollment of empty block 2 passes all four views and readback. Protected deletion of old blocks 1 and 10 then passes, preserving the complete new fingerprint throughout. Final native management probe verifies sensor ready, four templates, only block 2:4, nine free blocks, 14 settings and one host. No factory reset or host/settings/credential clearing is performed. These live CLI enrollment/deletion checks pass; native timing, UI cancellation/rename, USB output and wizard acceptance remain pending with the newly enrolled finger.
+
 ## Sensor failure diagnostics — October 8, 2026
 
 Firmware **0.1.39 / esp32-sensor-diagnostics-1** builds with ESP-IDF 5.3.4. Image size **669,472 bytes**, **379,104 bytes** free per OTA slot; SHA-256 `4aaf0d45b1efb6e2404224ca29feff087234ea6d9062a11a1500822dbc9422b6`. esptool checksum and validation hash pass. Recovery/bypass remain OFF and the partition/NVS layout is unchanged.
