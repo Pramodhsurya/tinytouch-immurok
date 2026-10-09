@@ -347,6 +347,8 @@ The resumed physical checks pass: enrolled finger verifies after repair; unplugg
 
 **0.1.41 upload verified:** an initial approval times out without a new touch; the clearer foreground-readiness retry passes fingerprint approval, complete upload, verification and staging. A full USB-only power cycle is requested for activation. Prompt rejection, positive/no-touch retests and inventory on the new firmware remain pending; all task statuses and totals stay unchanged.
 
+**0.1.41 activation and readback passed:** after the USB-only restart, runtime confirms 0.1.41 / esp32-fast-reject-1 with fresh-proof support and the 30-second touch window. Full management readback verifies only the new block 2:4, nine free blocks, 14 settings and one host. AUTO/encrypted Bluetooth and keyboard/helper readiness remain intact. The native app is reopened for prompt wrong-finger rejection; live latency and subsequent authentication/output/wizard acceptance remain pending. Task statuses and totals are unchanged.
+
 ### Native ESP32 Mac compatibility work — 2026-10-07
 
 Full Mac app feature parity is the release goal. The connection/status adapter is implemented and the native USB probe passed on the attached ESP32. BLE/USB management, authenticated native operations and transport acceptance criteria remain open; do not check connection items complete on status alone. Implementation dependencies and current evidence: [MAC_ESP32_COMPATIBILITY.md](MAC_ESP32_COMPATIBILITY.md). Existing MAC IDs remain authoritative; no duplicate feature entries were added.

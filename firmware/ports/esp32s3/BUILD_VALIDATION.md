@@ -12,6 +12,8 @@ The first protected upload attempt reaches the legacy approval prompt but times 
 
 The retry passes enrolled-finger approval, uploads the complete verified 0.1.41 image, confirms staging verification and exits 0. A full USB-only power cycle is requested for activation with a clean sensor start, keeping the removable battery disconnected. Activation/inventory and live prompt rejection are pending.
 
+**Activation/inventory passed:** after the user confirms the USB-only restart, STATUS verifies 0.1.41 / esp32-fast-reject-1, fresh-proof capabilities, `auth_touch_ms=30000`, idle OTA and sensor ready with four templates. The native management probe verifies only block 2:4, nine free blocks, 14 settings and one registered host. AUTO mode, encrypted Bluetooth, keyboard and helper readiness are retained. Startup/count logs contain no sensor reply errors; one Bluetooth security reconnect is followed by successful encryption and ready readback. The updated native app is reopened for the unenrolled-finger rejection test. Live latency, subsequent positive/no-touch/cancellation/disconnect tests, USB output and wizard acceptance remain pending.
+
 ## UART command-boundary correction — October 8, 2026
 
 Firmware **0.1.40 / esp32-uart-sync-1** builds with ESP-IDF 5.3.4. The final image also exposes numeric `reset_reason` in STATUS for restart diagnosis: **669,808 bytes**, **378,768 bytes** free per OTA slot; SHA-256 `8fa48fad0b07ecfd1069e2358c50c43d2c4c5d71ad87b0bf3e32e038c6ef1c5a`. esptool checksum/validation hash pass. Recovery/bypass remain OFF; partition/NVS layout is unchanged. The earlier 669,760-byte build is superseded before deployment.
