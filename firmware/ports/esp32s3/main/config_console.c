@@ -577,7 +577,8 @@ static void handle_command(void) {
   if (strcmp(command, "PING") == 0) reply("PONG 6");
   else if (strcmp(command, "STATUS") == 0) status();
   else if (strcmp(command, "BT STATUS") == 0) {
-    char line[192]; bluetooth_transport_status(line,sizeof(line)); reply(line);
+    // Include VBUS/transport fields even when security error codes are wide.
+    char line[256]; bluetooth_transport_status(line,sizeof(line)); reply(line);
   }
   else if (strcmp(command, "BT PAIR") == 0) {
     if (require_authorized()) { bluetooth_transport_allow_pairing(); reply("OK BT PAIR seconds=180"); }
