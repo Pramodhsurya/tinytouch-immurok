@@ -186,7 +186,9 @@ static void auth2_begin(const char *args) {
     reply("ERR AUTH2 arguments"); return;
   }
   uint8_t key[32] = {0}, mac[6]; char serial[16], nonce[65], tag[65], line[200];
-  if (fingerprint_count() <= 0 || !auth2_host(host, key) ||
+  int count = fingerprint_count();
+  if (count <= 0) touch_pin_hid_log_event("auth2_count_failed", count);
+  if (count <= 0 || !auth2_host(host, key) ||
       esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK || !tud_cdc_connected()) {
     wipe(key, sizeof(key)); reply("ERR AUTH2 unavailable"); return;
   }
@@ -214,7 +216,9 @@ static void auth2_prove(const char *args) {
     auth_proof_clear(&auth2); reply("ERR AUTH2 rejected"); return;
   }
   strcpy(context, auth2.context);
-  bool matched = fingerprint_count() > 0 && fingerprint_authorize_fresh(touch_prompt, auth2_connection_lost);
+  int count = fingerprint_count();
+  if (count <= 0) touch_pin_hid_log_event("auth2_count_failed", count);
+  bool matched = count > 0 && fingerprint_authorize_fresh(touch_prompt, auth2_connection_lost);
   matched = matched && !auth2_connection_lost();
   bool ok = auth_proof_finish(&auth2, matched, esp_timer_get_time() / 1000, auth2_hmac, tag);
   if (!ok) { reply("ERR AUTH2 no_match_or_expired"); return; }

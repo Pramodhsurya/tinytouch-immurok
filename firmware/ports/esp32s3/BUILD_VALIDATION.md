@@ -1,5 +1,13 @@
 # ESP32 firmware build validation
 
+## Sensor failure diagnostics — October 8, 2026
+
+Firmware **0.1.39 / esp32-sensor-diagnostics-1** builds with ESP-IDF 5.3.4. Image size **669,472 bytes**, **379,104 bytes** free per OTA slot; SHA-256 `4aaf0d45b1efb6e2404224ca29feff087234ea6d9062a11a1500822dbc9422b6`. esptool checksum and validation hash pass. Recovery/bypass remain OFF and the partition/NVS layout is unchanged.
+
+It adds whitelisted event names and numeric sensor-command/packet-length/confirmation/duration diagnostics to the existing volatile log. Parameter-read failures and fresh-authentication stages can now be distinguished without logging UART payloads, fingerprints, pairing keys, tags or passwords. The presence gate, packet rejection rules, 30-second prompt window and deadlines are unchanged. The revised native app distinguishes start/handshake/match errors using an exact allowlist; unknown error text is never reflected. All 153 Mac tests pass, including safe error routing. The new native bundle builds and installs with its previous bundle retained. Firmware upload/activation and live diagnosis remain pending; this build is diagnostic work, not a claimed fix or physical acceptance. See [SENSOR_DIAGNOSTICS.md](../../../docs/SENSOR_DIAGNOSTICS.md).
+
+**Deployment and live diagnosis:** initial approval failed with no match; the next attempt reported sensor unavailable before upload. After the user's explicit retry, status returned sensor ready/count five, and fingerprint approval, complete upload and image verification passed. After RESET, runtime confirms 0.1.39 / esp32-sensor-diagnostics-1, sensor ready, five templates and one host. Inventory still fails. The log records parameter confirmation 0 with only two data bytes; the subsequent count request rejects payload length 17 (`fp_reply_shape=7441`, instruction 29), and verification rejects payload length three (`4867`, instruction 19). This demonstrates cross-command stale replies rather than an empty fingerprint database. A UART synchronization/strict inline-length correction is being prepared; physical authentication and wizard acceptance remain unverified.
+
 ## Thirty-second native touch window — October 8, 2026
 
 Firmware **0.1.38 / esp32-touch-window-1** builds with ESP-IDF 5.3.4. Image size **668,816 bytes**, **379,760 bytes** free per OTA slot; SHA-256 `a2401c3773023100498c7f05207dc7e384e84b63dd28b907e7db424c9d00d614`. esptool checksum and validation hash pass. Recovery and fingerprint bypass remain OFF; partition/NVS layout and the fresh-proof HMAC domain are unchanged.

@@ -2,6 +2,7 @@
 #include "device_config.h"
 #include "fresh_touch.h"
 #include "fp_reply_shape.h"
+#include "touch_pin_hid.h"
 
 #include <string.h>
 
@@ -127,11 +128,13 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
 
   if (uart_write_bytes(FP_UART, header, sizeof(header)) != sizeof(header) ||
       uart_write_bytes(FP_UART, payload, payload_len) != (int)payload_len) {
+    touch_pin_hid_log_event("fp_uart_write", instruction);
     note_transport_failure();
     return false;
   }
   uint8_t sum_bytes[] = {(uint8_t)(sum >> 8), (uint8_t)(sum & 0xff)};
   if (uart_write_bytes(FP_UART, sum_bytes, sizeof(sum_bytes)) != sizeof(sum_bytes)) {
+    touch_pin_hid_log_event("fp_uart_write", instruction);
     note_transport_failure();
     return false;
   }
@@ -162,11 +165,13 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
       size_t expected = 9 + resp_len;
       if (response[2] != 0xff || response[3] != 0xff ||
           response[4] != 0xff || response[5] != 0xff || resp_len < 2) {
+        touch_pin_hid_log_event("fp_reply_header", instruction);
         ESP_LOGW(TAG, "fingerprint response has invalid address/length");
         note_transport_failure();
         return false;
       }
       if (expected > sizeof(response)) {
+        touch_pin_hid_log_event("fp_reply_oversize", instruction);
         note_transport_failure();
         return false;
       }
@@ -174,12 +179,15 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
 
       size_t response_payload_len = resp_len - 2;
       if (!fp_response_checksum_valid(response, expected)) {
+        touch_pin_hid_log_event("fp_reply_checksum", instruction);
         ESP_LOGW(TAG, "fingerprint response checksum mismatch");
         note_transport_failure();
         return false;
       }
 
       if (!fp_reply_shape_valid(packet_id, response_payload_len, data_cap, out_len, saw_ack)) {
+        // Instruction and packet length only; never record UART payloads.
+        touch_pin_hid_log_event("fp_reply_shape", instruction * 256 + response_payload_len);
         note_transport_failure(); return false;
       }
 
@@ -230,7 +238,10 @@ static bool fp_command(uint8_t instruction, const uint8_t *params, size_t param_
     }
   }
 
-  if (!saw_ack) note_transport_failure();
+  if (!saw_ack) {
+    touch_pin_hid_log_event("fp_uart_timeout", instruction);
+    note_transport_failure();
+  }
   return saw_ack;
 }
 
@@ -695,7 +706,10 @@ static bool authorize_fresh_window(void (*prompt)(void), bool (*cancelled)(void)
   // the UART mutex across this transaction so LED/HID traffic cannot interleave.
   prompted_authorization_active = true;
   bool ok = false;
-  if (!fp_take(1000)) goto done;
+  if (!fp_take(1000)) {
+    touch_pin_hid_log_event("auth_sensor_busy", 0);
+    goto done;
+  }
   uart_wait_tx_done(FP_UART, pdMS_TO_TICKS(200));
   // Quarantine pending responses from a previous LED or sensor command.
   TickType_t drained_at = xTaskGetTickCount();
@@ -710,26 +724,41 @@ static bool authorize_fresh_window(void (*prompt)(void), bool (*cancelled)(void)
   else fresh_touch_begin(&presence, esp_timer_get_time() / 1000);
   bool prompted = false;
   while (presence.phase != FRESH_CONSUMED) {
-    if (cancelled && cancelled()) { fresh_touch_cancel(&presence); break; }
+    if (cancelled && cancelled()) {
+      touch_pin_hid_log_event("auth_cancelled", 0);
+      fresh_touch_cancel(&presence); break;
+    }
     bool present = finger_present(), absent = false;
     if (presence.phase == FRESH_WAIT_LIFT && !present) {
       uint8_t confirm = 0xff;
       absent = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350) && confirm == 0x02;
       present = finger_present();
     }
-    bool capture = fresh_touch_observe(&presence, esp_timer_get_time() / 1000, present, absent);
+    fresh_touch_phase_t before = presence.phase;
+    uint64_t observed_at = esp_timer_get_time() / 1000;
+    bool capture = fresh_touch_observe(&presence, observed_at, present, absent);
+    if (presence.phase == FRESH_CONSUMED) {
+      touch_pin_hid_log_event(before == FRESH_WAIT_LIFT ? "auth_arm_timeout" : "auth_touch_timeout",
+                             (int)(observed_at - (prompted ? presence.prompted_at : presence.started)));
+    }
     if (!prompted && presence.phase == FRESH_WAIT_TOUCH) {
-      prompted = true; if (prompt) prompt();
+      prompted = true;
+      touch_pin_hid_log_event("auth_touch_prompt", extended ? 30000 : 7000);
+      if (prompt) prompt();
     }
     if (capture) {
       uint8_t confirm = 0xff;
       bool acquired = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350) && confirm == 0x00;
+      if (!acquired) touch_pin_hid_log_event("auth_capture_failed", confirm);
       bool matched = false;
       if (acquired && finger_present() && !(cancelled && cancelled()))
         matched = fingerprint_match_captured(true).slot != 0;
+      if (acquired && !matched) touch_pin_hid_log_event("auth_match_failed", 0);
       ok = fresh_touch_finish(&presence, esp_timer_get_time() / 1000,
                               finger_present(), acquired, matched);
       ok = ok && !(cancelled && cancelled());
+      touch_pin_hid_log_event(ok ? "auth_fresh_verified" : "auth_fresh_failed",
+                             (int)(esp_timer_get_time() / 1000 - presence.capture_started));
       break;
     }
     vTaskDelay(pdMS_TO_TICKS(40));
@@ -858,7 +887,11 @@ static bool inventory_locked(fingerprint_inventory_t *inventory) {
   uint8_t confirm = 0xff, parameters[16];
   size_t length = sizeof(parameters);
   if (!fp_command(0x0f, NULL, 0, &confirm, parameters, &length, 1000) ||
-      confirm != 0 || length != sizeof(parameters)) return false;
+      confirm != 0 || length != sizeof(parameters)) {
+    touch_pin_hid_log_event("fp_parameters_confirm", confirm);
+    touch_pin_hid_log_event("fp_parameters_length", length);
+    return false;
+  }
   unsigned capacity = ((unsigned)parameters[4] << 8) | parameters[5];
   inventory_failure = "capacity";
   if (capacity == 0 || capacity > 256) return false;

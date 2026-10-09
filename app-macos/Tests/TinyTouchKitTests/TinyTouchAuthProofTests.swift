@@ -2,6 +2,17 @@ import XCTest
 @testable import TinyTouchKit
 
 final class TinyTouchAuthProofTests: XCTestCase {
+    func testDeviceErrorsDistinguishStartHandshakeAndMatchWithoutReflectingWireText() {
+        if case .deviceUnavailable = TinyTouchAuthError.deviceError("ERR AUTH2 unavailable") {} else { XCTFail("start stage") }
+        if case .handshakeRejected = TinyTouchAuthError.deviceError("ERR AUTH2 rejected") {} else { XCTFail("handshake stage") }
+        if case .matchUnverified = TinyTouchAuthError.deviceError("ERR AUTH2 no_match_or_expired") {} else { XCTFail("match stage") }
+        for line in ["ERR AUTH2 unavailable secret=private", "ERR AUTH2 custom private", "ERR OTHER private"] {
+            let error = TinyTouchAuthError.deviceError(line)
+            if case .rejected = error {} else { XCTFail("unknown error") }
+            XCTAssertFalse(error.localizedDescription.contains("private"))
+            XCTAssertFalse(error.localizedDescription.contains("secret="))
+        }
+    }
     private let challengeTag = "85e84657b21e5feb755486598187d8d83972bacacba422a4518f2c6c70962cb8"
     private let matchTag = "0d2c9f05bc9dfd1d62f8e56837733dc896c850dff35711f8cfe3f68d6ecd5508"
     private var client: String { String(repeating: "a1", count: 32) }

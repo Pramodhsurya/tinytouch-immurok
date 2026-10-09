@@ -4,11 +4,15 @@ import Security
 
 public enum TinyTouchAuthError: Error, LocalizedError {
     case invalidResponse, rejected, expired, unsupported, keychain, busy, lease, cancelled, disconnected
+    case deviceUnavailable, handshakeRejected, matchUnverified
     case transport(stage: String, code: Int32)
     public var errorDescription: String? {
         switch self {
         case .invalidResponse: return "The authentication response failed verification."
         case .rejected: return "Fingerprint authentication was rejected. Lift your finger and try again."
+        case .deviceUnavailable: return "The device could not start fingerprint authentication. Sensor or registered-host checks failed. Refresh the device and try again."
+        case .handshakeRejected: return "The device rejected the authentication handshake before fingerprint verification. Refresh the device and try again."
+        case .matchUnverified: return "No fresh fingerprint match was verified. The sensor check failed or the touch window expired. Lift your finger and start a new test."
         case .expired: return "This authentication request expired. Start a new request."
         case .unsupported: return "Update the ESP32 to firmware with authenticated request support first."
         case .keychain: return "The pairing key could not be read. Allow access in the Mac Keychain prompt, or check the existing tinyTouch pairing."
@@ -17,6 +21,15 @@ public enum TinyTouchAuthError: Error, LocalizedError {
         case .cancelled: return "Authentication cancelled."
         case .disconnected: return "USB disconnected during this authentication request. Reconnect the device and start a new test."
         case .transport(let stage, let code): return "USB \(stage) failed (system error \(code)). Reconnect the device and try again."
+        }
+    }
+    // Exact allowlist: never display raw device error text or response tags.
+    static func deviceError(_ line: String) -> Self {
+        switch line {
+        case "ERR AUTH2 unavailable": return .deviceUnavailable
+        case "ERR AUTH2 rejected": return .handshakeRejected
+        case "ERR AUTH2 no_match_or_expired": return .matchUnverified
+        default: return .rejected
         }
     }
 }
