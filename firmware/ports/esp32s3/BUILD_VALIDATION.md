@@ -8,6 +8,10 @@ The user reports that an unenrolled finger does not produce an immediate visible
 
 All **153 Mac tests** pass, including exact new-error routing and suppression of unknown wire text. Portable C UndefinedBehaviorSanitizer regressions pass for terminal no-match/no fallback, failed response classification, request consumption after mismatch and existing fresh-presence/quiet/timing protections. The new native app builds, verifies and installs with the prior bundle retained. Firmware deployment and live prompt-rejection acceptance are pending. Existing new fingerprint block 2 and host/settings are preserved.
 
+The first protected upload attempt reaches the legacy approval prompt but times out without a new debounced touch (5,597 ms after arming). The same-session log shows a valid ordinary match before that authorization prompt; no image data uploads. The retry holds the foreground lease and adds a readiness Return step plus an explicit APPROVE NOW message at the actual device prompt. Authorization/deadlines remain unchanged.
+
+The retry passes enrolled-finger approval, uploads the complete verified 0.1.41 image, confirms staging verification and exits 0. A full USB-only power cycle is requested for activation with a clean sensor start, keeping the removable battery disconnected. Activation/inventory and live prompt rejection are pending.
+
 ## UART command-boundary correction — October 8, 2026
 
 Firmware **0.1.40 / esp32-uart-sync-1** builds with ESP-IDF 5.3.4. The final image also exposes numeric `reset_reason` in STATUS for restart diagnosis: **669,808 bytes**, **378,768 bytes** free per OTA slot; SHA-256 `8fa48fad0b07ecfd1069e2358c50c43d2c4c5d71ad87b0bf3e32e038c6ef1c5a`. esptool checksum/validation hash pass. Recovery/bypass remain OFF; partition/NVS layout is unchanged. The earlier 669,760-byte build is superseded before deployment.
