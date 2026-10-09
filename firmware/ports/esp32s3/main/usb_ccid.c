@@ -103,8 +103,18 @@ static void usb_event_cb(tinyusb_event_t *event, void *arg) {
   (void)arg;
   if (event->id == TINYUSB_EVENT_ATTACHED) touch_pin_hid_usb_attached();
   else if (event->id == TINYUSB_EVENT_DETACHED) touch_pin_hid_usb_detached();
+#ifdef CONFIG_TINYUSB_SUSPEND_CALLBACK
+  else if (event->id == TINYUSB_EVENT_SUSPENDED) {
+    // Without VBUS sensing, cable removal can leave USB mounted but suspended.
+    // Abandon any old request before AUTO chooses BLE for a fresh touch.
+    // Never replay or switch a pending password request to another transport.
+    touch_pin_hid_usb_detached();
+    touch_pin_hid_log_event("usb_suspended", 0);
+  }
+#endif
 #ifdef CONFIG_TINYUSB_RESUME_CALLBACK
   else if (event->id == TINYUSB_EVENT_RESUMED) {
+    touch_pin_hid_log_event("usb_resumed", 0);
     // macOS can retain a stale composite node after wake. Reconnect with the
     // current visibility policy; wake alone must never expose a hidden card.
     taskENTER_CRITICAL(&policy_lock);

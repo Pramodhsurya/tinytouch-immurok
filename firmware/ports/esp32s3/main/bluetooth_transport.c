@@ -2,6 +2,7 @@
 // Passwords are never stored here; the existing nonce/HMAC exchange gates typing.
 #include "bluetooth_transport.h"
 #include "bluetooth_pairing_policy.h"
+#include "transport_policy.h"
 #include "touch_pin_hid.h"
 #include "usb_descriptors.h"
 #include "tusb.h"
@@ -42,7 +43,7 @@ static uint8_t keyboard_leds;
 static char rx_line[640];
 static unsigned rx_used;
 static bool rx_overflow;
-// AUTO prefers a mounted USB host. BLE can be selected while USB supplies power.
+// AUTO prefers an active USB host. BLE can be selected while USB supplies power.
 static volatile uint8_t selected_mode; // 0=AUTO, 1=USB, 2=BLE
 static const uint8_t report_map[] = {TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(1))};
 void ble_store_config_init(void);
@@ -52,7 +53,7 @@ bool bluetooth_transport_ready(void) {
          (protocol_mode ? report_subscribed : boot_subscribed);
 }
 bool bluetooth_transport_selected(void) {
-  return selected_mode == 2 || (selected_mode == 0 && !tud_mounted());
+  return transport_policy_uses_ble(selected_mode, tud_mounted(), tud_suspended());
 }
 const char *bluetooth_transport_mode(void) {
   return selected_mode == 2 ? "BLE" : selected_mode == 1 ? "USB" : "AUTO";
@@ -81,10 +82,11 @@ void bluetooth_transport_allow_pairing(void) {
     (void)ble_gap_terminate(connection, BLE_ERR_REM_USER_CONN_TERM);
 }
 void bluetooth_transport_status(char *out, unsigned capacity) {
-  snprintf(out,capacity,"OK BT name=tinyTouch mode=%s connected=%u encrypted=%u keyboard=%u helper=%u ready=%u pairing=%u sm_rc=%d enc_rc=%d",
+  snprintf(out,capacity,"OK BT name=tinyTouch mode=%s connected=%u encrypted=%u keyboard=%u helper=%u ready=%u pairing=%u sm_rc=%d enc_rc=%d usb_mounted=%u usb_suspended=%u active=%s",
     bluetooth_transport_mode(),connection!=BLE_HS_CONN_HANDLE_NONE,encrypted,
     report_subscribed||boot_subscribed,event_subscribed,bluetooth_transport_ready(),
-    esp_timer_get_time()<pairing_until,security_result,encryption_result);
+    esp_timer_get_time()<pairing_until,security_result,encryption_result,
+    tud_mounted(),tud_suspended(),bluetooth_transport_selected() ? "BLE" : "USB");
 }
 
 static int append(struct ble_gatt_access_ctxt *ctx,const void *data,unsigned len) {

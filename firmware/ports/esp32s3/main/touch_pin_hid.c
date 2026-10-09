@@ -412,6 +412,8 @@ static bool request_and_type_password(fingerprint_match_t match) {
   bool result = false;
   uint32_t session = hid_session_id();
   request_uses_ble = bluetooth_transport_selected();
+  touch_pin_hid_log_event("hid_transport", request_uses_ble ? 2 : 1);
+  touch_pin_hid_log_event("usb_state", (tud_mounted() ? 1 : 0) | (tud_suspended() ? 2 : 0));
   if (request_uses_ble && !bluetooth_transport_ready()) return false;
 
   size_t host_count = device_config_copy_hid_hosts(hosts);

@@ -1,5 +1,23 @@
 # ESP32 firmware build validation
 
+## Suspend-aware AUTO transport — October 8, 2026
+
+Firmware **0.1.42 / esp32-auto-suspend-1** builds with ESP-IDF 5.3.4. Image size **670,096 bytes**, **378,480 bytes** free per OTA slot; SHA-256 `5f227192a2ebeca287f90d16959221cc95577ad7ab8bb0730d3846cca29d6a96`. esptool checksum/validation hash pass. Recovery and fingerprint bypass remain OFF; partition/NVS layout is unchanged.
+
+The 0.1.41 cold-start battery-only Bluetooth unlock passes, but USB removal without restarting produces valid sensor matches followed by two approximately six-second output timeouts. AUTO previously preferred a mounted USB session even if suspended. The new policy chooses BLE for a fresh AUTO request while USB is unmounted or suspended, cancels pending requests on suspension and adds numeric USB state/transport events plus read-only Bluetooth status fields. No request is replayed or moved mid-flight; explicit transport choices and authorization remain intact. Without VBUS sensing, suspension is not proof of cable removal; hardware detection and USB sleep/wake acceptance remain separate requirements.
+
+Portable C UndefinedBehaviorSanitizer tests pass for AUTO cold start/suspend/resume, authoritative forced USB/BLE and invalid mode rejection, along with existing fresh-presence/reply-shape/search/timing/quiet and proof/replay/cancellation tests. No Mac source changed, so the unchanged 153-test Mac result is historical rather than a newly run suite. Protected upload, activation, retained-state readback and live USB/BLE handoff acceptance are pending.
+
+Transport policy check from the repository root:
+
+```sh
+clang -std=c11 -Wall -Wextra -Werror -fsanitize=undefined \
+  -I firmware/ports/esp32s3/main \
+  firmware/ports/esp32s3/tests/transport_policy_test.c \
+  -o /tmp/tinytouch-transport-policy-test
+/tmp/tinytouch-transport-policy-test
+```
+
 ## Prompt rejection without slot scanning — October 8, 2026
 
 Firmware **0.1.41 / esp32-fast-reject-1** builds with ESP-IDF 5.3.4. Image size **669,888 bytes**, **378,688 bytes** free per OTA slot; SHA-256 `a67786d0ae25fe5e756605159a5355e5f471e8a3b0c9a178d412e073ce665ae6`. esptool checksum/hash pass; recovery and fingerprint bypass remain OFF, and partition/NVS layout is unchanged.
