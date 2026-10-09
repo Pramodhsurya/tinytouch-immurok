@@ -10,6 +10,8 @@ Portable C UndefinedBehaviorSanitizer tests pass for AUTO cold start/suspend/res
 
 Protected upload subsequently passes: the user's enrolled-finger approval succeeds, the complete image uploads and verifies, and the command exits `UPDATE RESULT: 0`. Pre-activation USB readback confirms 0.1.41 with `ota=staged`, sensor ready, four templates and one host. Full USB-only power-cycle activation is requested rather than an ESP32-only RESET because warm-reset sensor recovery remains unresolved. Activation and handoff acceptance are still pending.
 
+After the user's full USB-only power cycle, activation readback passes: 0.1.42 / esp32-auto-suspend-1, idle OTA, 30-second fresh-proof capability, sensor ready, synchronized LED and one host. Full fingerprint inventory retains block 2:4 and nine free blocks. Initial Bluetooth status is connected but unencrypted/not ready, with a security timeout/reconnect in the numeric log. The helper is restarted and temporarily unloaded while the existing System Settings connection is disconnected; the helper is then restored. Subsequent status confirms encrypted keyboard/helper readiness, AUTO, `usb_mounted=1`, `usb_suspended=0`, `active=USB`. No forget/re-pairing, credential change or template deletion is performed. USB-to-Bluetooth handoff acceptance is next.
+
 Transport policy check from the repository root:
 
 ```sh
