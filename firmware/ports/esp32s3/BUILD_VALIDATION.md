@@ -8,6 +8,8 @@ The 0.1.41 cold-start battery-only Bluetooth unlock passes, but USB removal with
 
 Portable C UndefinedBehaviorSanitizer tests pass for AUTO cold start/suspend/resume, authoritative forced USB/BLE and invalid mode rejection, along with existing fresh-presence/reply-shape/search/timing/quiet and proof/replay/cancellation tests. No Mac source changed, so the unchanged 153-test Mac result is historical rather than a newly run suite. Protected upload, activation, retained-state readback and live USB/BLE handoff acceptance are pending.
 
+Protected upload subsequently passes: the user's enrolled-finger approval succeeds, the complete image uploads and verifies, and the command exits `UPDATE RESULT: 0`. Pre-activation USB readback confirms 0.1.41 with `ota=staged`, sensor ready, four templates and one host. Full USB-only power-cycle activation is requested rather than an ESP32-only RESET because warm-reset sensor recovery remains unresolved. Activation and handoff acceptance are still pending.
+
 Transport policy check from the repository root:
 
 ```sh
