@@ -2,6 +2,8 @@
 
 Requested October 8, 2026. This document expands existing checklist items without duplicating them. These requirements are pending implementation and hardware acceptance; the current native app reports battery measurement unavailable.
 
+The current firmware's Bluetooth Battery Service returns a fixed 100% placeholder. The 100% shown by macOS Bluetooth settings is therefore not a measured battery level or proof of charging completion. HW-04/FW-30 must replace that placeholder with verified telemetry or omit unsupported reporting.
+
 | Checklist item | Required behavior / verification | Status |
 | --- | --- | --- |
 | HW-02 | Verify that USB-C actually charges the selected battery, including polarity, cell protection, compatible charge current, temperature and charge termination. Exercise both this Mac's USB-C supply and a compatible external USB-C charger. | Yet to be done |
