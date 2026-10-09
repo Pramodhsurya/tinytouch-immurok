@@ -18,6 +18,8 @@ The user confirms only touching the sensor during those failed attempts. A subse
 
 **Fresh inventory created at user request:** protected enrollment of empty block 2 passes all four views and readback. Protected deletion of old blocks 1 and 10 then passes, preserving the complete new fingerprint throughout. Final native management probe verifies sensor ready, four templates, only block 2:4, nine free blocks, 14 settings and one host. No factory reset or host/settings/credential clearing is performed. These live CLI enrollment/deletion checks pass; native timing, UI cancellation/rename, USB output and wizard acceptance remain pending with the newly enrolled finger.
 
+**0.1.40 delayed-touch positive passed:** after new block 2 enrollment, the user confirms fresh proof verifies when waiting 15–20 seconds after the native touch prompt, then holding the new enrolled finger until the result. This verifies the delayed-touch positive case with the current inventory. No-touch 30-second expiry, wrong-finger, cancellation/retry and disconnect/reconnect checks on this firmware remain pending, as do USB output and wizard acceptance.
+
 ## Sensor failure diagnostics — October 8, 2026
 
 Firmware **0.1.39 / esp32-sensor-diagnostics-1** builds with ESP-IDF 5.3.4. Image size **669,472 bytes**, **379,104 bytes** free per OTA slot; SHA-256 `4aaf0d45b1efb6e2404224ca29feff087234ea6d9062a11a1500822dbc9422b6`. esptool checksum and validation hash pass. Recovery/bypass remain OFF and the partition/NVS layout is unchanged.
