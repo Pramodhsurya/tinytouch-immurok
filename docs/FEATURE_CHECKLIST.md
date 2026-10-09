@@ -361,6 +361,8 @@ The resumed physical checks pass: enrolled finger verifies after repair; unplugg
 
 **0.1.41 USB disconnect denial passed:** the user confirms the requested unplug-during-prompt check produces a disconnect/failure result without success. USB is to be reconnected with the battery still disconnected; refresh and a newly started enrolled-finger request are the next acceptance check. Reconnect positive, exact delayed/no-touch timing, USB output and wizard acceptance remain pending; task statuses and totals remain unchanged.
 
+**0.1.41 reconnect positive passed:** the user confirms a new request verifies after USB reconnect and Device refresh. The current build now has passed physical positive, prompt wrong-finger rejection, cancellation/retry and disconnect/reconnect cases. Exact delayed-touch/no-touch retests, USB output, wizard and broader Mac acceptance remain open. Remaining human checks are consolidated in [MAC_MANUAL_TESTS.md](MAC_MANUAL_TESTS.md), without duplicating canonical feature tasks or changing totals.
+
 ### Native ESP32 Mac compatibility work — 2026-10-07
 
 Full Mac app feature parity is the release goal. The connection/status adapter is implemented and the native USB probe passed on the attached ESP32. BLE/USB management, authenticated native operations and transport acceptance criteria remain open; do not check connection items complete on status alone. Implementation dependencies and current evidence: [MAC_ESP32_COMPATIBILITY.md](MAC_ESP32_COMPATIBILITY.md). Existing MAC IDs remain authoritative; no duplicate feature entries were added.
