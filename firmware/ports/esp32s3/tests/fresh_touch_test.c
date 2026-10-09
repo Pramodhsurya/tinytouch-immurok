@@ -1,6 +1,7 @@
 #include "fresh_touch.h"
 #include "fp_reply_shape.h"
 #include "fp_uart_quiet.h"
+#include "fp_search_result.h"
 #include <assert.h>
 #include <stdio.h>
 
@@ -10,6 +11,30 @@ static void arm(fresh_touch_t *s) {
   assert(s->phase == FRESH_WAIT_TOUCH);
 }
 int main(void) {
+  // A validated negative SEARCH ends matching: neither prompted requests nor
+  // normal output may scan slots and turn a confirmed mismatch into a match.
+  fp_search_result_t search = fp_search_result(true, 0x09, 4, 0, false);
+  assert(search == FP_SEARCH_NO_MATCH);
+  assert(!fp_search_allow_fallback(true, search));
+  assert(!fp_search_allow_fallback(false, search));
+  assert(fp_search_result(true, 0x09, 0, 0, false) == FP_SEARCH_NO_MATCH);
+  // A stale confirmation or malformed/failed response is not a biometric verdict.
+  search = fp_search_result(false, 0x09, 4, 0, false);
+  assert(search == FP_SEARCH_ERROR && !fp_search_allow_fallback(true, search));
+  assert(fp_search_allow_fallback(false, search));
+  assert(fp_search_result(true, 0, 3, 100, true) == FP_SEARCH_ERROR);
+  assert(fp_search_result(true, 0, 4, 0, true) == FP_SEARCH_ERROR);
+  assert(fp_search_result(true, 0, 4, 100, false) == FP_SEARCH_ERROR);
+  assert(fp_search_result(true, 0, 4, 100, true) == FP_SEARCH_MATCH);
+  // Once a fresh captured image mismatches, holding/replacing the finger cannot
+  // resurrect that request; a new explicit request must arm absence again.
+  fresh_touch_t mismatch;
+  fresh_touch_begin_prompted(&mismatch, 0, 30000); arm(&mismatch);
+  assert(!fresh_touch_observe(&mismatch, 300, true, false));
+  assert(fresh_touch_observe(&mismatch, 380, true, false));
+  assert(!fresh_touch_finish(&mismatch, 1000, true, true, false));
+  assert(mismatch.phase == FRESH_CONSUMED);
+  assert(!fresh_touch_finish(&mismatch, 1001, true, true, true));
   // Prior SEARCH/MATCH/COUNT data must never be read as a fresh capture ACK.
   assert(fp_reply_shape_valid(0x07, 1, 0, 0, false));
   assert(!fp_reply_shape_valid(0x07, 5, 0, 0, false));

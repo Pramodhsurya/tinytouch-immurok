@@ -24,6 +24,7 @@ Firmware **0.1.39 / esp32-sensor-diagnostics-1** adds numeric diagnostics to the
 | `auth_touch_timeout` | Milliseconds since the armed prompt without a new debounced touch |
 | `auth_capture_failed` | Capture confirmation byte; 255 means no valid confirmation |
 | `auth_match_failed` | Fresh capture did not produce a usable match |
+| `auth_search_no_match` | Validated SEARCH reported no matching template; final denial without slot scanning |
 | `auth_fresh_verified` / `auth_fresh_failed` | Capture/match duration in milliseconds and final gate outcome |
 | `auth_cancelled` | Foreground cancellation observed |
 
@@ -50,3 +51,7 @@ After RESET, activation of 0.1.40 / esp32-uart-sync-1 is verified with idle OTA,
 After the user confirms the USB-only cold restart, sequential background readback passes on 0.1.40: sensor ready, five templates, logical groups 1:4 and 10:1, eight free blocks, 14 settings and one registered host. Bluetooth readback confirms AUTO transport, encrypted bonded connection, keyboard/helper readiness and no active pairing. The current numeric log contains startup, USB attachment, Bluetooth encryption and successful count probe events, with no sensor reply errors. This establishes successful retained-inventory readback after a full sensor power cycle; it does not establish recovery after an ESP32-only reset or physical authentication/timing/output/wizard acceptance. The native app is reopened for the delayed-touch test.
 
 The user subsequently authorizes replacing the old fingerprint inventory. New block 2 is enrolled first with all four views verified, preserving authorization during the change. Protected deletions remove old blocks 1 and 10, with the new block checked after each operation. Final native management readback passes with sensor ready, four physical templates, only logical block 2:4, nine free blocks, 14 settings and one host. Subsequent physical tests must use this new enrolled finger; the earlier five-template inventory is historical rather than the expected current state. Factory reset, settings/host clearing and credential access are not used.
+
+The user reports excessive waiting on an unenrolled-finger attempt. The 0.1.40 log records two capture/match failures lasting 10,901 and 10,911 ms. The implementation had followed unsuccessful SEARCH with individual-slot comparisons. Firmware 0.1.41 removes that extra path for a validated no-match and for prompted search failures; it emits distinct AUTH2 mismatch/expiry denials. Portable regressions and 153 Mac tests pass, builds/image verification pass, and the native update is installed. Deployment/live latency acceptance remain pending.
+
+The same log records untouched expiry at 30,034 ms after the prompt, supporting the no-touch boundary. It contains a positive result 4,452 ms after its prompt, so it does not independently establish the previously user-confirmed 15–20-second delayed-touch interval. Repeat that interval with the new build before treating it as measured physical timing acceptance.

@@ -219,10 +219,15 @@ static void auth2_prove(const char *args) {
   strcpy(context, auth2.context);
   int count = fingerprint_count();
   if (count <= 0) touch_pin_hid_log_event("auth2_count_failed", count);
-  bool matched = count > 0 && fingerprint_authorize_fresh(touch_prompt, auth2_connection_lost);
+  fingerprint_auth_failure_t failure = FP_AUTH_UNVERIFIED;
+  bool matched = count > 0 && fingerprint_authorize_fresh(touch_prompt, auth2_connection_lost, &failure);
   matched = matched && !auth2_connection_lost();
   bool ok = auth_proof_finish(&auth2, matched, esp_timer_get_time() / 1000, auth2_hmac, tag);
-  if (!ok) { reply("ERR AUTH2 no_match_or_expired"); return; }
+  if (!ok) {
+    reply(failure == FP_AUTH_NO_MATCH ? "ERR AUTH2 finger_not_recognized" :
+          failure == FP_AUTH_EXPIRED ? "ERR AUTH2 expired" : "ERR AUTH2 no_match_or_expired");
+    return;
+  }
   snprintf(line, sizeof(line), "OK AUTH2 MATCH nonce=%s context=%s mac=%s", client, context, tag);
   reply(line);
   // No legacy configuration authorization window is opened by AUTH2.

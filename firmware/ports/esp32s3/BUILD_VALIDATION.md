@@ -1,5 +1,13 @@
 # ESP32 firmware build validation
 
+## Prompt rejection without slot scanning — October 8, 2026
+
+Firmware **0.1.41 / esp32-fast-reject-1** builds with ESP-IDF 5.3.4. Image size **669,888 bytes**, **378,688 bytes** free per OTA slot; SHA-256 `a67786d0ae25fe5e756605159a5355e5f471e8a3b0c9a178d412e073ce665ae6`. esptool checksum/hash pass; recovery and fingerprint bypass remain OFF, and partition/NVS layout is unchanged.
+
+The user reports that an unenrolled finger does not produce an immediate visible rejection. The 0.1.40 log contains two failed matches taking 10,901/10,911 ms after capture began. Code inspection identifies fallback scanning of individual template slots after a failed SEARCH. The new implementation treats validated SEARCH confirmation 0x09 as final no-match; prompted matching also fails on search transport/response errors without extra slot comparisons. Native AUTH2 returns distinct mismatch/expiry denials, and the app shows a specific fingerprint-not-recognized message. The 30-second untouched window, presence gate, request/HMAC domains, consumption and cancellation remain intact.
+
+All **153 Mac tests** pass, including exact new-error routing and suppression of unknown wire text. Portable C UndefinedBehaviorSanitizer regressions pass for terminal no-match/no fallback, failed response classification, request consumption after mismatch and existing fresh-presence/quiet/timing protections. The new native app builds, verifies and installs with the prior bundle retained. Firmware deployment and live prompt-rejection acceptance are pending. Existing new fingerprint block 2 and host/settings are preserved.
+
 ## UART command-boundary correction — October 8, 2026
 
 Firmware **0.1.40 / esp32-uart-sync-1** builds with ESP-IDF 5.3.4. The final image also exposes numeric `reset_reason` in STATUS for restart diagnosis: **669,808 bytes**, **378,768 bytes** free per OTA slot; SHA-256 `8fa48fad0b07ecfd1069e2358c50c43d2c4c5d71ad87b0bf3e32e038c6ef1c5a`. esptool checksum/validation hash pass. Recovery/bypass remain OFF; partition/NVS layout is unchanged. The earlier 669,760-byte build is superseded before deployment.

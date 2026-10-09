@@ -3,6 +3,7 @@
 #include "fresh_touch.h"
 #include "fp_reply_shape.h"
 #include "fp_uart_quiet.h"
+#include "fp_search_result.h"
 #include "touch_pin_hid.h"
 
 #include <string.h>
@@ -532,8 +533,9 @@ void fingerprint_wait_for_touch(void) {
   xSemaphoreTake(touch_signal, pdMS_TO_TICKS(100));
 }
 
-static fingerprint_match_t fingerprint_match_captured(bool quiet) {
+static fingerprint_match_t fingerprint_match_captured(bool quiet, bool *not_found) {
   fingerprint_match_t no_match = {0};
+  if (not_found) *not_found = false;
   uint8_t confirm = 0xff;
   uint8_t img2tz[] = {0x01};
   if (!fp_command(0x02, img2tz, sizeof(img2tz), &confirm, NULL, NULL, 2000) || confirm != 0x00) {
@@ -550,9 +552,14 @@ static fingerprint_match_t fingerprint_match_captured(bool quiet) {
     0, 0,
     (uint8_t)(count >> 8), (uint8_t)(count & 0xff)
   };
-  uint8_t search_data[4];
+  uint8_t search_data[4] = {0};
   size_t search_len = sizeof(search_data);
-  if (!fp_command(0x04, search_params, sizeof(search_params), &confirm, search_data, &search_len, 2000)) {
+  bool answered = fp_command(0x04, search_params, sizeof(search_params), &confirm, search_data, &search_len, 2000);
+  uint16_t search_score = ((uint16_t)search_data[2] << 8) | search_data[3];
+  uint16_t search_slot = ((uint16_t)search_data[0] << 8) | search_data[1];
+  fp_search_result_t search_result = fp_search_result(answered, confirm, search_len,
+                                                     search_score, template_usable(search_slot));
+  if (!answered) {
     if (!quiet) ESP_LOGW(TAG, "search command failed");
   } else if (confirm == 0x00 && search_len == sizeof(search_data)) {
     uint16_t score = ((uint16_t)search_data[2] << 8) | search_data[3];
@@ -567,6 +574,13 @@ static fingerprint_match_t fingerprint_match_captured(bool quiet) {
     return no_match;
   } else if (!quiet) {
     ESP_LOGW(TAG, "search failed confirm=0x%02x len=%u", confirm, (unsigned)search_len);
+  }
+
+  if (!fp_search_allow_fallback(quiet, search_result)) {
+    if (not_found) *not_found = search_result == FP_SEARCH_NO_MATCH;
+    if (search_result == FP_SEARCH_NO_MATCH) touch_pin_hid_log_event("auth_search_no_match", 0);
+    if (!quiet) show_result(false);
+    return no_match;
   }
 
   for (uint16_t slot = 0; slot <= END_SLOT; slot++) {
@@ -615,7 +629,7 @@ bool fingerprint_try_poll_match(fingerprint_match_t *match) {
     // acknowledged "no finger" result permits another capture attempt.
     return !replied || confirm != 0x02;
   }
-  *match = fingerprint_match_captured(true);
+  *match = fingerprint_match_captured(true, NULL);
   schedule_result_led(match->slot != 0);
   fp_give();
   return true;
@@ -725,11 +739,13 @@ bool fingerprint_recover(void) {
   return ok;
 }
 
-static bool authorize_fresh_window(void (*prompt)(void), bool (*cancelled)(void), bool extended) {
+static bool authorize_fresh_window(void (*prompt)(void), bool (*cancelled)(void), bool extended,
+                                   fingerprint_auth_failure_t *failure) {
   // UART image buffers/late ACKs cannot establish new physical presence. Hold
   // the UART mutex across this transaction so LED/HID traffic cannot interleave.
   prompted_authorization_active = true;
   bool ok = false;
+  if (failure) *failure = FP_AUTH_UNVERIFIED;
   if (!fp_take(1000)) {
     touch_pin_hid_log_event("auth_sensor_busy", 0);
     goto done;
@@ -762,6 +778,7 @@ static bool authorize_fresh_window(void (*prompt)(void), bool (*cancelled)(void)
     uint64_t observed_at = esp_timer_get_time() / 1000;
     bool capture = fresh_touch_observe(&presence, observed_at, present, absent);
     if (presence.phase == FRESH_CONSUMED) {
+      if (failure) *failure = FP_AUTH_EXPIRED;
       touch_pin_hid_log_event(before == FRESH_WAIT_LIFT ? "auth_arm_timeout" : "auth_touch_timeout",
                              (int)(observed_at - (prompted ? presence.prompted_at : presence.started)));
     }
@@ -775,12 +792,15 @@ static bool authorize_fresh_window(void (*prompt)(void), bool (*cancelled)(void)
       bool acquired = fp_command(0x01, NULL, 0, &confirm, NULL, NULL, 350) && confirm == 0x00;
       if (!acquired) touch_pin_hid_log_event("auth_capture_failed", confirm);
       bool matched = false;
+      bool not_found = false;
       if (acquired && finger_present() && !(cancelled && cancelled()))
-        matched = fingerprint_match_captured(true).slot != 0;
+        matched = fingerprint_match_captured(true, &not_found).slot != 0;
       if (acquired && !matched) touch_pin_hid_log_event("auth_match_failed", 0);
       ok = fresh_touch_finish(&presence, esp_timer_get_time() / 1000,
                               finger_present(), acquired, matched);
       ok = ok && !(cancelled && cancelled());
+      if (!ok && not_found && !(cancelled && cancelled()) && failure)
+        *failure = FP_AUTH_NO_MATCH;
       touch_pin_hid_log_event(ok ? "auth_fresh_verified" : "auth_fresh_failed",
                              (int)(esp_timer_get_time() / 1000 - presence.capture_started));
       break;
@@ -796,11 +816,12 @@ done:
 
 bool fingerprint_authorize_prompted(void (*prompt)(void)) {
   // Keep the legacy CLI's 15-second AUTH read deadline compatible.
-  return authorize_fresh_window(prompt, NULL, false);
+  return authorize_fresh_window(prompt, NULL, false, NULL);
 }
 
-bool fingerprint_authorize_fresh(void (*prompt)(void), bool (*cancelled)(void)) {
-  return authorize_fresh_window(prompt, cancelled, true);
+bool fingerprint_authorize_fresh(void (*prompt)(void), bool (*cancelled)(void),
+                                 fingerprint_auth_failure_t *failure) {
+  return authorize_fresh_window(prompt, cancelled, true, failure);
 }
 
 bool fingerprint_prompted_authorization_active(void) {

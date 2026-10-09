@@ -6,7 +6,9 @@ final class TinyTouchAuthProofTests: XCTestCase {
         if case .deviceUnavailable = TinyTouchAuthError.deviceError("ERR AUTH2 unavailable") {} else { XCTFail("start stage") }
         if case .handshakeRejected = TinyTouchAuthError.deviceError("ERR AUTH2 rejected") {} else { XCTFail("handshake stage") }
         if case .matchUnverified = TinyTouchAuthError.deviceError("ERR AUTH2 no_match_or_expired") {} else { XCTFail("match stage") }
-        for line in ["ERR AUTH2 unavailable secret=private", "ERR AUTH2 custom private", "ERR OTHER private"] {
+        if case .fingerNotRecognized = TinyTouchAuthError.deviceError("ERR AUTH2 finger_not_recognized") {} else { XCTFail("definite mismatch") }
+        if case .expired = TinyTouchAuthError.deviceError("ERR AUTH2 expired") {} else { XCTFail("touch expiry") }
+        for line in ["ERR AUTH2 unavailable secret=private", "ERR AUTH2 finger_not_recognized secret=private", "ERR AUTH2 expired private", "ERR AUTH2 custom private", "ERR OTHER private"] {
             let error = TinyTouchAuthError.deviceError(line)
             if case .rejected = error {} else { XCTFail("unknown error") }
             XCTAssertFalse(error.localizedDescription.contains("private"))

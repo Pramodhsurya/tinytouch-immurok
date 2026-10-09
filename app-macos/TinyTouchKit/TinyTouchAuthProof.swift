@@ -4,7 +4,7 @@ import Security
 
 public enum TinyTouchAuthError: Error, LocalizedError {
     case invalidResponse, rejected, expired, unsupported, keychain, busy, lease, cancelled, disconnected
-    case deviceUnavailable, handshakeRejected, matchUnverified
+    case deviceUnavailable, handshakeRejected, matchUnverified, fingerNotRecognized
     case transport(stage: String, code: Int32)
     public var errorDescription: String? {
         switch self {
@@ -13,6 +13,7 @@ public enum TinyTouchAuthError: Error, LocalizedError {
         case .deviceUnavailable: return "The device could not start fingerprint authentication. Sensor or registered-host checks failed. Refresh the device and try again."
         case .handshakeRejected: return "The device rejected the authentication handshake before fingerprint verification. Refresh the device and try again."
         case .matchUnverified: return "No fresh fingerprint match was verified. The sensor check failed or the touch window expired. Lift your finger and start a new test."
+        case .fingerNotRecognized: return "Fingerprint not recognized. Lift your finger and start a new test with your enrolled finger."
         case .expired: return "This authentication request expired. Start a new request."
         case .unsupported: return "Update the ESP32 to firmware with authenticated request support first."
         case .keychain: return "The pairing key could not be read. Allow access in the Mac Keychain prompt, or check the existing tinyTouch pairing."
@@ -29,6 +30,8 @@ public enum TinyTouchAuthError: Error, LocalizedError {
         case "ERR AUTH2 unavailable": return .deviceUnavailable
         case "ERR AUTH2 rejected": return .handshakeRejected
         case "ERR AUTH2 no_match_or_expired": return .matchUnverified
+        case "ERR AUTH2 finger_not_recognized": return .fingerNotRecognized
+        case "ERR AUTH2 expired": return .expired
         default: return .rejected
         }
     }
