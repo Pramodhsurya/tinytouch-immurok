@@ -26,6 +26,8 @@ For the separate output check, finish any native authentication request first so
 
 October 8 retest: the user reports that fingerprint output did not unlock the Mac. Device events show a successful match followed by `hid_failed`; read-only Bluetooth status reports forced `mode=BLE` while USB is connected, and the Bluetooth helper reports availability errors. Fingerprint-approved automatic transport selection has passed and persists after RESET. A new USB output test is pending. The wizard remains incomplete; a Running helper or a successful fresh proof does not satisfy this step.
 
+Subsequent 0.1.41 acceptance: after creating complete fingerprint block 2 and retaining AUTO transport, the user confirms the lock-screen test unlocks the Mac once with USB connected and the battery disconnected. This passes the separate existing-helper output check. The wizard can now use the existing finger and that confirmed output result; actual Finish setup/return-to-Device acceptance is pending.
+
 Features shows native Bluetooth/Accessibility permission status and whether each password helper is running. The current native management functions do not require Accessibility. Bluetooth identity checking requires native Bluetooth permission; helper permissions are separate. A running helper does not prove its credentials are valid, so test fingerprint output separately.
 
 To start the native app after login, enable **Launch tinyTouch Native at login** in Features. If macOS requires approval, use the displayed Login Items settings button and approve it yourself. Turn the toggle off to unregister the native app. This setting is separate from the password helpers. Login/restart acceptance is still pending.

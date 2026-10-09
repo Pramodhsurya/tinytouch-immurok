@@ -367,6 +367,8 @@ The resumed physical checks pass: enrolled finger verifies after repair; unplugg
 
 **0.1.41 untouched expiry passed:** the user completes the requested no-touch observation; subsequent log confirms expiry 30,034 ms after the prompt without a fresh verified result. Both helpers are Running and AUTO remains selected with encrypted keyboard/helper readiness. The separate USB lock-screen output test is now requested, with native requests finished and the battery disconnected. Wizard/output, exact delayed-touch timing and broader Mac acceptance remain open; canonical task statuses and totals remain unchanged.
 
+**USB-connected Mac unlock passed:** the user confirms the enrolled finger unlocks the Mac once with USB connected, battery disconnected and native tests finished. This passes the separate existing helper/device keyboard-output check after AUTO transport selection and new fingerprint enrollment; it is not a new native PAM/unlock adapter. Startup wizard completion using existing finger 2 and the now-confirmed output step is next. MAC-07 remains Yet to be done for the native wake/reconnect/duplicate-output flow, and canonical totals stay unchanged pending wizard/broader acceptance.
+
 ### Native ESP32 Mac compatibility work — 2026-10-07
 
 Full Mac app feature parity is the release goal. The connection/status adapter is implemented and the native USB probe passed on the attached ESP32. BLE/USB management, authenticated native operations and transport acceptance criteria remain open; do not check connection items complete on status alone. Implementation dependencies and current evidence: [MAC_ESP32_COMPATIBILITY.md](MAC_ESP32_COMPATIBILITY.md). Existing MAC IDs remain authoritative; no duplicate feature entries were added.

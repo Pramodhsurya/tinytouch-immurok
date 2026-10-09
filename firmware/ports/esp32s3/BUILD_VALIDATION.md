@@ -30,6 +30,8 @@ The retry passes enrolled-finger approval, uploads the complete verified 0.1.41 
 
 **0.1.41 no-touch expiry passed:** the user completes the untouched observation. Subsequent logs show prompt at 685,371 ms and timeout at 715,405 ms, confirming 30,034 ms without a verified result. Read-only health confirms both helpers Running; Bluetooth status confirms AUTO/encrypted/keyboard/helper readiness. Separate USB lock-screen output is the next human check; helper health does not itself establish password output success.
 
+**USB-connected lock-screen output passed:** the user confirms enrolled-finger output unlocks the Mac once with USB connected, battery disconnected and native tests finished. This is acceptance of the existing helper/device output path, separate from native fresh-proof verification. Wizard completion using the existing fingerprint and confirmed output is pending next; native privileged/unlock adapters and broader transport acceptance remain open.
+
 ## UART command-boundary correction — October 8, 2026
 
 Firmware **0.1.40 / esp32-uart-sync-1** builds with ESP-IDF 5.3.4. The final image also exposes numeric `reset_reason` in STATUS for restart diagnosis: **669,808 bytes**, **378,768 bytes** free per OTA slot; SHA-256 `8fa48fad0b07ecfd1069e2358c50c43d2c4c5d71ad87b0bf3e32e038c6ef1c5a`. esptool checksum/validation hash pass. Recovery/bypass remain OFF; partition/NVS layout is unchanged. The earlier 669,760-byte build is superseded before deployment.
