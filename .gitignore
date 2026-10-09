@@ -69,3 +69,4 @@ xcuserdata/
 # ESP-IDF generated dependencies
 firmware/ports/esp32s3/managed_components/
 firmware/ports/esp32s3/sdkconfig.old
+/build-vbus/

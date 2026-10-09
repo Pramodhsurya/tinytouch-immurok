@@ -8,6 +8,9 @@ option(TINYTOUCH_DEVELOPMENT_SKIP_FINGERPRINT_AUTH
 option(TINYTOUCH_RECOVERY_BUILD
        "Build one-time firmware that clears the fingerprint sensor and device state"
        OFF)
+option(TINYTOUCH_VBUS_SENSE
+       "Enable resistor-divided XIAO VBUS sensing on D0/GPIO1"
+       OFF)
 
 set(TINYTOUCH_VERSION_FILE "${CMAKE_CURRENT_LIST_DIR}/VERSION")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${TINYTOUCH_VERSION_FILE}")
@@ -21,10 +24,10 @@ if(DEFINED ENV{RELEASE_COMMIT} AND NOT "$ENV{RELEASE_COMMIT}" STREQUAL "")
 elseif(DEFINED ENV{GITHUB_SHA} AND NOT "$ENV{GITHUB_SHA}" STREQUAL "")
   string(SUBSTRING "$ENV{GITHUB_SHA}" 0 12 TINYTOUCH_BUILD_ID)
 else()
-  set(TINYTOUCH_BUILD_ID "esp32-auto-suspend-1")
+  set(TINYTOUCH_BUILD_ID "esp32-vbus-sense-1")
 endif()
 if(NOT TINYTOUCH_BUILD_ID)
-  set(TINYTOUCH_BUILD_ID "esp32-auto-suspend-1")
+  set(TINYTOUCH_BUILD_ID "esp32-vbus-sense-1")
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

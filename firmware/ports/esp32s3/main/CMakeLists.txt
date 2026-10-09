@@ -33,3 +33,7 @@ endif()
 if(TINYTOUCH_RECOVERY_BUILD)
   target_compile_definitions(${COMPONENT_LIB} PRIVATE TINYTOUCH_RECOVERY_BUILD=1)
 endif()
+
+if(TINYTOUCH_VBUS_SENSE)
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE TINYTOUCH_VBUS_SENSE_ENABLE=1)
+endif()

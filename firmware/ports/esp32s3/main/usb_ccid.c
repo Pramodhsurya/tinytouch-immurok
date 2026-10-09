@@ -4,6 +4,7 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -42,6 +43,10 @@ static int64_t setup_until;
 static portMUX_TYPE policy_lock = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t reconnect_done;
 static SemaphoreHandle_t console_mutex;
+
+#ifdef TINYTOUCH_VBUS_SENSE_ENABLE
+#define TINYTOUCH_VBUS_SENSE_GPIO GPIO_NUM_1
+#endif
 
 #define TOUCH_WINDOW_US (20LL * 1000000)
 #define SETUP_WINDOW_US (60LL * 1000000)
@@ -354,6 +359,17 @@ void usb_ccid_start(ccid_apdu_handler_t handler) {
   touch_enabled = device_config_piv_touch_enabled();
   piv_exposed = !touch_enabled;
   tiny_touch_set_piv_descriptor(piv_exposed);
+#ifdef TINYTOUCH_VBUS_SENSE_ENABLE
+  gpio_config_t vbus_io = {
+    .pin_bit_mask = 1ULL << TINYTOUCH_VBUS_SENSE_GPIO,
+    .mode = GPIO_MODE_INPUT,
+    .pull_up_en = GPIO_PULLUP_DISABLE,
+    .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    .intr_type = GPIO_INTR_DISABLE,
+  };
+  // GPIO1 must be driven by an external divider from the XIAO 5V/VBUS pad.
+  ESP_ERROR_CHECK(gpio_config(&vbus_io));
+#endif
   reconnect_done = xSemaphoreCreateBinary();
   configASSERT(reconnect_done);
   console_mutex = xSemaphoreCreateMutex();
@@ -367,6 +383,22 @@ void usb_ccid_start(ccid_apdu_handler_t handler) {
   tusb_cfg.event_cb = usb_event_cb;
   ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
   configASSERT(xTaskCreate(usb_policy_task, "usb_policy", 3072, NULL, 2, NULL) == pdPASS);
+}
+
+bool usb_ccid_vbus_sense_available(void) {
+#ifdef TINYTOUCH_VBUS_SENSE_ENABLE
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool usb_ccid_vbus_present(void) {
+#ifdef TINYTOUCH_VBUS_SENSE_ENABLE
+  return gpio_get_level(TINYTOUCH_VBUS_SENSE_GPIO) != 0;
+#else
+  return false;
+#endif
 }
 
 void usb_ccid_rescan(void) {

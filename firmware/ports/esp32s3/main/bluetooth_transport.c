@@ -3,6 +3,7 @@
 #include "bluetooth_transport.h"
 #include "bluetooth_pairing_policy.h"
 #include "transport_policy.h"
+#include "usb_ccid.h"
 #include "touch_pin_hid.h"
 #include "usb_descriptors.h"
 #include "tusb.h"
@@ -53,7 +54,8 @@ bool bluetooth_transport_ready(void) {
          (protocol_mode ? report_subscribed : boot_subscribed);
 }
 bool bluetooth_transport_selected(void) {
-  return transport_policy_uses_ble(selected_mode, tud_mounted(), tud_suspended());
+  return transport_policy_uses_ble(selected_mode, tud_mounted(), tud_suspended(),
+                                   usb_ccid_vbus_sense_available(), usb_ccid_vbus_present());
 }
 const char *bluetooth_transport_mode(void) {
   return selected_mode == 2 ? "BLE" : selected_mode == 1 ? "USB" : "AUTO";
@@ -82,11 +84,12 @@ void bluetooth_transport_allow_pairing(void) {
     (void)ble_gap_terminate(connection, BLE_ERR_REM_USER_CONN_TERM);
 }
 void bluetooth_transport_status(char *out, unsigned capacity) {
-  snprintf(out,capacity,"OK BT name=tinyTouch mode=%s connected=%u encrypted=%u keyboard=%u helper=%u ready=%u pairing=%u sm_rc=%d enc_rc=%d usb_mounted=%u usb_suspended=%u active=%s",
+  snprintf(out,capacity,"OK BT name=tinyTouch mode=%s connected=%u encrypted=%u keyboard=%u helper=%u ready=%u pairing=%u sm_rc=%d enc_rc=%d usb_mounted=%u usb_suspended=%u vbus_sense=%u vbus_present=%u active=%s",
     bluetooth_transport_mode(),connection!=BLE_HS_CONN_HANDLE_NONE,encrypted,
     report_subscribed||boot_subscribed,event_subscribed,bluetooth_transport_ready(),
     esp_timer_get_time()<pairing_until,security_result,encryption_result,
-    tud_mounted(),tud_suspended(),bluetooth_transport_selected() ? "BLE" : "USB");
+    tud_mounted(),tud_suspended(),usb_ccid_vbus_sense_available(),usb_ccid_vbus_present(),
+    bluetooth_transport_selected() ? "BLE" : "USB");
 }
 
 static int append(struct ble_gatt_access_ctxt *ctx,const void *data,unsigned len) {

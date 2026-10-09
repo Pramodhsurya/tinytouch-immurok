@@ -10,6 +10,12 @@ Portable C UndefinedBehaviorSanitizer tests pass for AUTO cold start/suspend/res
 
 Protected upload subsequently passes: the user's enrolled-finger approval succeeds, the complete image uploads and verifies, and the command exits `UPDATE RESULT: 0`. Pre-activation USB readback confirms 0.1.41 with `ota=staged`, sensor ready, four templates and one host. Full USB-only power-cycle activation is requested rather than an ESP32-only RESET because warm-reset sensor recovery remains unresolved. Activation and handoff acceptance are still pending.
 
+## VBUS-sense build — October 8, 2026
+
+Firmware **0.1.43 / esp32-vbus-sense-1** adds an optional VBUS input on XIAO D0/GPIO1. It is enabled only with `-DTINYTOUCH_VBUS_SENSE=ON` and expects the documented 100 kΩ / 150 kΩ external divider; the default build leaves the feature disabled. AUTO treats VBUS low as USB unavailable even if TinyUSB remains mounted. Status exposes `vbus_sense`, `vbus_present` and the selected active transport; numeric output records `usb_vbus` without logging credentials or payloads. The current 0.1.42 device is not updated until the divider is physically installed and checked.
+
+The VBUS-enabled ESP-IDF build passes with image size **670,320 bytes**, **378,256 bytes** free per OTA slot; esptool checksum/validation hash pass. SHA-256: `8101387e0e135162fb69ac19106d3cc4518ea40cd92878f8b89e6657880b17d9`; validation hash `f357b1889b0ba262828965286f7baf7314b4864c91800a75135f873b64c109e9`. The host-side transport-policy test passes for VBUS high/low, suspend, and explicit transport selection. The image is staged locally only; do not upload until the divider is wired and measured. See [VBUS sensing](../../../docs/VBUS_SENSING.md) for wiring and measurement steps.
+
 After the user's full USB-only power cycle, activation readback passes: 0.1.42 / esp32-auto-suspend-1, idle OTA, 30-second fresh-proof capability, sensor ready, synchronized LED and one host. Full fingerprint inventory retains block 2:4 and nine free blocks. Initial Bluetooth status is connected but unencrypted/not ready, with a security timeout/reconnect in the numeric log. The helper is restarted and temporarily unloaded while the existing System Settings connection is disconnected; the helper is then restored. Subsequent status confirms encrypted keyboard/helper readiness, AUTO, `usb_mounted=1`, `usb_suspended=0`, `active=USB`. No forget/re-pairing, credential change or template deletion is performed. USB-to-Bluetooth handoff acceptance is next.
 
 Transport policy check from the repository root:
