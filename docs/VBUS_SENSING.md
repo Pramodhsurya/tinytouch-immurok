@@ -29,3 +29,9 @@ Keep the existing sensor wiring unchanged: TouchOut remains D1/GPIO2, sensor TX 
 The firmware option is intentionally disabled in the currently running image until this divider is physically wired and checked. The host-side transport-policy test covers USB mounted with VBUS high, USB mounted with VBUS low, suspension, and explicit USB/BLE selections.
 
 This input selects the transport for a new output request. Physical removal during an outstanding request and repeated unplug/replug behavior still require hardware acceptance; the divider alone is not evidence that those cases pass.
+
+## Testing without the divider
+
+Explicit USB and BLE output can be tested with the existing wiring. Keep VBUS sensing disabled; do not install the VBUS-enabled image with D0 floating. The protected transport selector can choose USB or BLE while the Mac's USB control connection is available. This does not validate automatic cable detection.
+
+For a cold-start BLE test with the existing removable battery connector, unplug USB first, reconnect the battery, wait ten seconds and for Bluetooth Connected, then test the enrolled finger once at the Mac lock screen. Do not press RESET during this check. Reconnect USB afterward for retained event readback. Battery voltage/charging acceptance is a separate test.
