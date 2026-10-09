@@ -20,7 +20,7 @@ This is a physical test plan, not a second feature checklist. Feature completion
 
 | Check | Status | Manual steps | Expected result |
 | --- | --- | --- | --- |
-| 20-second delayed touch | Yet to be done | Features → Test enrolled fingerprint. Keep finger off until the touch prompt. Use a clock to wait 20 seconds, then hold the enrolled finger until the result. | Fresh proof verified. The interval starts at the touch prompt. |
+| 20-second delayed touch | In progress | Features → Test enrolled fingerprint. Keep finger off until the touch prompt. Use a clock to wait 20 seconds, then hold the enrolled finger until the result. User reports success, but the latest logged positive completes only 1,912 ms after its prompt; that log does not verify the requested delay. | Fresh proof verified after the requested delay. The interval starts at the touch prompt. |
 | Untouched 30-second expiry | Yet to be done | Start another test. After the touch prompt, leave the sensor untouched for 35 seconds. | Request expires, no green success. Previously passed on 0.1.40; repeat on 0.1.41. |
 | USB Mac unlock | Yet to be done | Finish all native tests. Keep USB connected. Press Control–Command–Q, activate the masked password field and touch the enrolled finger. | Mac unlocks once. If it fails, unlock manually with your own password and report only the result. |
 | Startup wizard completion | Yet to be done | Features → Run startup wizard. Continue with existing finger 2; do not enroll again. Confirm the output checkbox only after the separate output test passes, then Finish setup. | Returns to Device with setup completed, no inventory error. |

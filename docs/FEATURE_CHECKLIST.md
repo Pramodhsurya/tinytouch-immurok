@@ -363,6 +363,8 @@ The resumed physical checks pass: enrolled finger verifies after repair; unplugg
 
 **0.1.41 reconnect positive passed:** the user confirms a new request verifies after USB reconnect and Device refresh. The current build now has passed physical positive, prompt wrong-finger rejection, cancellation/retry and disconnect/reconnect cases. Exact delayed-touch/no-touch retests, USB output, wizard and broader Mac acceptance remain open. Remaining human checks are consolidated in [MAC_MANUAL_TESTS.md](MAC_MANUAL_TESTS.md), without duplicating canonical feature tasks or changing totals.
 
+**Delayed-touch report and timing evidence:** the user reports success after the requested clock-based 20-second test. The available subsequent log shows a positive result 1,912 ms after its prompt with 995 ms of capture/matching, so it verifies positive matching but does not establish that requested delay. The manual timing test stays In progress rather than being marked Completed from an uncorrelated short trace. Untouched expiry on 0.1.41 is the next check; feature totals remain unchanged.
+
 ### Native ESP32 Mac compatibility work — 2026-10-07
 
 Full Mac app feature parity is the release goal. The connection/status adapter is implemented and the native USB probe passed on the attached ESP32. BLE/USB management, authenticated native operations and transport acceptance criteria remain open; do not check connection items complete on status alone. Implementation dependencies and current evidence: [MAC_ESP32_COMPATIBILITY.md](MAC_ESP32_COMPATIBILITY.md). Existing MAC IDs remain authoritative; no duplicate feature entries were added.
