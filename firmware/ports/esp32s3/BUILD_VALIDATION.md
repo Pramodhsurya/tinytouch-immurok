@@ -22,6 +22,8 @@ The retry passes enrolled-finger approval, uploads the complete verified 0.1.41 
 
 **Retry after cancellation passed:** the user confirms a new enrolled-finger request verifies after cancellation. USB disconnect/reconnect and timing/output/wizard cases remain pending on 0.1.41.
 
+**USB disconnect denial passed:** the user confirms unplugging USB during the untouched prompt fails without success. Refresh and a new positive request after reconnect are pending next; delayed/no-touch timing and output/wizard acceptance remain open.
+
 ## UART command-boundary correction — October 8, 2026
 
 Firmware **0.1.40 / esp32-uart-sync-1** builds with ESP-IDF 5.3.4. The final image also exposes numeric `reset_reason` in STATUS for restart diagnosis: **669,808 bytes**, **378,768 bytes** free per OTA slot; SHA-256 `8fa48fad0b07ecfd1069e2358c50c43d2c4c5d71ad87b0bf3e32e038c6ef1c5a`. esptool checksum/validation hash pass. Recovery/bypass remain OFF; partition/NVS layout is unchanged. The earlier 669,760-byte build is superseded before deployment.
