@@ -120,6 +120,27 @@ final class ManagementTests: XCTestCase {
             guard case TinyTouchError.inventoryUnavailable(stage: .parameters) = $0 else { return XCTFail("Missing inventory failure stage") }
         }
     }
+    func testKnownApprovalFailuresDoNotBecomeUSBFailuresOrEchoBackendText() {
+        let errors = [
+            "Error: Fingerprint authentication timed out. Please try again.",
+            "Error: Fingerprint authentication could not start. Please try again.",
+            "Error: Fingerprint authentication expired. Please try again.",
+            "Error: No enrolled fingerprint matched. Lift your finger and try an enrolled finger. If none work, use Recovery firmware at https://docs.tinytouch.dev/flash?firmware=recovery. Recovery erases fingerprints, device keys, registered computers, and settings."
+        ]
+        for message in errors {
+            guard case .configurationApprovalFailed = TinyTouchInventoryStage.backendFailure(Data((message + "\n").utf8)) else {
+                return XCTFail("Known approval failure lost its category")
+            }
+            guard case .commandFailed = TinyTouchInventoryStage.backendFailure(Data((message + "\nprivate-value").utf8)) else {
+                return XCTFail("Unrecognized backend output was accepted")
+            }
+        }
+        XCTAssertFalse(TinyTouchError.configurationApprovalFailed.localizedDescription.contains("Recovery"))
+        XCTAssertThrowsError(try TinyTouchCommandRunner().execute(backend: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "printf 'Error: Fingerprint authentication expired. Please try again.\\n' >&2; exit 1"], timeout: 2) { _ in }) {
+            guard case TinyTouchError.configurationApprovalFailed = $0 else { return XCTFail("Runner lost approval failure") }
+        }
+    }
     func testCancelInFlightTerminatesCommand() {
         let runner = TinyTouchCommandRunner()
         let complete = expectation(description: "cancelled command returned")
@@ -132,6 +153,21 @@ final class ManagementTests: XCTestCase {
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { runner.cancel() }
         wait(for: [complete], timeout: 3)
+    }
+    func testCancellationAtFinalProgressCannotBecomeFailureOrSuccess() {
+        for exitCode in [0, 19] {
+            let runner = TinyTouchCommandRunner()
+            var sawProgress = false
+            XCTAssertThrowsError(try runner.execute(backend: URL(fileURLWithPath: "/bin/sh"),
+                arguments: ["-c", "printf 'Final progress\\n'; exit \(exitCode)"], timeout: 2) { _ in
+                sawProgress = true
+                // Let the short-lived backend finish before cancelling from the
+                // visible progress callback, reproducing an exit/cancel race.
+                Thread.sleep(forTimeInterval: 0.05)
+                runner.cancel()
+            }) { XCTAssertTrue($0 is CancellationError, "Exit \(exitCode) replaced cancellation: \($0)") }
+            XCTAssertTrue(sawProgress)
+        }
     }
 }
 

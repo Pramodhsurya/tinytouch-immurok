@@ -103,12 +103,6 @@ struct TinyTouchDeviceView: View {
                         }.padding(.top, 12)
                     }
                 }
-                if management.busy {
-                    ProgressView()
-                    Text("Reading device state. For changes, follow the sensor prompts to authorize with your enrolled finger.").font(.caption)
-                    Text(management.progress).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    Button("Cancel operation") { management.cancel() }
-                }
                 if let error = management.error { Text(error).foregroundStyle(.red) }
                 if management.complete { Text("Device state verified.").foregroundStyle(.secondary) }
                 Divider()
@@ -116,6 +110,24 @@ struct TinyTouchDeviceView: View {
                 Text("Keys, PAM/sudo, SSH, Quick Fill, automation and signed OTA remain under compatibility development.")
                     .foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if management.busy {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("Device operation").font(.headline)
+                        Spacer()
+                        Button("Cancel operation") { management.cancel() }
+                    }
+                    Text("Keep USB connected and follow the prompts below.").font(.caption).foregroundStyle(.secondary)
+                    Text(management.progress.split(whereSeparator: \.isNewline).suffix(4).joined(separator: "\n"))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .padding(16)
+                .background(.regularMaterial)
+            }
         }
         .onAppear { if connection.usbDevice != nil { management.refresh() } }
         .onDisappear { management.cancel() }

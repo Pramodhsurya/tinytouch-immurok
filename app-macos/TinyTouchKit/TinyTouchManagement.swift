@@ -87,6 +87,13 @@ public enum TinyTouchInventoryStage: String, CaseIterable {
         guard data.count <= 65536, let text = String(data: data, encoding: .utf8) else { return .commandFailed }
         let prefix = "Error: tinyTouch rejected the request: FINGER inventory_unavailable reason="
         let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let approvalErrors: Set<String> = [
+            "Error: Fingerprint authentication timed out. Please try again.",
+            "Error: Fingerprint authentication could not start. Please try again.",
+            "Error: Fingerprint authentication expired. Please try again.",
+            "Error: No enrolled fingerprint matched. Lift your finger and try an enrolled finger. If none work, use Recovery firmware at https://docs.tinytouch.dev/flash?firmware=recovery. Recovery erases fingerprints, device keys, registered computers, and settings."
+        ]
+        if approvalErrors.contains(line) { return .configurationApprovalFailed }
         guard line.hasPrefix(prefix), let stage = Self(rawValue: String(line.dropFirst(prefix.count))) else { return .commandFailed }
         return .inventoryUnavailable(stage: stage)
     }
@@ -210,10 +217,14 @@ public final class TinyTouchCommandRunner: @unchecked Sendable {
             if !child.isRunning { break }
             Thread.sleep(forTimeInterval: 0.1)
         }
+        // Cancellation can arrive from a final progress callback after the
+        // backend exits. Keep it authoritative over both its error and success.
+        try checkCancellation()
         guard child.terminationStatus == 0 else {
             throw TinyTouchInventoryStage.backendFailure(try Data(contentsOf: stderr))
         }
         guard let output = String(data: try Data(contentsOf: stdout), encoding: .utf8) else { throw TinyTouchError.invalidStatus }
+        try checkCancellation()
         return output
     }
 }

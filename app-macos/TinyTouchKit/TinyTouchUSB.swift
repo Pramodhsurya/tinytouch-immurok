@@ -5,6 +5,7 @@ import Darwin
 public enum TinyTouchError: Error, LocalizedError {
     case invalidStatus, unsupportedProtocol, wrongDevice, ambiguousDevices, backendMissing, commandFailed, timedOut, lastFingerprint, lastHost
     case inventoryUnavailable(stage: TinyTouchInventoryStage)
+    case configurationApprovalFailed
     public var errorDescription: String? {
         switch self {
         case .invalidStatus: return "The device returned an invalid status."
@@ -13,6 +14,7 @@ public enum TinyTouchError: Error, LocalizedError {
         case .ambiguousDevices: return "Multiple tinyTouch devices are connected. Select a device before continuing."
         case .backendMissing: return "The bundled tinyTouch USB backend is missing."
         case .commandFailed: return "The USB command failed. Reconnect the device and retry."
+        case .configurationApprovalFailed: return "Fingerprint approval did not complete. Lift your finger, retry, and hold an enrolled finger when the approval prompt appears."
         case .inventoryUnavailable(let stage): return "The sensor fingerprint inventory is unavailable (\(stage.rawValue)). Existing fingerprints are preserved. Keep USB connected and refresh; enrollment and deletion require a verified inventory."
         case .timedOut: return "The USB command timed out."
         case .lastHost: return "Keep the last registered computer. Add another computer before removing this one."
