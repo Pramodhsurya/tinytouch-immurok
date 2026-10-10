@@ -27,6 +27,7 @@ extension Notification.Name {
 @MainActor
 class AppViewModel: ObservableObject {
     let tinyTouchConnection = TinyTouchConnection()
+    lazy var tinyTouchSudo = TinyTouchSudoModel(connection: tinyTouchConnection)
     var isTinyTouchTransportConnected: Bool {
         tinyTouchConnection.usbStatus != nil || tinyTouchConnection.bluetoothConnected
     }
@@ -166,6 +167,7 @@ class AppViewModel: ObservableObject {
     private var screenUnlockObserver: Any?
 
     init() {
+        if Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true { _ = tinyTouchSudo }
         tinyTouchCancellable = tinyTouchConnection.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }

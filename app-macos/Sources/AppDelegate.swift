@@ -45,8 +45,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         signal(SIGPIPE, SIG_IGN)
 
         if Bundle.main.object(forInfoDictionaryKey: "TinyTouchESP32Preview") as? Bool == true {
-            // Keep incompatible PAM/SSH/CLI services and login deployment inactive
-            // until authenticated ESP32 command adapters are available.
+            // Imported PAM/SSH/CLI services and login deployment stay inactive.
+            // AppViewModel owns the separate fresh-proof ESP32 sudo endpoint.
             NSLog("tinyTouch native ESP32 connection preview launched")
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 500_000_000)

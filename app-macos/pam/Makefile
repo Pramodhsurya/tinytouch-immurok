@@ -11,9 +11,13 @@ TARGET = pam_immurok.so
 SRC = pam_immurok.c hmac_sha256.c pam_auth_verify.c
 SIGN_IDENTITY ?= -
 
-.PHONY: all clean install uninstall test vectors
+.PHONY: all clean install uninstall test test-tinytouch vectors
 
 all: $(TARGET)
+
+pam_tinytouch.so: pam_tinytouch.c tinytouch_pam_protocol.c tinytouch_pam_protocol.h hmac_sha256.c hmac_sha256.h
+	$(CC) $(CFLAGS) $(ARCH_FLAGS) $(LDFLAGS) -framework Security -framework CoreFoundation -o $@ pam_tinytouch.c tinytouch_pam_protocol.c hmac_sha256.c
+	codesign --force --sign "$(SIGN_IDENTITY)" $@
 
 $(TARGET): $(SRC) hmac_sha256.h pam_auth_verify.h
 	$(CC) $(CFLAGS) $(ARCH_FLAGS) $(LDFLAGS) -o $@ $(SRC)
@@ -25,11 +29,17 @@ vectors:
 test: test_pam_mac
 	./test_pam_mac
 
+test-tinytouch: test_tinytouch_pam
+	./test_tinytouch_pam
+
+test_tinytouch_pam: pam_tinytouch.so test_tinytouch_pam.c tinytouch_pam_protocol.c tinytouch_pam_protocol.h hmac_sha256.c hmac_sha256.h
+	$(CC) -Wall -Wextra -Werror -O2 -lpam -o $@ test_tinytouch_pam.c tinytouch_pam_protocol.c hmac_sha256.c
+
 test_pam_mac: test_pam_mac.c hmac_sha256.c pam_auth_verify.c hmac_sha256.h pam_auth_verify.h test_vectors.h
 	$(CC) -Wall -Wextra -O2 -o $@ test_pam_mac.c hmac_sha256.c pam_auth_verify.c
 
 clean:
-	rm -f $(TARGET) test_pam_mac
+	rm -f $(TARGET) pam_tinytouch.so test_pam_mac test_tinytouch_pam
 
 install: $(TARGET)
 	@sudo mkdir -p /usr/local/lib/pam

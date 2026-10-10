@@ -82,7 +82,7 @@ struct TinyTouchMacSettingsView: View {
                     if connection.usbStatus?.authenticationSupported != true {
                         Text("Connect by USB with firmware supporting fresh finger presence (auth_fresh=1) to enable this test.").font(.caption)
                     }
-                    Text("Mac Keychain may ask you to allow this app to read the existing pairing key. Passwords are not read. PAM, SSH and automation still require their own adapters.").font(.caption).foregroundStyle(.secondary)
+                    Text("Mac Keychain may ask you to allow this app to read the existing pairing key. Passwords are not read. Sudo uses a separate approval request; system authorization, SSH and automation are still being ported.").font(.caption).foregroundStyle(.secondary)
                     if authentication.busy {
                         ProgressView()
                         Button("Cancel test") { authentication.cancel() }

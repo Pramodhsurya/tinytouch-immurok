@@ -1,5 +1,9 @@
 # tinyTouch feature parity checklist
 
+Current totals after the October 9 sudo implementation: **13 Completed, 19 In progress, 106 Yet to be done (138 unique tasks)**. The remaining detailed management tests are deferred at the user's request; they are not marked passed. Active major work is [USB fingerprint approval for sudo](MAC_SUDO_SETUP.md).
+
+October 9 sudo evidence: the native app's dedicated root-peer endpoint consumes a fresh device proof for each sudo authentication request. The root module checks audit-token app identity and a full nonce/UID/PID/user/service HMAC receipt; failed or cancelled requests fall back to existing providers. The app controls, root setup helper, optional setup/removal packages and guide are implemented. All 165 Swift tests and 34 C checks pass; expanded packages and code signatures verify. MAC-10 and MAC-11 transition to In progress. Native app installation awaits quitting the running app; administrator activation and real sudo success/rejection/fallback/removal remain pending. Firmware, fingerprints and host registration are preserved.
+
 Reviewed **2026-10-08**. Target: **ESP32-S3 + ZW111**, retaining Bluetooth and adding usable USB data/control across the companion system.
 
 This is the canonical checklist. Check a box only after the feature is implemented in our port and its acceptance criterion passes. Imported source, upstream marketing claims and a passing helper unit test do not complete an end-to-end feature. Prototype evidence is recorded separately below. Keep this file updated with each implementation commit; do not automatically check boxes from upstream status.
@@ -137,8 +141,8 @@ Sources: [Mac README](https://github.com/immurok/app-macos/blob/main/README.md),
 | [ ] | Yet to be done | MAC-07 | `Sources/AppDelegate.swift` | Native app screen unlock and wake/reconnect retry flow | P2 | Lock-screen unlock over BLE/USB; pending match cannot duplicate typing |
 | [ ] | In progress | MAC-08 | `Sources/DualHostView.swift` | First/second-host guidance, slot status and authorized unbinding | P3 | Two-host workflow tested with ESP32, including lost-host removal |
 | [ ] | Yet to be done | MAC-09 | `Sources lock handling` | Confirm and perform device-requested screen lock | P3 | Cancel/confirm behavior correct; no unintended authentication grant |
-| [ ] | Yet to be done | MAC-10 | `pam / PAMSocketServer.swift` | sudo and system-authorization PAM authentication with password fallback | P4 | Real sudo/authorization positive/negative tests; safe fallback and uninstall |
-| [ ] | Yet to be done | MAC-11 | `CLISources/PamKeyCommand.swift / pam` | Strong local PAM channel using nonce/HMAC, root-owned verifier and peer checks | P4 | Spoofed/replayed IPC denied; install/remove/status/verify-peer paths tested |
+| [ ] | In progress | MAC-10 | `pam / Sources/TinyTouchSudo*` | sudo and system-authorization PAM authentication with password fallback | P4 | USB sudo adapter implemented; real sudo/fallback/uninstall acceptance and broader system authorization pending |
+| [ ] | In progress | MAC-11 | `TinyTouchKit/TinyTouchPAM* / PAMSetupSources / pam` | Strong local PAM channel using nonce/HMAC, root-owned verifier and peer checks | P4 | Dedicated root-peer USB sudo channel implemented; replay/context/peer fixture checks pass; real administrator install/remove acceptance pending |
 | [ ] | Yet to be done | MAC-12 | `Sources/AuthContextDetector.swift / AuthInjector.swift` | Route pure PAM, credential injection and GUI-to-PAM bridge appropriately | P4 | Pending PAM wins; no recognized target means no injection or authorization |
 | [ ] | Yet to be done | MAC-13 | `AuthInjectionKit / whitelist` | Check running target identity, focused secure field and automation context | P4 | Untrusted app cannot receive passwords by imitating a bundle/name |
 | [ ] | Yet to be done | MAC-14 | `Sources password targets` | Unlock 1Password/Bitwarden and supported system dialogs with separate saved secrets | P5 | Each target explicitly configured/tested; disabled feature clears intended secret |

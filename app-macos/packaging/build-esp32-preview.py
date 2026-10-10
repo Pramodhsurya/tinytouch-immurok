@@ -41,6 +41,8 @@ info.update(CFBundleName='tinyTouch Native Preview', CFBundleDisplayName='tinyTo
             LSUIElement=False,
             NSBluetoothAlwaysUsageDescription='tinyTouch reads the identity of your paired ESP32 fingerprint device.')
 (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
-subprocess.run(['codesign', '--force', '--sign', '-', str(bundle)], check=True)
+# Sudo pins this app build. Hardened runtime keeps its signed identity from
+# being reused with injected user libraries; no runtime exceptions are added.
+subprocess.run(['codesign', '--force', '--sign', '-', '--options', 'runtime', str(bundle)], check=True)
 subprocess.run(['codesign', '--verify', '--strict', str(bundle)], check=True)
 print(bundle)

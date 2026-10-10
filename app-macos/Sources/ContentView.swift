@@ -118,6 +118,7 @@ struct ContentView: View {
                 if esp32 {
                     ScrollView {
                         VStack(spacing: 16) {
+                            TinyTouchSudoView(model: viewModel.tinyTouchSudo)
                             TinyTouchMacSettingsView(connection: viewModel.tinyTouchConnection)
                             DisclosureGroup("Original features awaiting ESP32 support") {
                                 PermissionsTabView(viewModel: viewModel, setupManager: setupManager)

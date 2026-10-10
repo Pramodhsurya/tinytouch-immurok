@@ -1,5 +1,7 @@
 # Mac app compatibility with ESP32-S3 + ZW111
 
+October 9 major-function update: a dedicated USB sudo adapter now binds fresh AUTH2 proofs to the invoking UID, username, service, peer PID and nonce. The local root verifier checks the live app code hash and a separate full HMAC receipt. Optional administrator setup/removal packages preserve existing password providers. Automated tests pass; installation and real sudo acceptance remain pending. System authorization, SSH, vault/key operations and Bluetooth PAM remain separate work. Details: [MAC_SUDO_SETUP.md](MAC_SUDO_SETUP.md).
+
 October 8 current acceptance: MAC-01 is Completed after the user passes the four-step wizard with existing fingerprint 2 and the separate USB-connected lock-screen output check; the saved completion serial is verified. The ad hoc signed native bundle launches and explains prerequisites/permissions. Historical pending wizard statements below are superseded by this result. Production packaging/signing, login/restart and full native feature parity remain separate MAC-27/28, MAC-23 and feature-specific acceptance work.
 
 The release goal is **every feature in the imported Mac app working with our ESP32 firmware**, not simply a connected device. Mac work and its full acceptance gate come first; Windows follows, Linux stays on hold, then PCB/hardware work. The authoritative per-feature completion/status list remains [FEATURE_CHECKLIST.md](FEATURE_CHECKLIST.md), MAC-01 through MAC-31. This document adds implementation dependencies without duplicating those checklist entries.

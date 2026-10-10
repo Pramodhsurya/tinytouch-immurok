@@ -206,6 +206,15 @@ public enum TinyTouchAuthUSB {
     }
     public static func test(device: TinyTouchUSBDevice, cancellation: TinyTouchAuthCancellation,
                             progress: (String) -> Void) throws {
+        try authorize(device: device, context: Data(("native-auth-test-v1|" + device.serial).utf8),
+                      cancellation: cancellation, progress: progress)
+    }
+    /// Each caller supplies the exact action context. A verified request is
+    /// consumed here; there is no reusable or pre-authorized success state.
+    public static func authorize(device: TinyTouchUSBDevice, context: Data,
+                                 cancellation: TinyTouchAuthCancellation,
+                                 progress: (String) -> Void) throws {
+        guard !context.isEmpty, context.count <= 4096 else { throw TinyTouchAuthError.invalidResponse }
         let lease = try reserve(cancellation: cancellation)
         defer { lease.release() }
         progress("Opening the exclusive USB connection…")
@@ -217,8 +226,7 @@ public enum TinyTouchAuthUSB {
         progress("Allow the pairing-key read if Mac Keychain asks. Your saved password is not read.")
         let key = try TinyTouchPairingKey.read(serial: device.serial)
         try cancellation.check()
-        let request = try TinyTouchAuthRequest(key: key, serial: device.serial,
-            context: Data(("native-auth-test-v1|" + device.serial).utf8))
+        let request = try TinyTouchAuthRequest(key: key, serial: device.serial, context: context)
         defer { request.invalidate() }
         let challenge = try serial.exchange(request.beginCommand, prefix: "OK AUTH2 CHALLENGE ", timeout: 3, progress: progress)
         let prove = try request.proveCommand(challenge: challenge)

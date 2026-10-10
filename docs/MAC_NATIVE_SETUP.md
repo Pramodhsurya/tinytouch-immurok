@@ -1,6 +1,6 @@
 # tinyTouch native Mac setup
 
-The native app currently supports ESP32-S3 + ZW111 USB inventory, fingerprint enrollment/management, device settings, registered-computer inventory/removal, startup checks and bonded Bluetooth identity. The existing tinyTouch password helpers remain responsible for fingerprint output. Keys, PAM/sudo, SSH, automation execution, native host registration and Bluetooth management are still being ported. Refer to [FEATURE_CHECKLIST.md](FEATURE_CHECKLIST.md) for status.
+The native app currently supports ESP32-S3 + ZW111 USB inventory, fingerprint enrollment/management, device settings, registered-computer inventory/removal, startup checks and bonded Bluetooth identity. USB fingerprint approval for sudo now has a dedicated adapter and optional administrator installer; real sudo acceptance is pending. See [MAC_SUDO_SETUP.md](MAC_SUDO_SETUP.md). The existing tinyTouch password helpers remain responsible for fingerprint output. Keys, system authorization, SSH, automation execution, native host registration and Bluetooth management are still being ported. Refer to [FEATURE_CHECKLIST.md](FEATURE_CHECKLIST.md) for status.
 
 ## Build and install on this Mac
 
@@ -58,7 +58,7 @@ The original signed CLI stages firmware through its fingerprint-approved `update
 - Bluetooth unavailable: check the Features permission status and macOS Bluetooth settings. Existing helper pairing supplies the remembered peripheral identity. Native Bluetooth pairing and management are pending.
 - Helper stopped/unavailable: check the existing tinyTouch setup and its background-service settings. The native app only reports helper health; it does not reinstall or repair credentials.
 - Native update fails: the previous native app is retained during replacement. Quit the native app and restore that backup to `~/Applications/tinyTouch Native.app` if needed. Do not move or overwrite the separate password helper.
-- Uninstall this local native preview: turn off its login item, quit it and move `tinyTouch Native.app` to Trash. System PAM uninstall is not part of this preview.
+- Uninstall this local native preview: turn off its login item, disable/remove any optional sudo adapter following [MAC_SUDO_SETUP.md](MAC_SUDO_SETUP.md), quit it and move `tinyTouch Native.app` to Trash.
 
 Read-only health diagnosis without opening USB:
 

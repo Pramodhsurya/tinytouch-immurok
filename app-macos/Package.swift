@@ -7,6 +7,7 @@ let package = Package(
     targets: [
         .target(name: "TinyTouchKit", path: "TinyTouchKit"),
         .executableTarget(name: "tinyTouchProbe", dependencies: ["TinyTouchKit"], path: "ProbeSources"),
+        .executableTarget(name: "tinyTouchPAMSetup", dependencies: ["TinyTouchKit"], path: "PAMSetupSources"),
         .testTarget(name: "TinyTouchKitTests", dependencies: ["TinyTouchKit"], path: "Tests/TinyTouchKitTests"),
         .target(
             name: "FirmwareUpdateKit",

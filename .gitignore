@@ -19,6 +19,7 @@ app-macos/.swiftpm/
 app-macos/Resources/*.pkg
 app-macos/immurok.app/
 app-macos/.sign-identity
+app-macos/pam/test_tinytouch_pam
 
 # === Firmware (CH592F) ===
 firmware/SDK/

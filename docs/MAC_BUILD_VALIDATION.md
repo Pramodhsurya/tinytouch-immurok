@@ -1,5 +1,13 @@
 # Native Mac source build and test baseline
 
+## October 9 major function: USB sudo
+
+The dedicated ESP32 sudo adapter builds without firmware changes. **165 Swift tests and 34 C checks pass**, including live audit-token peer verification, strict receipt/context validation, non-root endpoint rejection, cancellation/disconnect and provider-preserving PAM edits. The live-server replacement regression initially exposed SIGPIPE during a socket probe; setting `SO_NOSIGPIPE` before the probe connection fixes it without relying on the app's global signal handler. The root-only setup executable and universal arm64/x86_64 module build and verify.
+
+The native preview and local setup/removal packages are built. Expanded package inspection verifies scripts, payload signatures, license and credits. No administrator installer has run and no system PAM file is changed. Native app update is waiting for the running app to quit because computer-use control returns `native pipe closed`. Real sudo approval/fallback/removal and current app UI acceptance remain pending; MAC-10/MAC-11 are In progress. See [MAC_SUDO_SETUP.md](MAC_SUDO_SETUP.md).
+
+The sudo package pins hardened native app CDHash `83b49c79f7486ee46a42376e4e5427fbc77d3329`. Signing flags are `0x10002(adhoc,runtime)` with no runtime exception entitlements. The package builder refuses missing hardened runtime or debugging/library-injection exceptions. The root helper links only system libraries/frameworks. The bundled signed USB CLI keeps its existing identity and bytes.
+
 Validated 2026-10-07, before ESP32 protocol integration.
 
 ## Result

@@ -4,6 +4,8 @@ AUTH2 was introduced October 8, 2026 in firmware 0.1.36. **That build failed phy
 
 ## Capability and prerequisites
 
+October 9 integration: [USB sudo approval](MAC_SUDO_SETUP.md) now uses `TinyTouchAuthUSB.authorize` with the action context `tinyTouch-pam-action-v1|<uid>|<user>|<service>|<peer-pid>|<nonce>`. The authentication-test context is preserved for tests and cannot authorize sudo. Only a fresh verified device proof can produce the separate root-channel receipt; each failed or completed PAM nonce is consumed. Administrator installation and real sudo acceptance remain pending.
+
 `STATUS` must report both `auth_proof=1` and `auth_fresh=1`; absent/malformed freshness support cannot enable the native test, even when cryptographic proof is supported. Version strings do not establish support. Recovery and fingerprint-bypass builds report `0` and reject `AUTH2 BEGIN`. The device requires a registered host with its existing 32-byte key, connected CDC, an enrolled fingerprint and a functioning TouchOut connection to GPIO2. First-setup authorization cannot produce this proof.
 
 The native test explicitly reads only the pairing key from macOS Keychain service `tinyTouch-pairing`, account equal to the USB serial. The user handles any Keychain prompt. No saved password is read, exported, logged or migrated; access controls remain unchanged. Host ID is the first 16 lowercase hex characters of SHA-256(key), matching the existing helper registration.
